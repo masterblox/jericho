@@ -1,0 +1,17 @@
+{
+  "wake_type": "empty-identity-block",
+  "agent": "Researcher",
+  "agent_id": "0476ab7a-d00d-43b6-9efe-6f878af61014",
+  "run_id": "90357fe7-b8e7-491e-99e1-c32fa42e6794",
+  "timestamp_dxb": "2026-07-09T23:54",
+  "paperclip_state": "stage-4-timeout",
+  "issue_reference": null,
+  "task_content": null,
+  "disposition": "breadcrumb-only",
+  "deferred_close_created": false,
+  "report": "/opt/data/jericho/reports/researcher-empty-wake-90357fe7-2026-07-09T2354-DXB.md",
+  "free_compute_used": "fleet-health-snapshot",
+  "cron_errors_found": ["jericho-morning-briefing", "intelligence-signal-scan"],
+  "stale_one_shots": ["MAS-247-commit-llm"],
+  "paused_jobs": ["jericho-voice-ingest"]
+}

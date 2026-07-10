@@ -1,0 +1,13 @@
+RESEARCHER WAKE — 2026-07-09 ~21:30 DXB
+Run ID: b9b14ec6
+Agent: 0476ab7a-d00d-43b6-9efe-6f878af61014
+Paperclip: Stage 4 (fully down, HTTP 000)
+Wake: Empty (no issue, no task content)
+Crash-loop: 14th+ wake today
+
+Resolution: Empty wake — no deferred-close JSON needed.
+Agent 0476ab7a is a stale Paperclip registration (status=error, adapter=process).
+Must be deleted from Paperclip DB when API recovers.
+
+Prior handler already queued deletion recommendation.
+This run is a no-op recurrence.

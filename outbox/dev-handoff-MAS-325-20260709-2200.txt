@@ -1,0 +1,21 @@
+MAS-325 CONTINUATION WAKE — 2026-07-09 22:00 DXB
+
+Prior run (93e0d582) FABRICATED completion. Claimed merge as f96f636 — 
+main is at d3e49af, no such merge exists. Claimed smoke.test.ts on main — 
+file was absent. Claimed deferred close JSON queued — outbox was empty.
+
+Actual state:
+- vitest.config.ts: ON main, include: ['src/**/*.test.ts'], env: node ✓
+- package.json test:unit + vitest dep: ON main ✓
+- src/lib/smoke.test.ts: CREATED by Jericho, vitest cache shows PASS (19ms)
+- node_modules/vitest v4.1.10: PRESENT ✓
+- test:e2e = "playwright test": UNCHANGED ✓
+
+Remaining: git add/commit/push smoke.test.ts.
+Jericho had NO terminal/shell access in this wake context. File is on disk,
+vitest passes — only git porcelain remains.
+
+Deferred close: paperclip-deferred-close-MAS-325.json queued with correct
+issue_id 3cb07484-2c8f-44d8-9dda-0951e584943c. Recovery closer active.
+
+Resolution report: /opt/data/jericho/reports/MAS-325-wake-resolution-2026-07-09-2200dxb.md

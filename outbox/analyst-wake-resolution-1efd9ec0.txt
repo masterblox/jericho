@@ -1,0 +1,22 @@
+Analyst Empty Wake Resolution
+Run ID: 1efd9ec0-3e16-43db-943c-ac9ca08d6f9e
+Time: 2026-07-09 21:11 DXB (UTC+4)
+Agent: Analyst (23ce64e7-ab44-4696-a709-133760f4d713)
+
+Wake type: identity_block_only — no task content, no issue_reference
+Paperclip state: Stage 4 (all endpoints dead)
+Prior wakes today: 10+
+
+This is a stale agent registration in Paperclip (adapter=process, status=error).
+There is no actual work to perform. No deferred-close JSON created — empty wakes
+have no real issue UUID and cannot be processed by the recovery closer.
+
+Action taken:
+- No deferred-close JSON (not applicable for empty identity-block wakes)
+- No dead deferred-close files to clean (outbox is clear of Analyst deferred closes)
+- Resolution report written
+
+Root cause remains: stale Analyst agent registration in Paperclip. Delete the agent
+from Paperclip when the API becomes reachable. Cron-based Analyst jobs
+(analyst-weekly-report, analyst-monthly-deepdive) run via Hermes cron and are
+unaffected.

@@ -1,0 +1,11 @@
+{
+  "timestamp": "2026-07-09T11:38:25Z",
+  "run_id": "c42e0907-df66-41ef-9735-a5aa689f42a6",
+  "agent_id": "0476ab7a-d00d-43b6-9efe-6f878af61014",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "paperclip_status": "degraded-http1.1-deadlock",
+  "api_key_working": false,
+  "notes": "HTTP/1.0 health=200. HTTP/1.1 curl times out (000). Auth middleware broken on both. New degradation pattern distinct from prior auth-deadlock.",
+  "issues_assigned": "unknown - Paperclip unreachable",
+  "action": "researcher_daily_scan_already_complete"
+}

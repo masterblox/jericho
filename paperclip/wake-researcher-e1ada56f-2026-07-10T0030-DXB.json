@@ -1,0 +1,24 @@
+{
+  "wake_type": "empty-identity-block",
+  "agent": "Researcher",
+  "agent_id": "0476ab7a-d00d-43b6-9efe-6f878af61014",
+  "run_id": "e1ada56f-1ff7-4493-b740-d00f5bc160c1",
+  "timestamp_dxb": "2026-07-10T00:30",
+  "paperclip_state": "stage-4-fetch-failed",
+  "issue_reference": null,
+  "task_content": null,
+  "disposition": "breadcrumb-only",
+  "deferred_close_created": false,
+  "report": "/opt/data/jericho/reports/researcher-empty-wake-e1ada56f-2026-07-10-DXB.md",
+  "free_compute_used": "fleet-health-snapshot",
+  "cron_errors_found": ["jericho-morning-briefing", "intelligence-signal-scan"],
+  "stale_one_shots": ["MAS-247-commit-llm"],
+  "paused_jobs": ["jericho-voice-ingest"],
+  "deferred_close_backlog": 8,
+  "omnigent_duplicate_reports": 4,
+  "empty_wake_counts": {
+    "researcher": 6,
+    "intelligence": 5,
+    "analyst": 4
+  }
+}

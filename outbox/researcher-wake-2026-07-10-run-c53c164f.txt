@@ -1,0 +1,15 @@
+RESEARCHER EMPTY WAKE — 2026-07-10 ~12:30 UTC (16:30 DXB)
+=========================================================
+Run ID: c53c164f-be7f-4a01-952a-f197828e88e3
+Agent: Researcher (0476ab7a-d00d-43b6-9efe-6f878af61014)
+Paperclip: Stage 4-5 (health timeout — dead)
+Disposition: Empty wake — breadcrumb only. No deferred-close.
+
+DELTA SINCE 88bfb87b (delta-7):
+- No changes. Situation completely frozen.
+- Full scheduler outage continues — both threads dead for ~16h.
+- jericho-morning-briefing (05:00 UTC) missed — 2 missed daily fires now.
+- Deferred-close backlog: 89 (unchanged).
+- CRITICAL: nightly-synthesis at 18:30 UTC will miss unless scheduler is restarted.
+
+Report: /opt/data/jericho/reports/fleet-health-snapshot-2026-07-10-DXB-delta-8.md

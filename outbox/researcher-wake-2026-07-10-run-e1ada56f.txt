@@ -1,0 +1,20 @@
+RESEARCHER EMPTY WAKE — 2026-07-10 ~00:30 DXB
+=============================================
+Run ID: e1ada56f-1ff7-4493-b740-d00f5bc160c1
+Agent: Researcher (0476ab7a-d00d-43b6-9efe-6f878af61014)
+Paperclip: Stage 4+ (Failed to fetch)
+Disposition: Empty wake — breadcrumb only. No deferred-close.
+
+FREE COMPUTE: Fleet health snapshot (competitive signals exhausted — Omnigent 4x deep-dived)
+
+CRITICAL FINDINGS:
+- jericho-morning-briefing: ERROR, missed 2 consecutive runs (Jul 9 + Jul 10)
+- intelligence-signal-scan: ERROR, missed 5+ cycles since Jul 8
+- jericho-voice-ingest: PAUSED 42h+
+- 8 deferred-close files in outbox
+- 4 duplicate Omnigent reports from 4 different wake sessions
+- 15 empty non-fleet wakes in last 24h (6 researcher, 5 intelligence, 4 analyst)
+
+ACTION: jericho-morning-briefing and intelligence-signal-scan both broke on Jul 8 — likely shared root cause. Carlos probably hasn't had a morning briefing in 2 days.
+
+Report: /opt/data/jericho/reports/researcher-empty-wake-e1ada56f-2026-07-10-DXB.md

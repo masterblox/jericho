@@ -1,0 +1,10 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "7a9360c4-8046-431d-a241-6fcfd25803ad",
+  "identifier": "MAS-273",
+  "target_status": "done",
+  "reason": "Implementation complete (PRs #110, #111). All code on main (638d3d7). Handler intentionally gated behind CLEANUP_ORPHANS_ENABLED due to signed-URL vs bare-path comparison bug in find_orphan_uploads RPC — no data can be deleted until path-normalize fix lands. Previous run 5425e5eb 429'd (rate limit), not code failure. Paperclip API returns 401 (health-only key) — deferred close queued. Follow-up: path-normalize RPC + re-enable in separate ticket.",
+  "queued_at": "2026-07-09T18:35:00+04:00",
+  "report": "/opt/data/jericho/reports/MAS-273-resolution-2026-07-09.md"
+}

@@ -1,0 +1,18 @@
+{
+  "issueId": "48274c8c-5ecc-44fc-b6e8-d6d647d9439c",
+  "issueIdentifier": "MAS-234",
+  "targetStatus": "in_review",
+  "resolution": "PR #215 prepared with Playwright smoke spec + manual checklist. Michael runs manual smoke against prod.",
+  "comment": "MAS-85 smoke spec delivered.\n\nPR: https://github.com/Mechanica-Labs/memories-express-mvp-cp/pull/215\n\nFiles:\n- tests/e2e/smoke.spec.ts \u2014 3-layer Playwright spec tagged @smoke\n- docs/smoke-checklist.md \u2014 Manual walkthrough covering all 7 steps\n\nRun: pnpm test:e2e -- --grep @smoke\n\nNext: Michael runs manual smoke against prod with real card + inboxes.",
+  "queuedAt": "2026-07-09T14:30:00Z",
+  "runId": "95a976c0-ef20-4113-9796-3a073665e9c1",
+  "prUrl": "https://github.com/Mechanica-Labs/memories-express-mvp-cp/pull/215",
+  "branch": "dev/mas-85-smoke-test",
+  "files": [
+    "tests/e2e/smoke.spec.ts",
+    "docs/smoke-checklist.md"
+  ],
+  "attempts": 1,
+  "issue_id": "48274c8c-5ecc-44fc-b6e8-d6d647d9439c",
+  "identifier": "MAS-234"
+}

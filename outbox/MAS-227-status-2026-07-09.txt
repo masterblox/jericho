@@ -1,0 +1,7 @@
+# MAS-227 status — 2026-07-09 17:30 DXB
+
+Issue: MAS-227 / MAS-160 — Delete db-ci types-drift gate
+Status: Done (verified on disk, PR #36 merged to main)
+Paperclip: Cannot close — API auth middleware deadlock (health=200, authenticated endpoints timeout)
+Resolution report: /opt/data/jericho/reports/MAS-227-resolution-2026-07-09.md
+Wake: transient_failure_retry (5c877943) — prior run 68d018f1 completed work, crashed on 429

@@ -1,0 +1,5 @@
+INTELLIGENCE EMPTY WAKE — 4f6d7cd0 — 2026-07-10T0040-DXB
+Paperclip Stage 4. Used compute for Omnigent competitive deep-dive.
+Report: /opt/data/jericho/reports/omnigent-competitive-deep-dive-2026-07-10.md
+
+TLDR: Omnigent (6.9K stars, 30 days old) is a meta-harness that orchestrates Claude Code, Codex, Cursor, Hermes, Pi + custom agents. Policy engine, sandboxing, collaboration. Lists Hermes as a supported harness. Direct competitor to Mechanica fleet orchestration. Weakness: session-scoped agents (no persistent identity).

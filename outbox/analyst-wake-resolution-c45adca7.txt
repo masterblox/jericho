@@ -1,0 +1,14 @@
+Analyst Empty Wake Resolution
+Run ID: c45adca7-c7dc-40ed-8edc-88fc7781d548
+Time: 2026-07-09 DXB (UTC+4)
+Agent: Analyst (23ce64e7) — stale, status=error, adapter=process
+
+DISPOSITION: No action needed. Empty identity-block wake.
+
+Wake contained only the runtime identity block ("You are Analyst...") and execution contract. Zero task content, no issue reference, no deliverable.
+
+Paperclip: HTTP 000 (State 4, fully dead). Cannot delete stale agent registration.
+
+No deferred-close JSON created (empty wake — no real issue UUID to close).
+
+Root cause: stale Paperclip agent registration for Analyst (23ce64e7). The agent's adapter=process but status=error, causing Paperclip to fire empty recovery wakes. Will recur until registration is deleted from Paperclip or Paperclip comes back online for a DELETE call.

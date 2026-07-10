@@ -1,0 +1,13 @@
+{
+  "issueId": "8c6fcfa2-ba96-45f3-84be-a00e9834367e",
+  "identifier": "MAS-222",
+  "title": "MAS-154 - Install @playwright/test and wire e2e CI",
+  "status": "done",
+  "resolution": "Merged to main via PR #39 (commit f28fe88) on 2026-05-22. Playwright installed, CI wired, auth + account-dashboard specs ported. 47 e2e specs now on main.",
+  "commit": "f28fe881cc857f0d551e415a6ef8620935d5a2c6",
+  "report": "/opt/data/jericho/reports/MAS-222-resolution-2026-07-09.md",
+  "queuedAt": "2026-07-09T14:15:00Z",
+  "companyId": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "attempts": 1,
+  "issue_id": "8c6fcfa2-ba96-45f3-84be-a00e9834367e"
+}

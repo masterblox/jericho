@@ -1,0 +1,27 @@
+{
+  "run_id": "afae0bfc-c85a-4365-9259-0f3bc046846b",
+  "issue": "MAS-511",
+  "wake_number": 5,
+  "wake_reason": "source_scoped_recovery_action",
+  "paperclip_state": "Stage 4 — both Tailscale and localhost timeout (000)",
+  "timestamp_utc": "2026-07-09T17:07:00Z",
+  "timestamp_dxb": "2026-07-09T21:07:00+04:00",
+  "fleet_snapshot": {
+    "gateway_default": "up (65min)",
+    "gateway_jericho": "up (2.6hr)",
+    "consolidated_gateways": "all down (intentional)",
+    "load_avg": "15.03 (trending down: 19.37→17.80→15.03)",
+    "disk": "89% (8.7G free)",
+    "memory_free": "320Mi / 3.0Gi available",
+    "swap": "5.2Mi free / 2Gi (near-exhausted)",
+    "lsp_zombies": 0
+  },
+  "close_mechanisms": {
+    "deferred_close_jsons": [
+      "paperclip-deferred-close-MAS-511.json (target: done, issue_id: 3f953dbc)",
+      "paperclip-close-MAS-511.json (target: done, issue_id: 3f953dbc)"
+    ],
+    "recovery_closer_cron": "8f3e069d48d7 — enabled, every 30m, last 16:41, next 17:11 UTC"
+  },
+  "action": "no-op — all close mechanisms intact, fleet stable, no worsening"
+}

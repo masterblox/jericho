@@ -1,0 +1,9 @@
+{
+  "issue_id": "e583fc8c-a3ee-46da-ae42-6b8a017b80e7",
+  "identifier": "MAS-182",
+  "title": "Unknown \u2014 MAS-182",
+  "target_status": "done",
+  "reason": "Work completed and merged May 30 via PR #82 (commit 202bff9). transient_failure_retry wake \u2014 gateway 429, agent never ran.",
+  "resolved_at": "2026-07-09T00:00:00+04:00",
+  "attempts": 1
+}

@@ -1,0 +1,20 @@
+{
+  "issue_id": "2a17e131-ce23-4cb6-8bf7-615d7caa78f9",
+  "identifier": "MAS-292",
+  "linear_issue": "MAS-305",
+  "new_status": "done",
+  "resolution": "VERIFIED 2026-07-09 19:30 +4: Prior run 461e5132 completed all work before 429 on Paperclip update. Commit ba7e57f on origin/main covers all three areas: (1) Budget VAT/currency audit — resolveConstructionTax per-region, format re-exports, tests for Lisbon 23%/Mumbai 12%/INR/EUR. (2) Sections labeled 'indicative' — console-copy sectionTag + PlansView hover. (3) Project persistence — workspace-store dual-layer localStorage+Supabase, API routes, useArchitectWorkspace auto-sync. 21 files, 1527 insertions. No rebuild needed.",
+  "commit": "ba7e57f932d8b5ab74558b26bb1eba6f6066400f",
+  "commit_date": "2026-07-09T13:37:36Z",
+  "branch": "origin/main",
+  "files_changed": 21,
+  "insertions": 1527,
+  "deletions": 38,
+  "prior_run_id": "461e5132-90b4-4065-a364-87b93ac2dd8e",
+  "prior_run_error": "hermes_gateway_rate_limited (HTTP 429 on Paperclip update)",
+  "current_run_id": "0112a4d3-2624-4f68-a37f-8b3727f46044",
+  "verified_by": "Jericho (fleet orchestration)",
+  "report": "/opt/data/jericho/reports/MAS-292-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T15:30:00+04:00",
+  "paperclip_state": "Stage 3 — unreachable (timeout)"
+}

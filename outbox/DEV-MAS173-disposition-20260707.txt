@@ -1,0 +1,32 @@
+DEV MAS-173 disposition — 2026-07-07 19:30 UTC
+
+Status: COMPLETE — all work merged to origin/main months ago.
+Previous run (9a37a6ad) failed with transient gateway 429 before reporting success.
+
+PR #44 — [MAS-173] Stripe checkout v2 (Pattern B + sync grants + pricing-as-code)
+  - Dropped intent table (migration 20260522180000_drop_intent_table.sql)
+  - Sync grants from webhook (no scheduled_job indirection)
+  - Pricing catalog in TS seeders (scripts/seed-stripe-products.ts)
+  - Webhook service at lib/services/stripe/webhook.ts
+
+PR #48 — [MAS-174] Stripe e2e CLI money-math + Playwright happy-path
+  - CLI suite: tests/e2e/stripe-cli/money-math.ts (384 lines)
+  - Playwright: tests/e2e/stripe-checkout-happy-path.spec.ts (290 lines)
+  - 2026-05-23 revision applied: no Stripe form-fill; asserts URL only
+  - ALREADY_CREDITED via local signed webhook delivery
+
+PR #52 — [MAS-175] Stripe refund webhook handler + e2e refund-deduct test
+PR #55 — [MAS-157] Stripe hardening suite + idempotency vitest tests
+
+Additional shipped:
+  - tests/e2e/stripe-cli/helpers.ts (260 lines)
+  - tests/e2e/stripe-cli/hardening.ts (592 lines)
+  - tests/e2e/stripe-cli/subscription-lifecycle.test.ts (986 lines)
+
+All wired in package.json:
+  - pnpm test:stripe-cli (money-math)
+  - pnpm test:stripe-cli:hardening
+  - pnpm test:stripe-cli:subscription
+
+Remaining action: Paperclip issue needs admin closure (Jericho auth boundary).
+Linear tickets MAS-173 and MAS-174 need status update to Done.

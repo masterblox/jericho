@@ -1,0 +1,22 @@
+{
+  "run_id": "9a98671b-52cb-435c-b838-8b24a4d9420c",
+  "timestamp": "2026-07-09T15:41:16Z",
+  "time_dxb": "2026-07-09T15:41:16+04:00",
+  "agent_id_received": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "agent_id_actual": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "paperclip_status": "degraded-auth-deadlock",
+  "health_endpoint": "HTTP 200",
+  "auth_read_endpoint": "timeout (GET /api/issues?companyId=...)",
+  "auth_company_prefixed": "401 Unauthorized",
+  "wake_reason": "identity_block_only",
+  "task_received": false,
+  "fleet_health": {
+    "disk": "88.4%",
+    "zombies": 0,
+    "load": "19.03",
+    "gateway_procs": "0 (ps pattern mismatch expected)",
+    "recovery_closer_cron": "active (8f3e069d48d7, every 30m, last ok)"
+  },
+  "action": "no_task_received",
+  "notes": "5th consecutive no-task wake today (10:38, 13:30, 15:29, 15:30, 15:40 DXB). Wake carries Analyst identity (23ce64e7) but delivered to Jericho (20cb56be). No regression in Paperclip state. No escalation needed."
+}

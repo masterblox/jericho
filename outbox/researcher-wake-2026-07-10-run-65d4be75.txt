@@ -1,0 +1,15 @@
+Researcher empty wake disposed — 2026-07-10
+Run: 65d4be75-6d67-4c4f-b013-6687511023f2
+Agent: 0476ab7a-d00d-43b6-9efe-6f878af61014
+Disposition: EMPTY WAKE — identity block only, no task, no issue.
+
+Paperclip: State 2 (health=ok, bootstrap=ready, auth deadlocked — authenticated endpoints hang). Root cause (stale agent registration) can't be fixed until Paperclip fully recovers.
+
+Free compute used: Omnigent architecture deep-dive completed. Report at /opt/data/jericho/reports/omnigent-deep-dive-2026-07-10.md (208 lines, 14.7 KB).
+
+Key signals for Carlos:
+- MEDIUM threat — Omnigent is session-scoped (not persistent fleet), but Polly pattern is proto-fleet
+- Monitor for: persistent agent identity, task queues, cron/scheduling — those 3 features = direct competitor
+- Mechanica moats: lane specialization depth, autonomous scheduling, Jericho synthesis — accelerate these
+
+No deferred-close JSON (empty wake — null issue_id).

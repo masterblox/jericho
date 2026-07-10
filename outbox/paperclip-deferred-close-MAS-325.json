@@ -1,0 +1,12 @@
+{
+  "issue_id": "3cb07484-2c8f-44d8-9dda-0951e584943c",
+  "identifier": "MAS-325",
+  "target_status": "done",
+  "reason": "All acceptance criteria verified and git resolved. vitest.config.ts on main (include src/**/*.test.ts, env node, exclude tests/), package.json test:unit=vitest run + vitest ^4.1.10, smoke.test.ts committed to main as c7f2686f with 6/6 vitest tests passing. Push to origin/main confirmed (c7f2686f == origin/main).",
+  "run_id": "b590bac9-5684-4383-a230-980e2179d63a",
+  "commit": "c7f2686f06f1ba63721368cebcfaa8d11977947b",
+  "branch": "main",
+  "files": ["vitest.config.ts", "src/lib/smoke.test.ts"],
+  "queued_at": "2026-07-10T00:55:00Z",
+  "agent": "DEV"
+}

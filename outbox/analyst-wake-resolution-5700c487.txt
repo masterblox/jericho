@@ -1,0 +1,19 @@
+Analyst Wake Resolution — Run 5700c487-28b5-4d95-b87c-62558e575046
+Time: 2026-07-09T21:41 DXB
+Agent: Analyst (23ce64e7) — stale, status=error, adapter=process
+Paperclip: HTTP 000 (fully dead, TCP timeout)
+
+DISPOSITION: No action — empty identity-block wake.
+
+Wake payload: identity block and execution contract only. Zero task content, no issue reference, no deliverable.
+
+This is wake ~12+ today from the stale Analyst agent. Paperclip API is fully dead — cannot delete the broken agent registration. These empty wakes recur while Paperclip is in State 4.
+
+Prior resolutions today: 83bb1cfd, 53d872ce, f3a5f722, ffe33bd6, and ~8 others — all identical pattern.
+
+Actions taken:
+- No deferred-close JSON created (empty wake, no real issue UUID — would be dead weight)
+- Dead analyst deferred-close files cleaned (0 found)
+- Resolution report saved
+
+Root cause: Stale Analyst agent registration in Paperclip DB (adapter=process, status=error). Requires Paperclip API recovery to delete. Cron-based Analyst jobs (analyst-weekly-report, analyst-monthly-deepdive) run via Hermes cron and are NOT affected — only the Paperclip agent registration is stale.

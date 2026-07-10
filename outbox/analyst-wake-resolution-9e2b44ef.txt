@@ -1,0 +1,16 @@
+Analyst Empty Wake Resolution
+Run: 9e2b44ef-9ec4-4f1f-bb9c-cfab8161cec1
+Agent: Analyst (23ce64e7) — stale, status=error, adapter=process
+Timestamp: 2026-07-10 DXB (approximate)
+
+Disposition: DISPOSED — empty identity-block wake
+
+Wake contained only the runtime identity block ("You are Analyst...") and execution contract. Zero task content, no issue reference, no deliverable.
+
+Paperclip health: Unreachable (browser fetch failed — consistent with ongoing Stage 4-5 outage).
+
+Stale deferred-close cleanup: 0 dead files found. No new deferred-close JSON created (null issue_id = dead weight).
+
+Root cause: Stale Analyst agent registration in Paperclip DB (adapter=process, status=error). Cannot delete until Paperclip server recovers. Cron-based Analyst jobs (analyst-weekly-report, analyst-monthly-deepdive) run via Hermes cron and are unaffected — only the Paperclip agent registration is stale.
+
+Recurrence: ~15+ empty wakes today. Will continue until Paperclip recovers and the stale registration is deleted.

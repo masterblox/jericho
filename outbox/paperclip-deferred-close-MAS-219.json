@@ -1,0 +1,12 @@
+{
+  "issue_id": "3f3b1a4f-99ff-4f28-a062-5be167adb0ff",
+  "identifier": "MAS-219",
+  "target_status": "blocked",
+  "reason": "Preflight verification complete. 7 items need Michael + Cloudflare Access gate on memories.express. Agent work done.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-219-preflight-FINAL-2026-07-09.md",
+  "resolved_at": "2026-07-09T19:35:00+04:00",
+  "attempts": 3,
+  "last_wake_run_id": "2a620ffd-1ea3-40c3-a704-df430338af5e",
+  "last_wake_at": "2026-07-09T20:08:00+04:00",
+  "last_wake_reason": "issue_continuation_needed \u2014 Paperclip still down, same preflight state, nothing changed"
+}

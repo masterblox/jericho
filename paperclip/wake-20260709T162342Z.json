@@ -1,0 +1,26 @@
+{
+  "run_id": "8165634b-bae9-4196-8417-a9a038fa8071",
+  "wake_reason": "source_scoped_recovery_action",
+  "issue": "MAS-511",
+  "paperclip_state": "State 4 (fully down, 000 on both Tailscale and localhost)",
+  "timestamp_utc": "2026-07-09T16:23:42Z",
+  "deferred_close_files": [
+    "paperclip-deferred-close-MAS-511.json",
+    "paperclip-close-MAS-511.json"
+  ],
+  "recovery_closer_cron": {
+    "job_id": "8f3e069d48d7",
+    "enabled": true,
+    "schedule": "every 30m",
+    "last_run": "2026-07-09T16:10:01Z",
+    "last_status": "ok"
+  },
+  "fleet_state_delta": {
+    "load": "21.81 (worse from 19.37)",
+    "disk": "88% / 9.7G free (improved from 92% / 5.6G)",
+    "memory_free": "821Mi (worse from 1.7Gi)",
+    "swap": "100% full 2.0Gi/2.0Gi (worse from 75%)",
+    "lsp_zombies_killed": 6
+  },
+  "action": "verified_deferred_close_queue + killed_reinfected_zombies + no_rebuild_needed"
+}

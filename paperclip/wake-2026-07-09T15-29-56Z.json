@@ -1,0 +1,43 @@
+{
+  "run_id": "3c4325c7-0d55-4fa8-8bf0-fcd57cb0071d",
+  "timestamp": "2026-07-09T15:29:56.807575+00:00",
+  "time_dxb": "2026-07-09T19:29:56+04:00",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "paperclip_status": "degraded-auth-deadlock",
+  "health_endpoint": "HTTP 200 (HTTP/1.0)",
+  "auth_endpoints": "timeout (HTTP/1.1)",
+  "task_received": false,
+  "issues_pending": [
+    {
+      "identifier": "MAS-333",
+      "status": "routed_to_DEV",
+      "routed_at": "2026-07-09T10:45:00+04:00",
+      "note": "mis-delivered to Jericho, routed to DEV agent 44c1e448"
+    }
+  ],
+  "deferred_closes_pending": true,
+  "recovery_closer_cron": "active - every 30m",
+  "action": "no_task_received",
+  "fleet_health": {
+    "disk": "overlay          77G   68G  9.0G  89% /",
+    "zombies": 0,
+    "load": "17.09 16.99 18.19 21/799 20362",
+    "gateway_procs": 11,
+    "s6_services": [
+      "dashboard",
+      "gateway-analyst",
+      "gateway-default",
+      "gateway-donald",
+      "gateway-intelligence",
+      "gateway-iris",
+      "gateway-jericho",
+      "gateway-juridico",
+      "gateway-researcher",
+      "main-hermes",
+      "s6-linux-init-shutdownd",
+      "s6rc-fdholder",
+      "s6rc-oneshot-runner"
+    ]
+  },
+  "notes": "Third consecutive Jericho wake today with no task. Paperclip auth deadlock day 3+. Carlos aware. Recovery-closer cron handling deferred closes."
+}

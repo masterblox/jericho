@@ -1,0 +1,117 @@
+INTELLIGENCE SCAN — 2026-07-09 15:15 UTC+4 (Dubai)
+Analyst Agent 23ce64e7 — Paperclip Heartbeat Wake
+Paperclip status: ZOMBIE SOCKET (unavailable for delivery)
+
+═══════════════════════════════════════
+PRIMARY SIGNALS
+═══════════════════════════════════════
+
+[CRITICAL] Paperclip — Zombie Socket on Port 3100
+  Port 3100 (0C1C) is in LISTEN state in /proc/net/tcp but the Paperclip process
+  has died. Raw HTTP/1.0 socket probe times out. Multiple ESTABLISHED and TIME_WAIT
+  connections still present (stale from before crash).
+  This is a CONTAINER-LOCKED situation — no Docker socket, no root, no fuser.
+  Recovery requires HOST-LEVEL intervention: fuser -k 3100/tcp then restart
+  the Paperclip server.
+  Impact: All fleet agents blocked from issue processing. DEV's 98 issues frozen.
+  Jericho cannot receive INTEL reports via Paperclip.
+
+[HIGH] System Load — 19.00 / 19.46 / 19.58 (2 CPUs)
+  Swap at 82% (1.6/2.0 GB used). Load is ~10x normal.
+  Gateway-default SIGTERM'd TWICE in the last hour:
+    - 14:10: loadavg=24.79, s6-supervise killed gateway-default
+    - 14:32: loadavg=18.59, s6-supervise killed gateway-default
+  Pattern: Paperclip recovery → gateway flood → load spike → SIGTERM cascade.
+  If Paperclip recovers, expect another load spike as all gateways flush queued wakes.
+
+[HIGH] Disk — 88% (67G/77G used)
+  Cleaned 1.1GB from safe node_modules this scan:
+    - memories-express-mvp-cp: 1013MB removed
+    - opencode npx cache: 63MB removed
+    - .npm _npx: 52MB removed
+  Moved from 68G→67G. Still 88%. The ~50GB gap between df (67G) and du (~15-20G)
+  is host-level Docker overlay layers. Container-level cleanup won't fix this.
+  Blocker: Host-level "docker system prune -a" or droplet expansion required.
+
+═══════════════════════════════════════
+FLEET HEALTH
+═══════════════════════════════════════
+
+Gateways: CORRECT per consolidated model
+  gateway-default:  UP (pid 178, s6-supervised) — SIGTERM'd 2x in last hour
+  gateway-jericho:  UP (pid 162, s6-supervised)
+  gateway-researcher: down (not started yet) — correct
+  gateway-analyst:    down (not started yet) — correct
+  gateway-iris:       down (not started yet) — correct
+  gateway-donald:     down (not started yet) — correct
+  gateway-intelligence: down (not started yet) — correct
+  gateway-juridico:   down (not started yet) — correct
+
+Donald: Not running — confirmed correct. No orphan process.
+
+MoA: Not running. Connection refused on :8765. Impact LOW — gateways
+  fall back to direct provider calls. Default gateway compression 401
+  errors are MoA-fallback noise, not auth issues.
+
+Cron: Paperclip recovery closer running (deferred closes continue).
+  No new cron anomalies detected.
+
+Bridge: Active. Recent handoffs today (researcher-wake, MAS-319, MAS-334, MAS-512).
+
+Vault: 4 agent memory files modified in last 24h:
+  - Designer/MEMORY.md, Dev/MEMORY.md, PA/USER.md, PA/MEMORY.md
+  Signal: agents updating memory but working in silos.
+
+═══════════════════════════════════════
+ERROR LOG SCAN
+═══════════════════════════════════════
+
+Agent log: Only figma MCP keepalive warnings (cosmetic).
+  No memory overflow events. No 429s. No DNS failures.
+
+Gateway-default: Compression 401 errors (MoA down, harmless).
+  No other errors.
+
+Gateway-jericho: Skill patch notifications (normal operation).
+
+SIGTERM total: 20 (across agent.log history).
+  All from s6-supervise under high load on gateway-default.
+
+═══════════════════════════════════════
+ACTIONS TAKEN THIS SCAN
+═══════════════════════════════════════
+
+1. Killed 2 zombie LSP processes (~679MB freed):
+   - typescript-language-server PID 12821 (0.7% RAM)
+   - typescript-language-server PID 14606 (0.7% RAM)
+
+2. Cleaned safe node_modules (~1.1GB freed):
+   - /opt/data/memories-express-mvp-cp/node_modules (1013MB)
+   - /opt/data/home/.config/opencode/node_modules (63MB)
+   - /opt/data/.npm/_npx (52MB)
+
+3. Disk moved from 68G→67G (88%→88% — marginal, host-level issue)
+
+═══════════════════════════════════════
+RECOMMENDED ACTIONS (for Jericho/Carlos)
+═══════════════════════════════════════
+
+1. [CRITICAL] HOST: Kill zombie port 3100 socket + restart Paperclip server
+   From host: fuser -k 3100/tcp; systemctl restart paperclip (or docker restart)
+
+2. [HIGH] HOST: docker system prune -a (or expand droplet disk)
+   88% disk is from host-level overlay layers, not container.
+
+3. [HIGH] When Paperclip recovers: brace for load spike.
+   Expect gateway-default SIGTERM cascade. Monitor and restart as needed.
+
+4. [MEDIUM] Start MoA service to eliminate compression 401 noise:
+   systemctl start moa (or docker start moa)
+
+5. [LOW] Consider disabling LSP integration to prevent zombie recurrence:
+   hermes config set lsp.enabled false
+
+═══════════════════════════════════════
+Paperclip unavailable — delivered directly on wake transport.
+Next scan will retry Paperclip filing.
+═══════════════════════════════════════

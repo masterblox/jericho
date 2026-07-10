@@ -1,0 +1,8 @@
+{
+  "issue_id": "f326013d-d58f-46a4-a9fb-272e0d6deb09",
+  "identifier": "MAS-336",
+  "target_status": "done",
+  "reason": "Work verified complete on architect-ai origin/main (commit 9cbe09d). All ACs pass: mimo.ts has response_format passthrough, both ask/prompt routes use mimoChat, no raw /chat/completions or llmUrl references remain. Four prior audits falsely declared fabrication — they checked wrong repo. Verified 2026-07-09.",
+  "verified_by": "jericho",
+  "run_id": "81723344-373a-46b7-8323-57f83b16ff5c"
+}

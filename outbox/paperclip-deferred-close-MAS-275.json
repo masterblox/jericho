@@ -1,0 +1,13 @@
+{
+  "issue_id": "218dd40a-00a1-4593-a3d6-c0f9c42f6ab1",
+  "identifier": "MAS-275",
+  "target_status": "done",
+  "reason": "FALSE fabrication detection corrected. Commit 244b9dd on main in memories-express-mvp-cp. Route (126 lines) + tests (341 lines) verified real. Prior run 0d579022 checked wrong repo (architect-ai instead of memories-express-mvp-cp). Third cross-repo false positive (MAS-170, MAS-237, MAS-275). Paperclip down (health=000) — close queued for recovery-closer.",
+  "verified_at": "2026-07-09T18:00:00+04:00",
+  "commit": "244b9ddd13b165130e67fff7c4340c4ce4f0ec8a",
+  "repo": "memories-express-mvp-cp",
+  "files": [
+    "app/api/billing/portal/route.ts",
+    "tests/api/billing/portal.test.ts"
+  ]
+}

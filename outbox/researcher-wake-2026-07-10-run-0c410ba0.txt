@@ -1,0 +1,15 @@
+RESEARCHER EMPTY WAKE — 2026-07-10 ~02:00 DXB
+==============================================
+Run ID: 0c410ba0-a18c-4ba4-9d6a-70ad3de6f41b
+Agent: Researcher (0476ab7a-d00d-43b6-9efe-6f878af61014)
+Paperclip: Stage 1 degraded (health OK, issues timeout)
+Disposition: Empty wake — breadcrumb only. No deferred-close.
+
+DELTA SINCE c53c164f (delta-8, ~16:30 DXB):
+- Paperclip RECOVERED from Stage 4-5 to Stage 1 (health OK, issues still timeout)
+- Cron sub-hourly: intermittent — moves in brief bursts then stalls. Currently stalled ~20 min.
+- Deferred-close backlog: 71 (reduced from 89 reported in delta-8; some files processed during recovery window?)
+- jericho-bcd39e7f non-standard deferred-close: verified valid (MAS-511), NOT dead weight
+- Researcher empty wakes: #8 of this cycle
+
+Report: /opt/data/jericho/reports/fleet-health-snapshot-2026-07-10-DXB-delta-15.md

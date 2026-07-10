@@ -1,0 +1,9 @@
+{
+  "issue_id": "3a798edb-e5a6-4adf-8591-66eee8515de7",
+  "identifier": "MAS-197",
+  "target_status": "done",
+  "reason": "Staging verified deployed (CI green 2026-06-26, 31 tables). Types in sync. Developer projects are self-service per ticket instructions. No code changes needed — the 429 retry had zero work to do.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-197-status-2026-07-09.md",
+  "resolved_at": "2026-07-09T20:00:00+04:00",
+  "attempts": 2
+}

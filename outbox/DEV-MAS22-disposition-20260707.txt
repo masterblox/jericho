@@ -1,0 +1,33 @@
+# MAS-22 Disposition
+**Date:** 2026-07-07  
+**Agent:** Jericho (via DEV consolidated gateway)  
+**Issue:** MAS-197 (Linear MAS-22)  
+**PR:** https://github.com/Mechanica-Labs/memories-express/pull/4
+
+## What Shipped
+
+| Item | Status |
+|---|---|
+| 33 migration files committed + pushed | Done — branch `dev/mas-22-migration-deploy` |
+| types.gen.ts (30 tables, 4 views, 14 functions) | Done — 65KB, in PR |
+| PR to main | Done — #4, open |
+| Staging auto-deploy trigger | Partial — migrations in PR but CI workflow files need workflow-scoped PAT |
+
+## Blockers (2)
+
+1. **CI workflow files unpushed** — `.github/workflows/db-deploy.yml`, `db-ci.yml`, `gen-types.yml`, `supabase-config-deploy.yml` exist on disk but can't be pushed. Token `ghp_aE...` lacks `workflow` scope. Need a PAT with `workflow` scope or a GitHub App token. Without these files on main, the auto-deploy-on-merge won't fire.
+
+2. **No Supabase CLI on VPS** — `supabase link` and `supabase db push` require per-developer machines with `SUPABASE_ACCESS_TOKEN` and personal project refs. This is a dev-machine task, not a CI task. Each developer needs to be told their project ref and given access.
+
+## What Happens After PR Merge
+
+Once both blockers are cleared:
+- PR merges to main → `db-deploy.yml` fires → `deploy-staging` job links to staging project, runs `supabase db push`, seeds pricing data
+- `db-ci.yml` validates migration replay + idempotency
+- Developers run `supabase link --project-ref <ref>` + `supabase db push` on their machines
+
+## Verifiable
+
+- GitHub: PR #4 open with 34 files (+5890 lines)
+- Branch: `dev/mas-22-migration-deploy` based on `carlos/mas-170-marketing-cleanroom`
+- Migrations: 33 SQL files from `init_extensions` through `revoke_credit_grant_redeem`

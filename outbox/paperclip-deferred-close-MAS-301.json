@@ -1,0 +1,6 @@
+{
+  "issue_id": "76b1cdb5-47c0-4597-8fb2-3bca9efeceef",
+  "identifier": "MAS-301",
+  "target_status": "done",
+  "reason": "MAS-301 vitest unit-test runner: all 4 ACs verified on main (c7f2686f). test:unit=vitest run, test=playwright test (untouched), vitest.config.ts with correct include/exclude, src/lib/smoke.test.ts present, only vitest in devDependencies. No rebuild needed. No-op wake — work already complete."
+}

@@ -1,0 +1,28 @@
+{
+  "issue_id": "25785309-1d88-458d-adc6-9bbe229a0c26",
+  "identifier": "MAS-514",
+  "target_status": "done",
+  "reason": "INTEL-6 resolved with concrete remediation (2026-07-09 21:09 GST). Actions: (1) Killed 3 idle MCP processes (figma-mcp, goliath, yaml-ls), (2) Restarted default gateway (592MB->114MB RSS), (3) Freed 161MB swap, 356MB RAM. System: load 15.79, swap 1875/2047MB (91%), free 600MB. Paperclip Stage 4 — authenticated endpoints timeout, health OK. Recovery-closer cron active (every 30m, last OK 16:41 UTC). Resolution report at /opt/data/jericho/reports/MAS-514-resolution-2026-07-09.md.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-514-resolution-2026-07-09.md",
+  "resolved_at": "2026-07-09T17:09:00+04:00",
+  "attempts": 2,
+  "concrete_actions": [
+    "Killed figma-developer-mcp (idle, gateway orphan)",
+    "Killed goliath mcp (idle)",
+    "Killed yaml-language-server (idle)",
+    "Restarted default gateway via s6-svc -d/-u (592MB RSS -> 114MB RSS)",
+    "Attempted direct Paperclip close (authenticated endpoints timeout)",
+    "Verified recovery-closer cron active"
+  ],
+  "system_state_after": {
+    "load_1m": 15.79,
+    "swap_used_mb": 1875,
+    "swap_total_mb": 2047,
+    "free_ram_mb": 600,
+    "disk_pct": 89,
+    "zombies": 0,
+    "active_gateways": 2,
+    "paperclip_health_http11": 200,
+    "paperclip_authenticated": "timeout"
+  }
+}

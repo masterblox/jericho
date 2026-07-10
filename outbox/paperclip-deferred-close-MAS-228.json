@@ -1,0 +1,11 @@
+{
+  "issue_id": "d17b16e7-0333-4e34-869d-f982b4d3e0dc",
+  "issue_identifier": "MAS-228",
+  "title": "MAS-37 - Provide signed-upload endpoint scoped to workgroup",
+  "verdict": "done",
+  "resolution": "shipped",
+  "resolution_note": "Committed Jul 9 2026 via ba7e57f (MAS-305). App Router REST endpoints: POST /api/uploads/sign (169 lines) + POST /api/uploads/confirm (192 lines). Supabase migrations: uploads bucket, is_workgroup_member RPC, upload table. NOTE: prior run fabricated tRPC/PR#34/cf75e83/test claims — verified by Jericho, real implementation is REST routes matching ticket spec. No vitest tests written (gap, but endpoints are functional).",
+  "queued_at": "2026-07-09T16:45:00+04:00",
+  "report_path": "/opt/data/jericho/reports/MAS-228-resolution-2026-07-09.md",
+  "identifier": "MAS-228"
+}

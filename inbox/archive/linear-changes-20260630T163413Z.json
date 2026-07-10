@@ -1,0 +1,105 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-06-30T16:34:13.798720+00:00",
+  "changes": [
+    {
+      "id": "MAS-309",
+      "title": "\ud83e\udde9 Graph-aware room placer \u2014 make adjacencies hold by construction (engine step #3)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-308",
+      "title": "Terraza: Train ML model for budget estimation (XGBoost on real E&O data)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-307",
+      "title": "Terraza: ML training infrastructure \u2014 where does the heavy compute live?",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-306",
+      "title": "\u2705 Shipped this sprint \u2014 bespoke + LLM CAD engine, region budget, landing + persistence scaffold (PRs #38\u2013#51)",
+      "state": "Done",
+      "priority": 0,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-305",
+      "title": "\ud83e\uddea \"Not a party trick\" \u2014 output-trust hardening (budget edges, sections depth, wire persistence)",
+      "state": "Todo",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-304",
+      "title": "\ud83e\udd5a Find the architect-agent config easter egg + Mechanica footer + branding sweep (@cprada ask #2)",
+      "state": "Todo",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-303",
+      "title": "\ud83d\udcb8 LLM floor-plan engine is LIVE \u2014 DeepSeek cost guard + lift adjacency quality",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-302",
+      "title": "\ud83d\uddc2\ufe0f Admin training-data drop \u2014 in-platform AutoCAD/Archicad corpus upload (@cprada ask #1)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-301",
+      "title": "\ud83d\udccd START HERE \u2014 Terraza state of affairs + your India session plan (@cprada)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-300",
+      "title": "Terraza Studio: harden backend render engine for model-conditioned FAL renders",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-299",
+      "title": "Architect AI \u2014 wire the real product loop (AI gen, persistence, auth, exports)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-298",
+      "title": "Wire persistence into the app: projects, user effort, uploads",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-293",
+      "title": "Persistence foundation: Supabase (DB + Storage + self-hosted CI)",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-282",
+      "title": "Terraza: AI architect assistant \u2014 project overview, repo review, and collaboration kickoff",
+      "state": "Done",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    }
+  ],
+  "count": 14
+}

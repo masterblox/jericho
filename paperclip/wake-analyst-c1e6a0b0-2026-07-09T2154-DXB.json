@@ -1,0 +1,11 @@
+{
+  "run_id": "c1e6a0b0-0ab6-4f06-8d01-8af1fe65b352",
+  "agent_id_received": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "timestamp_dxb": "2026-07-09T21:54 DXB",
+  "paperclip_health": "Stage 3 — zombie socket. Port 3100 LISTEN but raw HTTP/1.0 recv times out",
+  "wake_type": "empty — identity block only, no task, no continuation summary",
+  "count_today": "3rd empty Analyst wake (16:09, 20:40, 21:54 DXB)",
+  "action": "breadcrumb only — deferred close already queued from prior wakes",
+  "notes": "Analyst agent 23ce64e7 is stale (status=error, adapter=process). Marked for deletion. Wakes are Paperclip heartbeat pings during outage. No new action needed until Paperclip recovers."
+}

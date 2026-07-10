@@ -1,0 +1,18 @@
+# MAS-351 Disposition — Outbox Handoff
+# 2026-07-07 23:15 UTC
+
+MAS-351 is MOOT. The Paperclip instance was reset between the INTEL-4 scan (19:00 UTC) and this heartbeat execution (~23:15 UTC).
+
+All 4 signals resolved:
+1. DEV 102 blocked → 0 issues (fresh Paperclip)
+2. Researcher crash-loop → Stable 3+ days uptime
+3. Bridge stale → Bridge path doesn't exist in this env
+4. Disk 90% → 39% (different VPS)
+
+Fleet agent registration script: /opt/data/jericho/scripts/register-fleet-agents.sh
+Full report: /opt/data/jericho/reports/MAS-351-disposition-2026-07-07.md
+
+Gateways: all 3 UP and s6-supervised (3d18h uptime)
+New Paperclip: localhost:3100, healthy, 0 issues, only "Default Agent"
+
+Action needed: run register-fleet-agents.sh to re-register Jericho, DEV, Researcher, Analyst, Intelligence agents in the new Paperclip instance.

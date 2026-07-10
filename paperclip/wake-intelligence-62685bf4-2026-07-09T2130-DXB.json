@@ -1,0 +1,9 @@
+{
+  "agent": "intelligence",
+  "agent_id": "f2216417-fe26-4d0e-8836-a27ba0357bcd",
+  "run_id": "62685bf4-3664-4d9d-95c3-6a70877c0309",
+  "timestamp": "2026-07-09T2130-DXB",
+  "paperclip_health": "Stage 4 (no response from /api/health)",
+  "wake_type": "empty \u2014 identity block only, no task content",
+  "disposition": "breadcrumb only \u2014 no task to execute per non-fleet-agent-wakes pattern"
+}

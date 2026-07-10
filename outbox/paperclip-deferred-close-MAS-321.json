@@ -1,0 +1,19 @@
+{
+  "issue_id": "3af6d9af-6c9a-4353-84cc-6102bf04b38e",
+  "identifier": "MAS-321",
+  "target_status": "done",
+  "reason": "Recovery wake: prior run 862d1a12 completed all code changes (commit 9cbe09d) but failed on Paperclip update with HTTP 429. All three files modified per spec: mimo.ts response_format passthrough added, ask/route.ts and prompt/route.ts routed through mimoChat. Zero /chat/completions or llmUrl in either route. Paperclip unreachable (Stage 4) at close time — deferred close queued for recovery-closer cron.",
+  "verified_at": "2026-07-09T22:15:00+04:00",
+  "verification": {
+    "chat_completions_in_ask": 0,
+    "chat_completions_in_prompt": 0,
+    "llmUrl_in_ask": 0,
+    "llmUrl_in_prompt": 0,
+    "mimoChat_imported_both": true,
+    "response_format_in_mimo": "lines 61, 87-88",
+    "response_format_in_prompt": "line 152",
+    "commit": "9cbe09d",
+    "commit_msg": "[MAS-336] Route budget ask/prompt LLM calls through shared mimo client",
+    "git_diff_target_files": "clean"
+  }
+}

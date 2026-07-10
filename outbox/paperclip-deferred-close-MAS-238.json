@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "1a027550-f599-4f35-8f8c-25906a5a41b2",
+  "identifier": "MAS-238",
+  "status": "blocked",
+  "resolution": "Zero work done — prior run hit 429 before any code was written. Needs fresh DEV agent run on architect-ai repo.",
+  "evidence": "/opt/data/jericho/reports/MAS-238-resolution-2026-07-09-1620dxb.md",
+  "queued_at": "2026-07-09T12:20:00Z",
+  "agent": "jericho",
+  "run_id": "8f653cc0-692b-42a5-aaae-dfc80408c753"
+}

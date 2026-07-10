@@ -1,0 +1,9 @@
+{
+  "issue_id": "477f43c6-0e79-4e8b-a4f5-d6c708caea58",
+  "identifier": "MAS-227",
+  "target_status": "done",
+  "reason": "MAS-160 completed May 19 via PR #36 (commit d5d17e2). db-ci.yml: no drift step, only migration smoke + order check. gen-types.yml: workflow_dispatch only. CLAUDE.md: non-prescriptive. Previous run (9ba6aa8e) got 429 rate limit — work was already done.",
+  "resolution_report": "/opt/data/jericho/outbox/MAS-227-resolution.md",
+  "resolved_at": "2026-07-09T15:05:00+04:00",
+  "attempts": 2
+}

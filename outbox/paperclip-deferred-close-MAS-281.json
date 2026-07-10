@@ -1,0 +1,14 @@
+{
+  "issueId": "0578411a-7836-4f22-9442-048cd9781130",
+  "identifier": "MAS-281",
+  "title": "MAS-202 - Send-flow surfaces: UX review + harmonization polish (Pass 2)",
+  "status": "done",
+  "resolution": "PR #105 ([MAS-202] Harmonize send-flow surfaces) squash-merged to main. 11 files, +301/-105 lines covering send wizard (5 files), sends views (4 files), account settings (1 file), and AUTHED-HARMONIZATION.md (new, 162 lines). Work was complete before the prior run hit 429 on Paperclip update.",
+  "resolvedAt": "2026-07-09T19:30:00+04:00",
+  "reportPath": "/opt/data/jericho/reports/MAS-281-resolution-2026-07-09.md",
+  "commitSha": "0316702c21ebdf57dea4311afc7823d19fb77c41",
+  "prNumber": 105,
+  "repo": "Mechanica-Labs/memories-express-mvp-cp",
+  "attempts": 1,
+  "issue_id": "0578411a-7836-4f22-9442-048cd9781130"
+}

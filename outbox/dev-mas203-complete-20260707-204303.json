@@ -1,0 +1,8 @@
+{
+  "to": "DEV",
+  "issue": "MAS-170 (MAS-203)",
+  "status": "done",
+  "timestamp": "2026-07-07T20:43:03.012360+00:00",
+  "summary": "MAS-203 fix complete and merged to main via PR #93 (squash-merge).\n\nThree-part fix:\n1. _actions.ts \u2014 catch TRPCError FORBIDDEN, redirect to /account/designs?error=forbidden\n2. account/page.tsx \u2014 pass canCreate={role !== \"member\"}, hide \"Start a memory\" CTA\n3. account/designs/page.tsx \u2014 hide \"Start a new design\" CTA, show permission alert, adapt empty state\n\nCommit: 8ca3681 on origin/main\nBranch: masterblox/mas-203-member-create-cta-forbidden\nTests: 3 vitest files (DashboardPage, DesignsPage, createDesignAction)\n\nPrevious run failed with transient HTTP 429 \u2014 no code changes needed. Fix was already on branch when this heartbeat ran.",
+  "action_needed": "Mark MAS-170 as done in Paperclip. Cross-agent API writes returned 403."
+}

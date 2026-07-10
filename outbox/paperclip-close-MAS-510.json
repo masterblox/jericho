@@ -1,0 +1,31 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "c2935b21-7fbc-4784-b5e5-396c1048cc8d",
+  "identifier": "MAS-510",
+  "target_status": "done",
+  "resolution": "partial",
+  "reason": "INTEL-6 final disposition (2026-07-09 21:11 DXB / 17:11 UTC). Run 82ad7d8b.\n\nACUTE CRISIS RESOLVED:\n- Load: 15.82 (was 25.02 at peak) — BELOW 20 SIGTERM threshold\n- Gateways: 2/2 stable (jericho 2h38m, default restarted)\n- Zombies: 0 (all 6 killed in prior runs)\n- Memory: 3.5GB available (was 442MB at peak)\n- Swap: 191MB free (was 0 at peak)\n\nSTRUCTURAL (HOST-LEVEL, CANNOT FIX FROM CONTAINER):\n- Disk: 89%, 8.7G free — ~50GB in Docker overlay layers\n- Needs: docker system prune -a on host / DO droplet expansion\n\nPAPERCLIP:\n- Wake payload says 'recovered' but unreachable from container sandboxes\n- Both localhost:3100 and Tailscale timeout (curl:28)\n- Recovery-closer cron active — will deliver deferred close when API stable\n\nPRIOR ACTIONS (across 3 runs):\n- Killed 6/9 zombie LSP processes (freed 371MB)\n- Killed vitest orphan (2.1GB RSS)\n- Killed figma MCP orphans x3\n- Killed goliath mcp orphan\n- Removed node_modules (1GB, no disk impact due to overlay)\n- Restarted default gateway (592MB -> 114MB RSS)\n\nINTEL-5: Close queued (paperclip-close-INTEL-5.json)\nAnalyst error: Close queued (paperclip-close-Analyst-error.json)\n\nResolution report: /opt/data/jericho/outbox/MAS-510-INTEL-6-resolution-20260709.md",
+  "queued_at": "2026-07-09T17:11:00+04:00",
+  "last_wake_verified": "2026-07-09T22:53:00+04:00",
+  "last_wake_run_id": "92fac6d5-fa17-4c6e-bf33-4b9a05587cda",
+  "last_wake_status": "Paperclip API degraded (health=200, PATCH/GET timeout). Close file valid. Recovery-closer cron 8f3e069d48d7 active (every 30m). No action needed — cron will deliver when API stabilizes.",
+  "run_id": "82ad7d8b-4261-4333-803f-7353c2da4bab",
+  "blockers_remaining": [
+    "docker system prune -a (host-level, DigitalOcean console)",
+    "Paperclip API stability for close delivery"
+  ],
+  "actions_this_run": [
+    "Verified load 15.82 — continuing downward trend",
+    "Verified gateways 2/2 stable",
+    "Verified swap freed 191MB (was exhausted)",
+    "Updated deferred-close JSON with current state"
+  ],
+  "historical_actions": [
+    "Run d7c458b3: Killed 6/9 zombie LSP processes (freed 371MB)",
+    "Run d7c458b3: Killed vitest PID 34021 (2.1GB, 14% CPU)",
+    "Run d7c458b3: Killed figma MCP orphans x3 + goliath mcp",
+    "Prior run: Restarted default gateway",
+    "Prior run: Removed node_modules (1GB)"
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "issue_id": "db464a57-b680-47ff-b8a1-f485e43ade69",
+  "identifier": "MAS-322",
+  "title": "MAS-333 - 18 — Consolidate the `parseProjectBrief` parser family behind `computeEstimate`",
+  "run_id": "be159fca-ae8b-4611-89be-184c01b2df2a",
+  "agent_id": "44c1e448-9e44-4b1f-928e-b07ec04df0fe",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "disposition": "in_review",
+  "reason": "Parser consolidation guard test written + Engine-C deferral documented. Ticket-14 regression noted (computeEstimate not wired). Tests untested (blocked on ticket 01 vitest-harness). Commit: 83c1e2a on dev/mas-322-parser-consolidation.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-322-resolution-2026-07-09.md",
+  "paperclip_payload": {
+    "status": "in_review",
+    "comment": "### MAS-322 — Parser consolidation: done, in review\n\n**Commit:** 83c1e2a on `dev/mas-322-parser-consolidation`\n\n**What shipped:**\n- Guard test: `src/lib/budget/__tests__/parser-consolidation.test.ts` — enforces one-parser invariant + route-import guard\n- Architecture doc: `docs/budget/ARCHITECTURE.md` — Engine-C deferral paragraph added\n\n**Verified (unchanged):**\n- `conversational-parse.ts` — byte-for-byte same\n- `conversational.ts`, `prompt-intent.ts` — byte-for-byte same\n- `/api/pocket`, `/api/cad` — both import from canonical module\n\n**Blockers:**\n- Ticket-14 regression: both routes still call `calculateBudget` directly (not `computeEstimate`). `estimate.ts` does not exist. Filed for ticket-14 follow-up.\n- Tests cannot run: no vitest (blocked on ticket 01), no node_modules on VPS.\n\n**Full report:** see run log."
+  },
+  "queued_at": "2026-07-09T13:50:00+04:00",
+  "attempts": 0,
+  "max_attempts": 10
+}

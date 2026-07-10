@@ -1,0 +1,13 @@
+{
+  "issue_id": "2413dfd8-22d3-4ffe-ad9c-1bc1a2cee893",
+  "issue_identifier": "MAS-240",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "agent_id": "44c1e448-9e44-4b1f-928e-b07ec04df0fe",
+  "target_status": "done",
+  "resolution": "DONE \u2014 superseded by MAS-239 (Railway migration). The Vercel branch model decision was rendered moot when the project migrated to Railway. promote-to-prod.yml is retired; deploy uses provision-railway.yml / deploy-railway.yml. See architecture doc and resolution report at /opt/data/jericho/reports/MAS-240-resolution-2026-07-09.md.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-240-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T14:25:00Z",
+  "queued_by_run": "bff0e87d-e9e9-4fb5-9927-34c0fd5f4aa2",
+  "attempts": 1,
+  "identifier": "MAS-240"
+}

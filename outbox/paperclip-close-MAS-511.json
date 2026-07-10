@@ -1,0 +1,10 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "3f953dbc-3508-40e3-8303-f12d9431bd79",
+  "identifier": "MAS-511",
+  "target_status": "done",
+  "reason": "INTEL-7 scan complete: disk 93%→88% (4GB freed), zombies killed, memory stable. Paperclip auth key is health-only (401 on mutations) — recovery cron will close when key scope upgrades.",
+  "queued_at": "2026-07-09T14:46:00Z",
+  "report": "/opt/data/jericho/reports/MAS-511-resolution-2026-07-09-1445.md"
+}

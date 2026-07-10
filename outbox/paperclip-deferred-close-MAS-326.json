@@ -1,0 +1,13 @@
+{
+  "issue_id": "4c9067e8-c52f-484a-aa4d-448ee42d9dd1",
+  "identifier": "MAS-326",
+  "target_status": "done",
+  "reason": "resolveConstructionTax helper complete. Introduced on feat/vitest-runner at 304a08bf, cherry-picked to main via 1f3b1eb (MAS-332). 2 files: resolveConstructionTax.ts (66 lines) + resolveConstructionTax.test.ts (125 lines). 7 tests cover all ACs. Consumed by global-calc.ts:55. Paperclip Stage 4 (health timeout 120s).",
+  "resolution_report": "/opt/data/jericho/reports/MAS-326-wake-resolution-2026-07-09-2300dxb.md",
+  "resolved_at": "2026-07-09T23:00:00+04:00",
+  "attempts": 2,
+  "commit": "1f3b1ebdbebff3cb61e3cde1650f280b6b10dfe0",
+  "branch": "main",
+  "agent": "DEV",
+  "run_id": "06e74da1-7c5e-4fbd-a78d-25d0221593b4"
+}

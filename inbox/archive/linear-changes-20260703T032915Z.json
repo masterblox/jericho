@@ -1,0 +1,14 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-03T03:29:15.371631+00:00",
+  "changes": [
+    {
+      "id": "MAS-310",
+      "title": "Terraza MVP: 4 gaps to close before launch",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    }
+  ],
+  "count": 1
+}

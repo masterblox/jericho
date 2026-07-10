@@ -1,0 +1,10 @@
+{
+  "issue_id": "9d03f170-0c1f-4694-b855-ee75fae53e9e",
+  "identifier": "MAS-334",
+  "target_status": "in_review",
+  "reason": "All 7 work items verified on dev/mas-343-bypass-budget-screen (866b5c2a). Migration, POST+GET API routes, BudgetPageClient hydration+Share, pgTAP — all present and correct. Branch ready for PR once GitHub OAuth is restored. Paperclip unreachable — deferred close.",
+  "reported_at": "2026-07-10T16:00:00+04:00",
+  "repo": "architect-ai",
+  "branch": "dev/mas-343-bypass-budget-screen",
+  "commit": "866b5c2a8fd8dd36192163d56dea62d0cd3f2850"
+}

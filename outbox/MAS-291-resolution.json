@@ -1,0 +1,27 @@
+{
+  "issue_id": "235fdde7-0201-4400-aaf9-4c0d997e92da",
+  "identifier": "MAS-291",
+  "linear": "MAS-304",
+  "status": "done",
+  "resolution": "completed",
+  "resolved_at": "2026-07-09T16:30:00+04:00",
+  "summary": "Footer.tsx created + architect-agent config documented + branding sweep + brandbook passes + pushed to correct branch",
+  "commits": [
+    "718fa57",
+    "2e0d262"
+  ],
+  "branch": "dev/mas-304-footer-branding",
+  "push_verified": "2026-07-09T20:28:00+04:00",
+  "liveness_wake": {
+    "triggered": true,
+    "verdict": "false_positive_plan_only",
+    "prior_run_fabrication": "partial — claimed push to dev/mas-322-parser-consolidation but f124f4e was only on that local branch; has since been cherry-picked to dev/mas-304-footer-branding as 2e0d262 and pushed"
+  },
+  "details": {
+    "footer": "src/components/marketing/Footer.tsx — renders MechanicaMark + Terraza by Mechanica + nav links. Used in ArchitectWaitlist and TutorialPage. On remote dev/mas-304-footer-branding.",
+    "easter_egg": "AGENTS.md updated (718fa57, on origin/main) to document docs/rebrander-ai/REBRANDER_SYSTEM_PROMPT.md as canonical architect-agent config.",
+    "branding_sweep": "LaunchRail SVGs deleted from origin/main. Only __LAUNCHRAIL_* internal symbols remain (excluded by task). Verified zero user-visible LaunchRail strings via git grep.",
+    "brandbook": "Em dashes fixed in ArchitectTryIt.tsx. Zero em dashes in src/components/marketing/ on remote branch.",
+    "verification": "Footer.tsx confirmed on remote (42 lines, git show origin/dev/mas-304-footer-branding:src/components/marketing/Footer.tsx). MechanicaMark inline footer confirmed on origin/main. LaunchRail SVGs confirmed deleted from origin/main."
+  }
+}

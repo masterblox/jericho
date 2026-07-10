@@ -1,0 +1,4 @@
+RESEARCHER WAKE 2026-07-09 19:29 DXB
+Paperclip Stage 4 (fully down)
+Idle wake — no scan needed. 11 reports already written today.
+Top signals: Hermes v0.18.2, Omnigent, SkillCenter, ADE Framework, Hierarchical Memory

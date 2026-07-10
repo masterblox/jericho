@@ -1,0 +1,6 @@
+{
+  "issue_id": "32c4e5c2-08b2-445f-8a9e-662b9a715328",
+  "identifier": "MAS-173",
+  "target_status": "done",
+  "reason": "Work completed by @lofimichael via PR #48 (commit d936874 on main, memories-express-mvp-cp). 5 files, ~2,500 lines across CLI money-math suite + Playwright happy-path spec. All verified present on disk. Agent wake (946d6d5f) crashed on 429 rate limit before discovering work was already done."
+}

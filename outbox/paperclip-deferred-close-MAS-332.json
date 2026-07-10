@@ -1,0 +1,6 @@
+{
+  "issue_id": "1054dc18-669e-4954-bf88-c7a1eea6dcda",
+  "identifier": "MAS-332",
+  "target_status": "done",
+  "reason": "Fixed vatRate=0 regression in global-calc.ts:57 — wired to resolveConstructionTax(region)?.rate ?? 0. All 23 per-region tests pass green across 6 regions (dubai, lisbon, london, mumbai, bangalore, nyc). Commit 1f3b1eb on origin/main. Cross-repo false positive #4 — prior run checked memories-express instead of architect-ai."
+}

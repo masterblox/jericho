@@ -1,0 +1,9 @@
+{
+  "source": "deepseek-cost-watcher",
+  "timestamp": "2026-06-27T23:44:20Z",
+  "date": "2026-06-27",
+  "calls_approx": 9297,
+  "tokens_input": 0,
+  "tokens_output": 0,
+  "cost_usd": 0.0
+}

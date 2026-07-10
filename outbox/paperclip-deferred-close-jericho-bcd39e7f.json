@@ -1,0 +1,9 @@
+{
+  "issue_id": "3f953dbc-3508-40e3-8303-f12d9431bd79",
+  "identifier": "MAS-511",
+  "target_status": "done",
+  "reason": "INTEL scan complete \u2014 fleet assessed. Paperclip DOWN (Stage 5). Load 16.9, swap 90%, disk 89%. Figma orphan killed. Both gateways running. Deferred close \u2014 recovery closer will apply when Paperclip returns.",
+  "run_id": "bcd39e7f-90b5-4d57-9b1f-7522cc996ba1",
+  "timestamp": "2026-07-09T17:21:40Z",
+  "report_file": "jericho-wake-bcd39e7f-resolution.md"
+}

@@ -1,0 +1,35 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-02T06:08:03.220477+00:00",
+  "changes": [
+    {
+      "id": "MAS-310",
+      "title": "Terraza MVP: 4 gaps to close before launch",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-303",
+      "title": "\ud83d\udcb8 LLM floor-plan engine is LIVE \u2014 DeepSeek cost guard + lift adjacency quality",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-302",
+      "title": "\ud83d\uddc2\ufe0f Admin training-data drop \u2014 in-platform AutoCAD/Archicad corpus upload (@cprada ask #1)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-301",
+      "title": "\ud83d\udccd START HERE \u2014 Terraza state of affairs + your India session plan (@cprada)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    }
+  ],
+  "count": 4
+}

@@ -1,0 +1,112 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-06-29T01:10:42.183087+00:00",
+  "changes": [
+    {
+      "id": "MAS-300",
+      "title": "Terraza Studio: harden backend render engine for model-conditioned FAL renders",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-299",
+      "title": "Architect AI \u2014 wire the real product loop (AI gen, persistence, auth, exports)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-298",
+      "title": "Wire persistence into the app: projects, user effort, uploads",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-297",
+      "title": "Harden + extend the schema for real product data (inputs, runs, geometry, deliverable UPDATE RLS)",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-293",
+      "title": "Persistence foundation: Supabase (DB + Storage + self-hosted CI)",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-292",
+      "title": "Create Mechanica-Labs/skills repo (master dump of Carlos's skills) + extract the prominent frontend ones for the rebrander",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-291",
+      "title": "Ship rebrander V0: merge #35 + set the LLM provider key on Vercel + smoke-test the live loop",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-282",
+      "title": "Terraza: AI architect assistant \u2014 project overview, repo review, and collaboration kickoff",
+      "state": "Done",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-279",
+      "title": "End-to-end verification harness: Playwright Tier-0 suite + Tier 1/2 manual checklist",
+      "state": "In Progress",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-278",
+      "title": "Optional: Cloudflare Workers AI generation backend behind a provider switch",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-268",
+      "title": "Ship Tier 0 as a stateless host + Dockerfile/deploy cleanup",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-266",
+      "title": "Console UI: collapse to a single describe \u2192 stream flow (useLaunchRail + MainContent)",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-264",
+      "title": "Epic: Simplify LaunchRail \u2192 stateless HTML generator (preview \u00b7 download \u00b7 BYO deploy)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-261",
+      "title": "LaunchRail split-brain: marketing on Vercel, platform orphaned on droplet (no TLS, demo mode)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-136",
+      "title": "Decisions doc \u2014 Phase 5 AI provider, budget, prompt structure (gatekeeper)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    }
+  ],
+  "count": 15
+}

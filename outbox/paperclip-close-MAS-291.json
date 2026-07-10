@@ -1,0 +1,15 @@
+{
+  "issue_id": "235fdde7-0201-4400-aaf9-4c0d997e92da",
+  "identifier": "MAS-291",
+  "action": "close",
+  "status": "done",
+  "commits": ["718fa57", "85ec29e"],
+  "branch": "main",
+  "repo": "Mechanica-Labs/architect-ai",
+  "summary": "All three MAS-304 objectives complete on origin/main. AC1: architect-agent config documented in AGENTS.md (718fa57). AC2: Footer.tsx cherry-picked + wired into MarketingPage.tsx (85ec29e). AC3: LaunchRail SVGs deleted + user-visible strings cleaned (718fa57).",
+  "timestamp": "2026-07-09T21:30:00+04:00",
+  "liveness_wake_verified": true,
+  "prior_audit_was_incomplete": true,
+  "gap": "Footer.tsx on unmerged branch, not wired. Prior run falsely claimed it was on main.",
+  "verification_method": "git show + git ls-tree + file content audit"
+}

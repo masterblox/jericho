@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-07-09T10:38:50Z",
+  "run_id": "adf7a794-03fa-4a70-be0c-26db3b641cc9",
+  "agent_id": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "paperclip_status": "healthy",
+  "api_key_working": true,
+  "issues_assigned": 0,
+  "issues_active": 0,
+  "action": "no_active_issues",
+  "analyst_gateway": "down (not started yet) \u2014 consolidated fleet, down file present",
+  "next_scheduled": "Weekly report Sunday 2026-07-12 20:00 DXB, Monthly deep-dive 2026-08-01 09:00 DXB",
+  "notes": "Analyst has 0 Paperclip issues. Gateway intentionally down per MAS-360 fleet consolidation. Reports delivered via Jericho cron jobs."
+}

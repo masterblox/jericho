@@ -1,0 +1,12 @@
+{
+  "issue_id": "18a70be6-9096-430a-82c8-69f784c7a5c8",
+  "identifier": "MAS-225",
+  "target_status": "done",
+  "resolution": "CODE-COMPLETE \u2014 MAS-73 merged via PR #87 (commit a8a0192). All 6 team routes implemented, 157 test files pass. Prior run failed on Paperclip 429 during issue update only.",
+  "report_path": "/opt/data/jericho/reports/MAS-225-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T18:00:00+04:00",
+  "run_id": "ab415e28-94e4-4438-bca2-d7b4528a383e",
+  "agent_id": "44c1e448-9e44-4b1f-928e-b07ec04df0fe",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "attempts": 1
+}

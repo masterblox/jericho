@@ -1,0 +1,11 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "9114a17b-d074-4df5-8f55-04ec0301c6e9",
+  "identifier": "MAS-46",
+  "target_status": "done",
+  "reason": "MAS-189 /account/settings \u2014 DONE (commit d88f60e, May 31 2026). All 5 section components + page.tsx + goodbye page on origin/main. 96 tests passing (39 profile.test.ts + 57 e2e + pgTAP). This is retry #3 of transient_failure_retry \u2014 the original agent completed all work then hit HTTP 429 on Paperclip update. Previous retry (run 9635a2b2) wrote resolution report. Current retry (run 2dc3f249) confirms zero diff vs origin/main on account/settings files. Paperclip Stage 5 auth-deadlock \u2014 all authenticated endpoints timeout. Deferred close queued for recovery cron.",
+  "queued_at": "2026-07-09T19:45:00+04:00",
+  "report": "/opt/data/jericho/reports/MAS-46-resolution-2026-07-09.md",
+  "attempts": 1
+}

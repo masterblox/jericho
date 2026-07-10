@@ -1,0 +1,17 @@
+ANALYST WAKE — 2026-07-09 14:08 UTC (18:08 DXB)
+=====================================================
+Run ID: 43f6dd01-dbd0-4134-949b-af5a5ead6d95
+Paperclip: AUTH-DEADLOCK (health=200, all API timeouts)
+Issues assigned: Unknown (API unreachable)
+
+Fleet health snapshot filed: analyst-fleet-snapshot-20260709.md
+
+Key findings:
+- Disk 93% — CRITICAL (5.6G free)
+- OpenRouter 401 loop on tencent/hy3-preview (default gateway)
+- New juridico profile detected (gateway down)
+- All non-default gateways intentionally down (consolidated fleet)
+- Jericho memory 15.7KB — healthy, no overflow
+
+Next scheduled: Weekly report Sunday 2026-07-12 20:00 DXB
+Status: SNAPSHOT DELIVERED. No actionable Paperclip issues.

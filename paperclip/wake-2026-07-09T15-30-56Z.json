@@ -1,0 +1,21 @@
+{
+  "run_id": "f243fe85-89b2-4903-b474-4b548462d13d",
+  "timestamp": "2026-07-09T15:30:56+00:00",
+  "time_dxb": "2026-07-09T19:30:56+04:00",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "paperclip_status": "degraded-auth-deadlock",
+  "health_endpoint": "HTTP 200",
+  "auth_endpoints": "timeout (10s+)",
+  "wake_reason": "finish_successful_run_handoff",
+  "task_received": false,
+  "fleet_health": {
+    "disk": "89%",
+    "zombies": 0,
+    "load": "16.55",
+    "gateway_procs": 0,
+    "s6_jericho": "up",
+    "s6_default": "up"
+  },
+  "action": "no_task_received",
+  "notes": "4th consecutive no-task wake today. Paperclip auth deadlock day 3+. Fleet health stable. No regressions. Recovery-closer cron handling deferred closes."
+}

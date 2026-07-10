@@ -1,0 +1,19 @@
+{
+  "timestamp": "2026-07-09T15:59:21.230649",
+  "run_id": "1d02ffbf-4b33-4533-9ce1-8be2869ee2c3",
+  "agent": "DEV",
+  "issue": "MAS-14",
+  "linear_ticket": "MAS-247",
+  "title": "Editor: let users name/rename a design (inline title in canvas chrome)",
+  "disposition": "done",
+  "summary": "All code implemented and committed. Previous run (e905e888) failed on gateway 429. Vitest: 69/69 passed including 9 rename tests. Implementation: templates.rename mutation (trim/cap/scope), CanvasChrome inline title editing, designs list renders d.name.",
+  "files": [
+    "lib/trpc/routers/templates.ts",
+    "app/(authed)/account/designs/[id]/_components/CanvasChrome.tsx",
+    "app/(authed)/account/designs/page.tsx",
+    "tests/lib/trpc/routers/templates.test.ts",
+    "tests/app/designs/CanvasChrome.test.tsx",
+    "tests/e2e/editor-compose-ux.spec.ts"
+  ],
+  "paperclip_status": "down \u2014 deferred close queued"
+}

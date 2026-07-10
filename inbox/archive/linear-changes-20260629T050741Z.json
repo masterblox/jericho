@@ -1,0 +1,154 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-06-29T05:07:41.927220+00:00",
+  "changes": [
+    {
+      "id": "MAS-306",
+      "title": "\u2705 Shipped this sprint \u2014 bespoke + LLM CAD engine, region budget, landing + persistence scaffold (PRs #38\u2013#51)",
+      "state": "Done",
+      "priority": 0,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-305",
+      "title": "\ud83e\uddea \"Not a party trick\" \u2014 output-trust hardening (budget edges, sections depth, wire persistence)",
+      "state": "Todo",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-304",
+      "title": "\ud83e\udd5a Find the architect-agent config easter egg + Mechanica footer + branding sweep (@cprada ask #2)",
+      "state": "Todo",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-303",
+      "title": "\ud83d\udcb8 LLM floor-plan engine is LIVE \u2014 DeepSeek cost guard + lift adjacency quality",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-302",
+      "title": "\ud83d\uddc2\ufe0f Admin training-data drop \u2014 in-platform AutoCAD/Archicad corpus upload (@cprada ask #1)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-301",
+      "title": "\ud83d\udccd START HERE \u2014 Terraza state of affairs + your India session plan (@cprada)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-300",
+      "title": "Terraza Studio: harden backend render engine for model-conditioned FAL renders",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-299",
+      "title": "Architect AI \u2014 wire the real product loop (AI gen, persistence, auth, exports)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-298",
+      "title": "Wire persistence into the app: projects, user effort, uploads",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-297",
+      "title": "Harden + extend the schema for real product data (inputs, runs, geometry, deliverable UPDATE RLS)",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-293",
+      "title": "Persistence foundation: Supabase (DB + Storage + self-hosted CI)",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-292",
+      "title": "Create Mechanica-Labs/skills repo (master dump of Carlos's skills) + extract the prominent frontend ones for the rebrander",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-291",
+      "title": "Ship rebrander V0: merge #35 + set the LLM provider key on Vercel + smoke-test the live loop",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-282",
+      "title": "Terraza: AI architect assistant \u2014 project overview, repo review, and collaboration kickoff",
+      "state": "Done",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-279",
+      "title": "End-to-end verification harness: Playwright Tier-0 suite + Tier 1/2 manual checklist",
+      "state": "In Progress",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-278",
+      "title": "Optional: Cloudflare Workers AI generation backend behind a provider switch",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-268",
+      "title": "Ship Tier 0 as a stateless host + Dockerfile/deploy cleanup",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-266",
+      "title": "Console UI: collapse to a single describe \u2192 stream flow (useLaunchRail + MainContent)",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-264",
+      "title": "Epic: Simplify LaunchRail \u2192 stateless HTML generator (preview \u00b7 download \u00b7 BYO deploy)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-261",
+      "title": "LaunchRail split-brain: marketing on Vercel, platform orphaned on droplet (no TLS, demo mode)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-136",
+      "title": "Decisions doc \u2014 Phase 5 AI provider, budget, prompt structure (gatekeeper)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    }
+  ],
+  "count": 21
+}

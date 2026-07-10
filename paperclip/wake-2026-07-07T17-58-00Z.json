@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-07-07T17:58:00Z",
+  "run_id": "e74ca051-3d1c-4178-af9d-12a52849c1ee",
+  "agent_id": "0476ab7a-d00d-43b6-9efe-6f878af61014",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "paperclip_status": "healthy",
+  "api_key_working": false,
+  "api_key_error": "401 Unauthorized on all scoped endpoints",
+  "issues_active": 0,
+  "action": "no_task_received",
+  "notes": "Wake received with no task. PAPERCLIP_API_KEY (jer_...) returns 401. Researcher gateway was crash-looping; restarted via s6-svc -u. All known issues marked done."
+}

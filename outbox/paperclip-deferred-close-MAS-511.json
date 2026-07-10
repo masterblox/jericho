@@ -1,0 +1,16 @@
+{
+  "issue_id": "3f953dbc-3508-40e3-8303-f12d9431bd79",
+  "identifier": "MAS-511",
+  "target_status": "done",
+  "reason": "INTEL-7: All resource alarms cleared (load 0.00, disk 26%, mem 5.9Gi avail, swap 0%). Fleet stable. Zombie LSP cleaned (1.8GB), disk freed (1.65GB). Prior 7 runs all confirmed same result. Deferred close created 2026-07-09 run d8a3f2.",
+  "resolution_report": "/opt/data/jericho/outbox/MAS-511-wake7-resolution.md",
+  "resolved_at": "2026-07-09T18:45:00+00:00",
+  "commit": null,
+  "branch": null,
+  "exhausted_paths": [
+    "Paperclip API GET timeout",
+    "Paperclip API PATCH timeout",
+    "Prior 7 agent runs all confirmed fleet healthy, close impossible due to Paperclip Stage 3-4"
+  ],
+  "attempts": 8
+}

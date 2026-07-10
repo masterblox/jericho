@@ -1,0 +1,8 @@
+{
+  "issue_id": "f86bdb4e-fda0-4ebb-b72b-27b7902b171a",
+  "identifier": "MAS-246",
+  "target_status": "done",
+  "reason": "Audit confirms zero Better-auth references in source on origin/main. Work already completed \u2014 likely by MAS-25. Prior run failed on 429 (gateway rate limit), not on actual work. No further action needed.",
+  "resolved_at": "2026-07-09T16:06:53.347854Z",
+  "agent": "jericho"
+}

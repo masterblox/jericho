@@ -1,0 +1,13 @@
+{
+  "issue_id": "3f421426-6db7-4840-8997-614d2212c96f",
+  "identifier": "MAS-305",
+  "target_status": "done",
+  "reason": "regionalExtras removed from types.ts and all region files (lisbon, london, dubai, mumbai, nyc). grep -rn regionalExtras src returns zero matches. Commit on origin/main at 4b5dad21. Verified 2026-07-10 by Jericho source_scoped_recovery_action wake audit.",
+  "repo": "architect-ai",
+  "commit": "4b5dad21",
+  "branch": "main",
+  "wake_run_id": "26c5ff44-c185-44bc-aa2b-01fe5022a2cb",
+  "verified_at": "2026-07-10T02:30:00+04:00",
+  "verified_by": "jericho",
+  "notes": "Prior run 1bf57d3d completed the work and claimed to update deferred-close JSON but file was never created. Created now."
+}

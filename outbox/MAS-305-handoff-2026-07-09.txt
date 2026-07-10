@@ -1,0 +1,15 @@
+MAS-305 RESOLVED — 2026-07-09 23:13 DXB
+
+Paperclip wake: issue_continuation_needed
+Prior run 3898db19 claimed done (commit 1670479 on dev/mas-300-3d-render-pipeline), but branch was never merged.
+
+What happened:
+- Work existed only on side branch, not main
+- Applied regionalExtras removal to main: types.ts + 6 region files + global-calc.ts
+- Committed as 4b5dad2: "MAS-305: Remove deprecated regionalExtras field"
+- grep -rn regionalExtras src/ = ZERO matches
+- Deferred-close JSON updated at /opt/data/jericho/outbox/paperclip-deferred-close-MAS-305.json
+- Recovery closer cron 8f3e069d48d7 active (every 30m)
+- Paperclip Stage 4 (down), PATCH will apply on recovery
+
+Report: /opt/data/jericho/reports/MAS-305-resolution-2026-07-09.md

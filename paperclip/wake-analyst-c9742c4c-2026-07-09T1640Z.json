@@ -1,0 +1,14 @@
+{
+  "run_id": "c9742c4c-d587-4238-acdf-ea65a5dd7370",
+  "timestamp": "2026-07-09T16:40:00Z",
+  "time_dxb": "2026-07-09T20:40:00+04:00",
+  "agent_id_received": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "agent_id_actual": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "paperclip_status": "State 4 — HTTP 000, fully dead",
+  "wake_reason": "identity_block_only",
+  "task_received": false,
+  "count_today": "7th empty wake (10:38, 13:30, 15:29, 15:30, 15:40, 19:47, 20:40 DXB)",
+  "issue": null,
+  "action": "no_task_received — deferred close queued",
+  "notes": "Analyst agent (23ce64e7) is stale: status=error, adapter=process. Marked for deletion in paperclip-reset-recovery.md. Cannot delete until Paperclip server recovers from State 4."
+}

@@ -1,0 +1,13 @@
+{
+  "action": "close",
+  "issue_id": "602e733a-b07e-4d9e-9c9f-4a4ddb48405f",
+  "identifier": "MAS-304",
+  "target_status": "done",
+  "reason": "MAS-304/MAS-317 fixed in commit d3e49af on origin/main. resolveProviderConfig(env) exported as pure function in src/lib/config.ts. 15 unit tests in src/lib/config.test.ts — all 4 ACs verified. Paperclip unreachable (health timeout) — recovery closer will deliver when it recovers.",
+  "evidence": "/opt/data/jericho/reports/MAS-304-resolution-2026-07-09-1824dxb.md",
+  "resolved_at": "2026-07-09T21:00:00+04:00",
+  "agent": "DEV",
+  "run_id": "bbe9d7f8-35e9-4b23-a947-101138fc9b33",
+  "actual_commit": "d3e49af70cf5adbbbb59e36224edc3637a1d548a",
+  "tests": "55 passed (5 files), config.test.ts: 15/15"
+}

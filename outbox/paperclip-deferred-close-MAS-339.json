@@ -1,0 +1,19 @@
+{
+  "issue_id": "dbb742c0-a2b8-4ed1-9f1d-239363916dc6",
+  "identifier": "MAS-339",
+  "target_status": "in_review",
+  "reason": "MAS-339 complete. Created currency.ts/format.ts, replaced en-US formatCurrency with locale-aware money() in BudgetPageClient. 9/9 vitest tests passing. Commit 1a76e3a on dev/mas-339-locale-money-formatting. Ready for PR review. Paperclip unreachable — deferred close from recovery wake.",
+  "run_id": "83648989-95fd-41d5-bcb1-289a3ffc1c6f",
+  "timestamp": "2026-07-09T16:45:00+04:00",
+  "evidence": {
+    "commit": "1a76e3a",
+    "branch": "dev/mas-339-locale-money-formatting",
+    "tests": "9 passed, 0 failed",
+    "files": [
+      "lib/budget/currency.ts",
+      "lib/budget/format.ts",
+      "app/budget/BudgetPageClient.tsx",
+      "tests/lib/budget/format.test.ts"
+    ]
+  }
+}

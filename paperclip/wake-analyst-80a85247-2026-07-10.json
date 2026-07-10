@@ -1,0 +1,11 @@
+{
+  "run_id": "80a85247-dd16-4749-900d-b1323eff75b3",
+  "agent_id": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "agent_name": "Analyst",
+  "type": "empty-identity-block-wake",
+  "disposition": "disposed",
+  "handled_by": "jericho",
+  "timestamp_utc": "2026-07-10",
+  "paperclip_health": "ok",
+  "notes": "No task content, no issue_reference. Empty wake from stale Agent registration."
+}

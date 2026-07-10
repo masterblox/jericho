@@ -1,0 +1,10 @@
+{
+  "action": "close",
+  "issue_id": "d1c02d17-5cd9-43a2-bba9-bc85e608193c",
+  "identifier": "MAS-313",
+  "target_status": "done",
+  "reason": "Work verified on architect-ai origin/main. resolveProviderConfig exported, config.test.ts 155 lines/15 tests, LLM_PROFILE fixed to report selected provider. Commit d3e49af cherry-picked to main (ancestor of HEAD 4b5dad21).",
+  "resolution_report": "/opt/data/jericho/reports/MAS-313-wake-2026-07-09-2300dxb.md",
+  "resolved_at": "2026-07-09T23:00:00+04:00",
+  "run_id": "281981f0-0f3b-45b7-a4cd-367767e6d9be"
+}

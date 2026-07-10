@@ -1,0 +1,13 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "45c273a9-4fc1-48bb-903a-f2acbc037c6e",
+  "identifier": "MAS-507",
+  "target_status": "done",
+  "resolution": "productive",
+  "reason": "High churn on MAS-503 was infrastructure-driven (container restart loop + Paperclip zombie socket), not agent inefficiency. Each run was a legitimate fleet state verification. MAS-503 completed successfully. 12 runs over 6h, $0.00 cost. Close as productive — pattern was expected given the infrastructure instability on 2026-07-09.",
+  "queued_at": "2026-07-09T18:00:00+04:00",
+  "report": "/opt/data/jericho/reports/MAS-507-resolution-2026-07-09.md",
+  "source_issue": "MAS-503",
+  "source_issue_status": "done"
+}

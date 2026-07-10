@@ -1,0 +1,9 @@
+{
+  "issue_id": "d17b16e7-0333-4e34-869d-f982b4d3e0dc",
+  "issue_identifier": "MAS-228",
+  "target_status": "done",
+  "resolution": "COMPLETE \u2014 no rebuild. Feature fully implemented and merged to main via PR #34 (cf75e83). Consolidated-gateway ECONNREFUSED wake \u2014 DEV gateway doesn't exist as service post-fleet consolidation. All files on origin/main: lib/trpc/routers/uploads.ts, lib/uploads/constants.ts, lib/services/storage/signedUrl.ts, vitest tests, pgTAP tests.",
+  "report_path": "/opt/data/jericho/reports/MAS-228-resolution-2026-07-09T18-00-00.md",
+  "queued_at": "2026-07-09T18:00:00+04:00",
+  "identifier": "MAS-228"
+}

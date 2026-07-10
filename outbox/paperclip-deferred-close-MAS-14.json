@@ -1,0 +1,9 @@
+{
+  "action": "close",
+  "issue_id": "96d1bbb6-51b2-4984-87f5-74244a7a1104",
+  "identifier": "MAS-14",
+  "disposition": "done",
+  "reason": "Implementation complete \u2014 69/69 vitest passing. Backend rename mutation + CanvasChrome inline title + designs list. Previous run failed on gateway 429.",
+  "run_id": "1d02ffbf-4b33-4533-9ce1-8be2869ee2c3",
+  "queued_at": "2026-07-09T15:58:00Z"
+}

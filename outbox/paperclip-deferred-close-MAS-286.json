@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "5a6f55f5-4d29-4965-ab84-59e7b715fee4",
+  "identifier": "MAS-286",
+  "target_status": "done",
+  "reason": "MAS-286/MAS-33 work completed May 23. Plus plan wired end-to-end on main: seed-stripe-products.ts has plus entry (public=true, soft-launch complete), webhook.ts has inline grantCredits via handleInvoicePaid, billing/page.tsx surfaces plan with eq(kind=plan, slug=plus, public=true). 6 test files present covering webhook, checkout, billing, return-status, and e2e flows. Resolved via Paperclip recovery wake audit 2026-07-10 DXB.",
+  "evidence": "/opt/data/jericho/reports/MAS-286-resolution-2026-07-10-dxb.md",
+  "resolved_at": "2026-07-10T00:00:00+04:00",
+  "agent": "DEV",
+  "run_id": "09cce8ef-1ebe-4b14-b59b-08d91c0ea0e3"
+}

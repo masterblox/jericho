@@ -1,0 +1,10 @@
+{
+  "issue_id": "0b86376e-764b-4f30-807b-5df41ea4e5f5",
+  "identifier": "MAS-201",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "target_status": "done",
+  "resolution": "Code complete \u2014 merged to main via PR #27 on 2026-05-15. Transient failure retry (429). All 5 scope items verified on disk. Resolution report: /opt/data/jericho/reports/MAS-201-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T14:30:00+04:00",
+  "queued_by": "jericho (transient_failure_retry verification)",
+  "attempts": 1
+}

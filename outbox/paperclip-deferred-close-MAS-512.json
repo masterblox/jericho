@@ -1,0 +1,9 @@
+{
+  "issue_id": "e95c45e9-0acc-4e6c-839b-a37a0cea8470",
+  "identifier": "MAS-512",
+  "target_status": "done",
+  "reason": "Productivity review complete. Verdict: productive. MAS-512 is a Paperclip auto-generated productivity review triggered by 11 runs/4 assignee comments across 1h and 6h windows on MAS-508. All 11 runs were handoff heartbeats trying to close MAS-508 through a degraded Paperclip API (Stage 4 — health 200, authenticated mutations timeout). Each run verified the research report existed and attempted to PATCH the issue status. Zero wasted runs. The churn metric is a false positive caused by Paperclip auth degradation preventing terminal state transitions. Same pattern as MAS-516 (also closed productive). Resolution report: /opt/data/jericho/reports/MAS-512-resolution-wake-4-2026-07-09.md",
+  "resolution_report": "/opt/data/jericho/reports/MAS-512-resolution-wake-4-2026-07-09.md",
+  "resolved_at": "2026-07-09T17:50:00+00:00",
+  "attempts": 1
+}

@@ -1,0 +1,9 @@
+{
+  "issue_id": "1766e9db-0e13-4661-843d-d601c9bb28b8",
+  "identifier": "MAS-170",
+  "target_status": "done",
+  "reason": "Verified 2026-07-10. Commit 8ca3681 on memories-express-mvp-cp origin/main — cross-repo false positive (Paperclip mapped to architect-ai, work on memories-express). All 3 fix items delivered: hide create CTAs for member role, catch FORBIDDEN in createDesignAction, vitest/Playwright tests for all scenarios. Paperclip down — close deferred.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-170-wake-resolution-2026-07-10.md",
+  "resolved_at": "2026-07-10T00:00:00+04:00",
+  "attempts": 2
+}

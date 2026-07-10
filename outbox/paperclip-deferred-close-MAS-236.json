@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "20f9dc81-eb11-490b-96b0-c1f441792b7e",
+  "identifier": "MAS-236",
+  "status": "done",
+  "resolution": "PR #74 created. 12 files, +641 lines. Workgroup switcher complete.",
+  "evidence": "/opt/data/jericho/reports/MAS-236-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T19:00:00Z",
+  "agent": "DEV",
+  "run_id": "56034479-a14d-426f-8aa5-a40bb694dd60"
+}

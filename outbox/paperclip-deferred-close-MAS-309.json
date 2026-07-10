@@ -1,0 +1,11 @@
+{
+  "issue_id": "e0524274-1d62-4512-b1a9-3f97896bb03f",
+  "identifier": "MAS-309",
+  "target_status": "done",
+  "reason": "VERIFIED 2026-07-10: ci.yml line 32 has `npm run test:unit` on origin/main (commit c7f2686). Work landed via cross-ticket path — MAS-314 CI commit (87c2c2e 'ci: add npm run test:unit step to build job') was bundled into main commits, then propagated through 4b5dad21 (MAS-305 cherry-pick) to c7f2686. All 4 ACs pass: grep match at line 32, existing steps unchanged, YAML valid, build/database jobs intact. Branch dev/mas-309-vitest-ci is redundant — work already on main via different commit chain. Paperclip State 2 (health=ok but PATCH hangs — auth middleware deadlock). Recovery closer cron (8f3e069d48d7) active every 30m.",
+  "commit": "c7f2686",
+  "branch": "main",
+  "closed_at": "2026-07-10T00:00:00Z",
+  "last_run_id": "7b9ac225-0c65-4f1c-b1c6-bc5b061acd30",
+  "paperclip_state": "State 2 — health=ok, bootstrap=ready, authenticated PATCH hangs (auth middleware deadlock)"
+}

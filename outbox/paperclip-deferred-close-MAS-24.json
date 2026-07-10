@@ -1,0 +1,6 @@
+{
+  "issue_id": "6935b842-19c1-431e-94b1-d48f9a649c9a",
+  "identifier": "MAS-24",
+  "target_status": "done",
+  "reason": "MAS-216 work already merged as PR #122 (commit b921125, 2026-06-02). All four changes (sized base, crop removal, chrome cleanup, mobile gate) are on main. 34 vitest tests pass (config 22, export 9, gate 3) + Playwright E2E exists. Prior run af6570e5 was a 429/no-op — the work was complete before it fired. Paperclip unreachable (timeout), applying deferred close."
+}

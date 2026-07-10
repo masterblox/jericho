@@ -1,0 +1,21 @@
+{
+  "issue_id": "d8140eb8-9570-4347-80c3-f7ae2910e8cf",
+  "identifier": "MAS-195",
+  "target_status": "done",
+  "reason": "PR #219 (c6c0496) squash-merged to main. Recovery wake from run 2a48330e confirmed all files on origin/main.",
+  "pr_url": "https://github.com/Mechanica-Labs/memories-express-mvp-cp/pull/219",
+  "merge_commit": "c6c04963626c96a1e646249902bafbf2da6c76fa",
+  "resolution": {
+    "summary": "Signed me_return_path cookie wired into billing checkout/return flow. 4 files: return-cookie.ts (HMAC-SHA256), return-cookie.test.ts (10 cases), return-status.ts (cookie-first + metadata fallback), checkout/route.ts (set cookie after Stripe session).",
+    "files": [
+      "lib/services/stripe/return-cookie.ts",
+      "tests/lib/services/stripe/return-cookie.test.ts",
+      "lib/services/stripe/return-status.ts",
+      "app/api/billing/checkout/route.ts"
+    ],
+    "ci": "lint+typecheck+build passed, send-flow e2e passed, stripe checkout e2e passed"
+  },
+  "queued_at": "2026-07-09T16:00:00+04:00",
+  "run_id": "27a21d24-29ad-4d2b-9a1c-38cd11f729ed",
+  "retry_count": 1
+}

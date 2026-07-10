@@ -1,0 +1,13 @@
+{
+  "action": "close",
+  "issue_id": "9ab0251d-e09d-48fc-9ba8-89ed4e257090",
+  "identifier": "MAS-317",
+  "status": "done",
+  "resolution": "CROSS-REPO: Work on memories-express-mvp-cp main (commit d822829c), not architect-ai. All 7 files verified: calc.ts (factory), pdf.ts (region-aware), excel.ts (currency numFmt), types.ts, export/route.ts (POST handler), calc.test.ts (13 tests), budget-export.spec.ts (Playwright E2E). Cross-repo false positive #5.",
+  "evidence": "/opt/data/jericho/reports/MAS-317-correction-2026-07-10.md",
+  "queued_at": "2026-07-10T00:30:00+04:00",
+  "agent": "Jericho",
+  "run_id": "618d73a6-9d1d-423e-9dc6-17eabebdd89f",
+  "repo": "memories-express-mvp-cp",
+  "commit": "d822829c4ee23433c663bd22a3bad3442fc8eeca"
+}

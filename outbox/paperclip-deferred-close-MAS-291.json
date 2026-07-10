@@ -1,0 +1,14 @@
+{
+  "issue_id": "235fdde7-0201-4400-aaf9-4c0d997e92da",
+  "identifier": "MAS-291",
+  "action": "close",
+  "status": "done",
+  "commits": ["718fa57", "85ec29e"],
+  "repo": "Mechanica-Labs/architect-ai",
+  "summary": "MAS-304 fully resolved. AC1: architect-agent config documented in AGENTS.md (718fa57 on main). AC2: Footer.tsx created + wired into MarketingPage.tsx (85ec29e on main — cherry-picked from dev/mas-304-footer-branding, wired import+render). AC3: LaunchRail SVGs deleted from origin/main, user-visible strings cleaned in Waitlist/TutorialPage.",
+  "timestamp": "2026-07-09T21:30:00+04:00",
+  "liveness_wake_verified": true,
+  "prior_audit_was_incomplete": true,
+  "gap_found": "Footer.tsx existed on branch dev/mas-304-footer-branding but was never merged to main and never wired into MarketingPage.tsx. Prior audit incorrectly claimed it existed on main HEAD. Cherry-picked component + wired import/render, committed as 85ec29e.",
+  "verification": "Footer.tsx renders MechanicaMark + ArchitectMark + 'by' + 'Terraza by Mechanica' copyright + nav links from architect-content. MarketingPage.tsx imports Footer and renders <Footer footer={copy.footer} /> after </main>."
+}

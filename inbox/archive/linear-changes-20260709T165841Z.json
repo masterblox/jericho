@@ -1,0 +1,42 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-09T16:58:41.586068+00:00",
+  "changes": [
+    {
+      "id": "MAS-332",
+      "title": "19 \u2014 Route budget ask/prompt LLM calls through the shared mimo client",
+      "state": "Done",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-330",
+      "title": "17 \u2014 Budget persistence: budget table + /api/budgets on the plan pattern",
+      "state": "In Review",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-316",
+      "title": "04 \u2014 resolveConstructionTax helper over region.legal.taxes",
+      "state": "Done",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-314",
+      "title": "01 \u2014 Stand up the vitest unit-test runner",
+      "state": "Done",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-305",
+      "title": "\ud83e\uddea \"Not a party trick\" \u2014 output-trust hardening (budget edges, sections depth, wire persistence)",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    }
+  ],
+  "count": 5
+}

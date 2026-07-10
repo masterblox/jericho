@@ -1,0 +1,13 @@
+{
+  "issue_id": "1fbddace-1d5f-4d17-b096-076b532b7a7b",
+  "issue_identifier": "MAS-263",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "agent_id": "44c1e448-9e44-4b1f-928e-b07ec04df0fe",
+  "target_status": "done",
+  "resolution": "DONE (duplicate of MAS-47) \u2014 all 7 files on origin/main, zero diff. zod parser (sendDraft.ts) with parseSendDraft, DiscardDraftButton, 10 vitest tests, pgTAP place_order_clears_send_draft, Playwright draft-hydrate test in send-wizard.spec.ts. All edge cases covered: refresh recovery, schema drift safety (zod safeParse), clear on success, discard button, last-writer-wins cross-tab, server-side hydration for tab restore. This is retry #2 of transient_failure_retry (prior run a1d1999e hit 429, current run ffccd9f8 hit 429 \u2014 both were transient Paperclip update failures, not build failures). Paperclip Stage 4 full crash \u2014 deferred close queued for recovery cron.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-263-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T15:35:00+04:00",
+  "queued_by_run": "ee9958f6-7c1a-409c-a593-c81a1a1c20d6",
+  "attempts": 1,
+  "identifier": "MAS-263"
+}

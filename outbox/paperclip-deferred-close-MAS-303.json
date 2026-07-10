@@ -1,0 +1,9 @@
+{
+  "issue_id": "58cc71f2-3210-4fda-9f08-ae60854e1011",
+  "identifier": "MAS-303",
+  "target_status": "done",
+  "reason": "resolveConstructionTax helper (MAS-316) verified on origin/main via commit 1f3b1eb (MAS-332 cherry-pick that bundled resolveConstructionTax). Both files present: src/lib/budget/resolveConstructionTax.ts (66 lines), src/lib/budget/resolveConstructionTax.test.ts (125 lines). All acceptance criteria met. Branch-unmerged false positive corrected — original commit 304a08b was on feat/vitest-runner, brought to main via 1f3b1eb.",
+  "resolved_at": "2026-07-09T17:52:00Z",
+  "commit": "1f3b1ebdbebff3cb61e3cde1650f280b6b10dfe0",
+  "branch": "main"
+}

@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "9bb9a8a5-af74-47ab-b869-8393b9ee8209",
+  "identifier": "MAS-65",
+  "target_status": "blocked",
+  "reason": "Secrets provisioning blocked on Michael (owner-only). Code infrastructure complete on main. Stale prose cleanup done. DEV gateway decommissioned (consolidated fleet). Full audit at /opt/data/jericho/reports/MAS-65-resolution-2026-07-10.md",
+  "resolved_at": "2026-07-10T15:30:00Z",
+  "agent": "Jericho",
+  "run_id": "847c489f-8fa8-4a80-934b-25bc5515a637",
+  "evidence": "/opt/data/jericho/reports/MAS-65-resolution-2026-07-10.md"
+}

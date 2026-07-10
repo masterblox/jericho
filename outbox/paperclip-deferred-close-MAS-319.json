@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "c6a4dcff-d576-4b1f-90d1-d7b6909efcbd",
+  "identifier": "MAS-319",
+  "status": "in_review",
+  "resolution": "Work complete: all 7 files on dev/mas-330-budget-persistence branch, pushed to origin, PR #71 created. Budget table migration, POST/GET /api/budgets, BudgetPageClient hydration + Share button, Estimate type, pgTAP extension all present.",
+  "evidence": "/opt/data/jericho/reports/MAS-319-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T16:10:00+04:00",
+  "agent": "Jericho",
+  "run_id": "ca392009-8a2f-482a-a1a9-b2235e0c2df3"
+}

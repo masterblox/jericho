@@ -1,0 +1,13 @@
+{
+  "issue_id": "MAS-343",
+  "identifier": "MAS-343",
+  "target_status": "done",
+  "reason": "Implemented BudgetScreen bypass: changed useArchitectWorkspace.ts line 433 to stop auto-switching to budget tab after budget command runs. Users now stay on Plans view instead of being forced to BudgetView. Change verified — no other auto-switch references in codebase. BudgetView still accessible via manual tab navigation. Local branch: dev/mas-343-bypass-budget-screen (commit 11d2b127). Push to GitHub pending — OAuth token needs refresh.",
+  "agent_id": "20cb56be",
+  "run_id": "d0370599-c714-42a2-8b6c-130fe470605d",
+  "resolved_at": "2026-07-10T17:40:00Z",
+  "source_scoped": true,
+  "paperclip_status": "unreachable",
+  "pending_git": true,
+  "pending_git_detail": "Commit 11d2b127 on branch dev/mas-343-bypass-budget-screen ready but push to origin failed — GitHub OAuth authentication. Token in .git/config may be expired. Branch and commit exist locally at /opt/data/repos/architect-ai."
+}

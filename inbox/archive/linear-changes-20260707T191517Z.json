@@ -1,0 +1,14 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-07T19:15:17.828233+00:00",
+  "changes": [
+    {
+      "id": "MAS-336",
+      "title": "Review: Investment plan (INVESTMENT_PLAN.md) + engineering gap analysis (MANPOWER.md)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    }
+  ],
+  "count": 1
+}

@@ -1,0 +1,3 @@
+**Night Watch**
+- Disk: 94% used (4GB free)
+- Zombie LSP: 4 processes, 1049MB: PID 33320 (04:24:26), PID 52112 (03:43:51), PID 52143 (03:43:49), PID 52144 (03:43:49)

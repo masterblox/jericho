@@ -1,0 +1,15 @@
+{
+  "to": "DEV",
+  "from": "jericho",
+  "type": "paperclip_wake_handoff",
+  "issue": "MAS-327",
+  "title": "MAS-318 - 07 — Remove the deprecated regionalExtras field",
+  "status": "blocked",
+  "repo": "architect-ai",
+  "reason": "Guard condition unmet: 06 (planner-trust-fix) not merged to main. buildRegionalExtras still consumes regionalExtras in global-calc.ts:41,143.",
+  "blocker_issue": "MAS-318 sub-ticket 06 (planner-trust-fix)",
+  "paperclip_stage": 4,
+  "deferred_close": "/opt/data/jericho/outbox/paperclip-deferred-close-MAS-327.json",
+  "timestamp": "2026-07-09T18:00:00Z",
+  "note": "Wake misdelivered to Jericho. Budget module is in architect-ai repo (not memories-express-mvp-cp). Check architect-ai origin/main for 06 merge before unblocking."
+}

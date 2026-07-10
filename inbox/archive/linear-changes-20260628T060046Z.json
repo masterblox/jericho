@@ -1,0 +1,259 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-06-28T06:00:46.231988+00:00",
+  "changes": [
+    {
+      "id": "MAS-298",
+      "title": "Wire persistence into the app: projects, user effort, uploads",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-297",
+      "title": "Harden + extend the schema for real product data (inputs, runs, geometry, deliverable UPDATE RLS)",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-296",
+      "title": "pgTAP test harness on self-hosted runners (RLS, triggers, constraints)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-295",
+      "title": "Self-hosted CI: validate migrations on PRs, auto-deploy on merge",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-294",
+      "title": "Initialize Supabase: link project, config.toml, local dev + seed",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-293",
+      "title": "Persistence foundation: Supabase (DB + Storage + self-hosted CI) for Forma",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-292",
+      "title": "Create Mechanica-Labs/skills repo (master dump of Carlos's skills) + extract the prominent frontend ones for the rebrander",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-291",
+      "title": "Ship rebrander V0: merge #35 + set the LLM provider key on Vercel + smoke-test the live loop",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-290",
+      "title": "\"Think like Carlos\" taste eval harness: prove rebrand outputs clear the design bar",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-289",
+      "title": "Reframe narrative + console front door from \"describe an app\" to \"rebrand your live site\"",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-288",
+      "title": "Auto-walkthrough screen recording with LLM auto-feedback (Recordly-style)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-287",
+      "title": "Remotion before/after video output of the rebranded site",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-286",
+      "title": "Rebrand mode: apply the rebrander brain to an ingested live site (content-faithful, design-layer only)",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-285",
+      "title": "Cloudflare-sign-in-first onboarding: authenticate + use the user's own Pages site as the on-ramp",
+      "state": "In Progress",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-284",
+      "title": "Live-site ingestion: POST /api/ingest fetches + extracts a user's existing site as a rebrand target",
+      "state": "In Review",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-283",
+      "title": "Wire voice-to-text (STT) into Architect AI platform",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-282",
+      "title": "Forma: AI architect assistant \u2014 project overview, repo review, and collaboration kickoff",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-281",
+      "title": "Wire rebrander engine: design-lanes \u2192 deriveSpec \u2192 tokenized HTML + LLM prompt injection",
+      "state": "In Progress",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-280",
+      "title": "Review: Master Skills + Rebrander AI corpus (37 skills, 4 lanes, 5 gates)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-279",
+      "title": "End-to-end verification harness: Playwright Tier-0 suite + Tier 1/2 manual checklist",
+      "state": "In Progress",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-278",
+      "title": "Optional: Cloudflare Workers AI generation backend behind a provider switch",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-277",
+      "title": "Marketing site: rewrite copy + logos from droplet factory to the stateless 3-tier model",
+      "state": "In Review",
+      "priority": 3,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-276",
+      "title": "Tier 2 domains: pick a *.pages.dev subdomain + attach a custom domain",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-275",
+      "title": "Tier 2 auth: Connect Cloudflare via self-managed OAuth (spike-gated)",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-274",
+      "title": "Tier 2 (later): BYO-deploy handoff to the user's own Cloudflare Pages",
+      "state": "Done",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-272",
+      "title": "Take-it-home: client-side Download + optional share link + demand instrumentation",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-270",
+      "title": "Generator: emit ONE self-contained HTML document (prompt + offline template + sanitizer + stage taxonomy)",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-268",
+      "title": "Ship Tier 0 as a stateless host + Dockerfile/deploy cleanup",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-266",
+      "title": "Console UI: collapse to a single describe \u2192 stream flow (useLaunchRail + MainContent)",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-264",
+      "title": "Epic: Simplify LaunchRail \u2192 stateless HTML generator (preview \u00b7 download \u00b7 BYO deploy)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-262",
+      "title": "Architecture decision: deploy to users' own Cloudflare Pages accounts vs Kamal + DigitalOcean droplets",
+      "state": "Done",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-261",
+      "title": "LaunchRail split-brain: marketing on Vercel, platform orphaned on droplet (no TLS, demo mode)",
+      "state": "Backlog",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-136",
+      "title": "Decisions doc \u2014 Phase 5 AI provider, budget, prompt structure (gatekeeper)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-85",
+      "title": "Run the production happy-path smoke test",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-82",
+      "title": "Write operator, deployment, and handover documentation",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-81",
+      "title": "Burn down the Week 6 punchlist before handover",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    }
+  ],
+  "count": 36
+}

@@ -1,0 +1,11 @@
+{
+  "issue_id": "12bb2049-c55a-4497-9e74-15c6725fcfda",
+  "identifier": "MAS-15",
+  "target_status": "done",
+  "reason": "Work completed in commit e991708 on origin/main. All 4 acceptance criteria verified on disk. Prior run bf224a53 failed with 429 rate limit before doing any work \u2014 but work was already merged.",
+  "commit": "e991708",
+  "branch": "main",
+  "files_changed": 6,
+  "run_id": "f985dee3-ed1b-43a7-935d-2e4c51846c1e",
+  "verified_at": "2026-07-09T16:47:16Z"
+}

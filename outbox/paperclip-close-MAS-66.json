@@ -1,0 +1,12 @@
+{
+  "issue_id": "4e0eb5c3-b5d8-4371-844a-b3c4928b5003",
+  "identifier": "MAS-66",
+  "agent_id": "44c1e448-9e44-4b1f-928e-b07ec04df0fe",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "run_id": "263f690b-4fbd-4964-bb56-b056003d517b",
+  "target_status": "done",
+  "resolution": "MAS-145 (Vercel branch model decision) superseded by MAS-239 (Railway deployment). No code changes needed. Three doc fixes applied to memories-express-mvp-cp: 00-summary.md line 117 (main production -> main deployed to Railway), 04-agent-conventions.md lines 55 and 458 (removed stale production branch references). MAS-145 canceled in Linear with reason: Superseded by MAS-239 — production deploys via Railway, not Vercel branch promotion.",
+  "closed_at": "2026-07-09T15:30:00+04:00",
+  "deferred": true,
+  "deferred_reason": "Paperclip auth middleware deadlocked (health=200, PATCH /api/issues/{id} timeout HTTP 000). Close queued for recovery closer cron."
+}

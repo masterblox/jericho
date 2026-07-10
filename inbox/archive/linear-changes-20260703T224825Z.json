@@ -1,0 +1,42 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-03T22:48:25.658350+00:00",
+  "changes": [
+    {
+      "id": "MAS-313",
+      "title": "3D render pipeline \u2014 load glb, apply lighting rig, render image",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-311",
+      "title": "\ud83d\udcd0 Gap 1: Custom floor plans from prompt \u2014 LLM room program \u2192 real CAD output",
+      "state": "Todo",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-312",
+      "title": "\ud83d\udd17 Gap 3: End-to-end flow \u2014 prompt \u2192 Q&A \u2192 floor plan \u2192 budget \u2192 render \u2192 export",
+      "state": "Todo",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-310",
+      "title": "Terraza MVP: 4 gaps to close before launch",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-300",
+      "title": "Terraza Studio: harden backend render engine for model-conditioned FAL renders",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    }
+  ],
+  "count": 5
+}

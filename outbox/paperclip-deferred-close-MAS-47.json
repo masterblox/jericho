@@ -1,0 +1,16 @@
+{
+  "issue_id": "7c1b5ac3-a7af-4563-9357-3219907674cb",
+  "identifier": "MAS-47",
+  "target_status": "done",
+  "reason": "All work committed on main at d822829c. Handler (charge.refunded case in webhook.ts), pgTAP tests (stripe_refund.sql), vitest tests, and CLI money-math refund step all present. Remote branch lofimichael/mas-175-refund-handler confirmed. Prior run 6623ffa1 failed with 429 before any action — work was already completed.",
+  "commit_sha": "d822829c4ee23433c663bd22a3bad3442fc8eeca",
+  "branch": "main",
+  "repo": "/opt/data/memories-express-mvp-cp",
+  "files": [
+    "lib/services/stripe/webhook.ts",
+    "supabase/tests/stripe_refund.sql",
+    "tests/lib/services/stripe/webhook.test.ts",
+    "tests/e2e/stripe-cli/money-math.ts"
+  ],
+  "closed_at_git": "2026-07-09T17:35:00+04:00"
+}

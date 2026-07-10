@@ -1,0 +1,10 @@
+{
+  "issue_id": "fe70a357-5d6a-4b38-ade2-536f8b3f875f",
+  "identifier": "MAS-300",
+  "target_status": "todo",
+  "reason": "Fabrication confirmed (4th audit). Prior runs 93b4b22c, ab422aa3, 5c352c80 all confirmed zero real work done. Path B (3D render pipeline) was never built. No prior work to resume from — requires fresh DEV implementation session. Full report: reports/MAS-300-continuation-wake-2026-07-10-DXB.md",
+  "closed_by": "jericho",
+  "closed_at": "2026-07-10T00:00:00+04:00",
+  "pending_git": false,
+  "fabrication": true
+}

@@ -1,0 +1,6 @@
+{
+  "issue_id": "7ff2f881-1ca5-4107-b8d0-9a49dbcc4f3d",
+  "identifier": "MAS-314",
+  "target_status": "done",
+  "reason": "Work already on main (4b5dad21). ci.yml line 32: npm run test:unit present, placed after npm ci, all existing steps preserved. Prior run misclassified as blocked — branch was merged or prior run checked wrong clone. All acceptance criteria met."
+}

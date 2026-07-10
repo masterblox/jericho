@@ -1,0 +1,217 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-04T19:08:37.089308+00:00",
+  "changes": [
+    {
+      "id": "MAS-335",
+      "title": "22 \u2014 Web-assisted material-comparison lever authoring",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": null
+    },
+    {
+      "id": "MAS-334",
+      "title": "21 \u2014 Runtime market sanity-check band on /budget",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": null
+    },
+    {
+      "id": "MAS-333",
+      "title": "18 \u2014 Consolidate the `parseProjectBrief` parser family behind `computeEstimate`",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-332",
+      "title": "19 \u2014 Route budget ask/prompt LLM calls through the shared mimo client",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-331",
+      "title": "20 \u2014 Build-time rate/statutory/benchmark refresh workflow",
+      "state": "Backlog",
+      "priority": 4,
+      "assignee": null
+    },
+    {
+      "id": "MAS-330",
+      "title": "17 \u2014 Budget persistence: budget table + /api/budgets on the plan pattern",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-329",
+      "title": "16 \u2014 Repoint marketing ArchitectBudget to computeEstimate; delete dead BudgetScreen",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-328",
+      "title": "15 \u2014 Make /api/budget/export currency/locale-aware for region Estimates",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-327",
+      "title": "14 \u2014 Wire /pocket + /api/pocket to computeEstimate; delete PocketBudgetCard inline totals",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-326",
+      "title": "13 \u2014 Wire /budget to computeEstimate: OptionCards + LeverPanel + VAT line + method badge",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-325",
+      "title": "11 \u2014 Engine-B per-region correctness test suite",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-324",
+      "title": "10 \u2014 Compose planner + optimizer + option-giver inside computeEstimate",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-323",
+      "title": "09 \u2014 options.ts: buildOptions across tiers + value-engineered scenario",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-322",
+      "title": "12 \u2014 Run vitest unit tests in CI",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-321",
+      "title": "06 \u2014 Planner trust fix: real VAT, neighborhood aliases, seismic multiplier, drop regionalExtras",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-320",
+      "title": "03 \u2014 Canonical Estimate/Lever/Option types + pass-through seam",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-319",
+      "title": "08 \u2014 optimizer.ts: applyLevers over a Lever[]",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": null
+    },
+    {
+      "id": "MAS-318",
+      "title": "07 \u2014 Remove the deprecated regionalExtras field",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-317",
+      "title": "02 \u2014 Fix LLM provider resolution in config.ts",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-316",
+      "title": "04 \u2014 resolveConstructionTax helper over region.legal.taxes",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-315",
+      "title": "05 \u2014 Thread meta.currency/meta.locale through money formatting",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-314",
+      "title": "01 \u2014 Stand up the vitest unit-test runner",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": null
+    },
+    {
+      "id": "MAS-313",
+      "title": "3D render pipeline \u2014 load glb, apply lighting rig, render image",
+      "state": "Canceled",
+      "priority": 3,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-311",
+      "title": "\ud83d\udcd0 Gap 1: Custom floor plans from prompt \u2014 LLM room program \u2192 real CAD output",
+      "state": "Canceled",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-312",
+      "title": "\ud83d\udd17 Gap 3: End-to-end flow \u2014 prompt \u2192 Q&A \u2192 floor plan \u2192 budget \u2192 render \u2192 export",
+      "state": "Canceled",
+      "priority": 1,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-310",
+      "title": "Terraza MVP: 4 gaps to close before launch",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-309",
+      "title": "\ud83e\udde9 Graph-aware room placer \u2014 make adjacencies hold by construction (engine step #3)",
+      "state": "Canceled",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-308",
+      "title": "Terraza: Train ML model for budget estimation (XGBoost on real E&O data)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-305",
+      "title": "\ud83e\uddea \"Not a party trick\" \u2014 output-trust hardening (budget edges, sections depth, wire persistence)",
+      "state": "Todo",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-300",
+      "title": "Terraza Studio: harden backend render engine for model-conditioned FAL renders",
+      "state": "Canceled",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    }
+  ],
+  "count": 30
+}

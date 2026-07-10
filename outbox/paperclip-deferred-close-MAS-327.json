@@ -1,0 +1,9 @@
+{
+  "issue_id": "236dfe63-f545-4dca-a98e-687bccf60b9a",
+  "identifier": "MAS-327",
+  "target_status": "done",
+  "reason": "Blocker cleared. 06 (planner-trust-fix) merged to architect-ai main between 718fa57 and 4b5dad21. Verified: zero regionalExtras references in src/. global-calc.ts has no buildRegionalExtras. types.ts docstring line 8 already rephrased. All 6 region files clean. grep -rn regionalExtras src returns 0 matches. Work complete — no code changes needed.",
+  "run_id": "c124f51f-99d2-4af0-92aa-5b48806bada5",
+  "resolved_by": "jericho",
+  "timestamp": "2026-07-10T00:00:00Z"
+}

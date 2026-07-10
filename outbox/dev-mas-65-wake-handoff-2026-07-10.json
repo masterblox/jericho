@@ -1,0 +1,22 @@
+{
+  "to": "DEV",
+  "issue": "MAS-65 (MAS-206 - PostGrid live-account validation)",
+  "paperclip_issue_id": "9bb9a8a5-af74-47ab-b869-8393b9ee8209",
+  "disposition": "BLOCKED",
+  "blocker": "Michael must provision PostGrid test account secrets (POSTGRID_API_KEY, POSTGRID_WEBHOOK_SECRET, POSTGRID_FROM_ADDRESS_ID, back-template ID) in Vercel preview + GHA _STAGING",
+  "whats_done": [
+    "All 16 PostGrid files on origin/main (services, webhook, e2e CLI, Playwright, Vitest, pgTAP, CI, docs)",
+    "CI workflow postgrid-e2e.yml exists with credential-detection gate",
+    "Stale prose cleanup (UNVERIFIED/5-stage → verified 4-stage)",
+    "Env vars documented in .env.example"
+  ],
+  "whats_next_after_unblock": [
+    "Trigger postgrid-e2e.yml against live test account",
+    "Walk submit → progressions → webhooks → DB asserts",
+    "Confirm postcard JSON field names, webhook signature, status enum, size/back-template, name-split, too_late cancel",
+    "Decide delivery-failure path (wire print_status=failed or document as intentionally dead)"
+  ],
+  "head_commit": "d822829c4ee23433c663bd22a3bad3442fc8eeca",
+  "resolution_report": "/opt/data/jericho/reports/MAS-65-resolution-2026-07-10.md",
+  "timestamp": "2026-07-10T15:30:00Z"
+}

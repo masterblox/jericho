@@ -1,0 +1,25 @@
+ANALYST WAKE RESOLUTION — Run 53d872ce
+==========================================
+Time: 2026-07-09T21:09 DXB
+Paperclip health: ok (HTTP 200)
+Paperclip API: auth_timeout (PATCH times out, GET /health works)
+Recovery-closer: active (every 30m, last ok)
+
+Findings:
+- Empty identity-block wake — no task content, no issue reference
+- This is wake ~10 today from stale Analyst agent (23ce64e7)
+- Agent status: error, adapter: process (stale/broken)
+- 4 accumulated deferred-close files — ALL invalid (no real issue UUID)
+- Recovery-closer can't process: requires valid issue_id, none exist
+
+Actions taken:
+- Deleted 4 dead deferred-close files (unprocessable)
+- This wake requires no rebuild — no task received
+
+Root cause:
+Analyst agent registered in Paperclip with broken process adapter.
+Every wake spawns a new Hermes session with identity block only.
+Fix requires Paperclip API access to delete agent registration.
+
+Status: RESOLVED. No action possible until Paperclip API recovers.
+Next step: Delete Analyst agent from Paperclip when API is reachable.

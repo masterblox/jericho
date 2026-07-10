@@ -1,0 +1,49 @@
+{
+  "source": "linear-watcher",
+  "timestamp": "2026-07-01T07:49:21.599974+00:00",
+  "changes": [
+    {
+      "id": "MAS-309",
+      "title": "\ud83e\udde9 Graph-aware room placer \u2014 make adjacencies hold by construction (engine step #3)",
+      "state": "Backlog",
+      "priority": 3,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-308",
+      "title": "Terraza: Train ML model for budget estimation (XGBoost on real E&O data)",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-307",
+      "title": "Terraza: ML training infrastructure \u2014 where does the heavy compute live?",
+      "state": "Backlog",
+      "priority": 2,
+      "assignee": "Michael Kirsanov"
+    },
+    {
+      "id": "MAS-303",
+      "title": "\ud83d\udcb8 LLM floor-plan engine is LIVE \u2014 DeepSeek cost guard + lift adjacency quality",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-302",
+      "title": "\ud83d\uddc2\ufe0f Admin training-data drop \u2014 in-platform AutoCAD/Archicad corpus upload (@cprada ask #1)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    },
+    {
+      "id": "MAS-301",
+      "title": "\ud83d\udccd START HERE \u2014 Terraza state of affairs + your India session plan (@cprada)",
+      "state": "Todo",
+      "priority": 2,
+      "assignee": "Carlos Prada"
+    }
+  ],
+  "count": 6
+}

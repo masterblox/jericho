@@ -1,0 +1,23 @@
+{
+  "issue_id": "2a17e131-ce23-4cb6-8bf7-615d7caa78f9",
+  "identifier": "MAS-292",
+  "target_status": "done",
+  "reason": "Re-verified 2026-07-10 DXB (issue_continuation_needed wake, run ee4785a0). All three MAS-305 ACs confirmed on main (4b5dad21, now at c7f2686f with one subsequent MAS-325 commit): (1) Budget VAT/currency — resolveConstructionTax wired to global-calc.ts:55, vat = base * vatRate in calc.ts:57, regionalExtras removed. (2) Sections labelled 'SECTION (INDICATIVE)' in PlansView via console-copy.ts:102-103 + PlansView.tsx:113-115 with tooltip. (3) Persistence — workspace-store.ts dual-layer localStorage + Supabase, useArchitectWorkspace auto-syncs. Paperclip health down (health endpoint times out, was State 2.9 in prior run) — deferred close required.",
+  "run_id": "ee4785a0-bd17-406f-88e2-d513a0530506",
+  "commit": "c7f2686f06f1ba63721368cebcfaa8d11977947b",
+  "branch": "main",
+  "files_verified": [
+    "src/lib/budget/resolveConstructionTax.ts",
+    "src/lib/budget/global-calc.ts",
+    "src/lib/budget/calc.ts",
+    "src/lib/budget/regions/lisbon.ts",
+    "src/lib/console-copy.ts",
+    "src/components/console/views/PlansView.tsx",
+    "src/lib/cad/section.ts",
+    "src/lib/workspace-store.ts",
+    "src/app/api/projects/route.ts",
+    "src/app/api/projects/[id]/route.ts",
+    "src/hooks/useArchitectWorkspace.ts"
+  ],
+  "verified_at": "2026-07-10T00:22:00+04:00"
+}

@@ -1,0 +1,6 @@
+Researcher ghost wake disposed — 2026-07-09 22:26 DXB
+Run: bf00ccd1-1ade-440b-a29e-27aca8019515
+Agent: 0476ab7a-d00d-43b6-9efe-6f878af61014
+Disposition: EMPTY WAKE — identity block only, no task, no issue. Report at /opt/data/jericho/reports/researcher-wake-2026-07-09-run-bf00ccd1.md
+Paperclip: Stage 4 (HTTP 000). Root cause unchanged — ghost agent registration, needs deletion.
+No deferred-close JSON (empty wake).

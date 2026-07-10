@@ -1,0 +1,10 @@
+{
+  "issue_id": "595d3a4b-8343-47f9-ac76-bbe7f6715848",
+  "identifier": "MAS-337",
+  "target_status": "done",
+  "reason": "Branch-unmerged recovery. Commit d1e108b was on dev/mas-322-parser-consolidation but never merged to main. Cherry-picked to main as 134bdd0. All 6 ACs verified: conversional-parse.ts unchanged, guard test 101 lines (canonical module import enforcement), both Engine-B routes import from @/lib/budget/conversational-parse, ARCHITECTURE.md lines 174-184 document Engine-C deferral. Prior run 74cc9d9d completed all work; only merge was missing.",
+  "run_id": "e1174d7a-cc5d-4ef2-a87e-f7f8191329ee",
+  "prior_run_id": "74cc9d9d-c40d-4af0-b979-72a8565a28a1",
+  "merge_commit": "134bdd0",
+  "resolved_at": "2026-07-09T18:20:00Z"
+}

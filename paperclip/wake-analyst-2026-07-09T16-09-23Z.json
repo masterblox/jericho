@@ -1,0 +1,10 @@
+{
+  "run_id": "e25c8842-6fdf-4ed5-a4d9-64d1d5d4e449",
+  "agent_id_received": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "timestamp_utc": "2026-07-09T16:09:23.107385+00:00",
+  "timestamp_dxb": "2026-07-09T16:09 DXB",
+  "paperclip_health": "State 2 \u2014 /api/health returns 200 (bootstrapStatus: ready), all other endpoints return 000",
+  "issue_content": "EMPTY \u2014 identity block and execution contract only, no task description",
+  "disposition": "Stale Analyst agent (23ce64e7). 7th empty wake today. Paperclip API unreachable. Deferred close queued."
+}

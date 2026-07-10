@@ -1,0 +1,20 @@
+RESEARCHER IDLE WAKE — 2026-07-10 00:20 UTC+4
+===================================================
+Run ID: 1dfb59d9-2b55-4bef-ade9-ae41623b8d6f
+Paperclip: Stage 2.5 (health OK, auth API deadlocked)
+
+TOP SIGNAL: Omnigent (omnigent-ai/omnigent) — 6,911 stars
+Direct competitor: open-source meta-harness orchestrating Claude Code, Codex, Cursor, Pi, custom agents.
+Swap harnesses without rewriting. Policy enforcement + sandboxing + real-time collaboration.
+This is Mechanica's fleet orchestration territory.
+
+Other signals:
+- STRACE (arXiv Jul 8): Agent trajectory optimization, 1.4x improvement. Applicable to DEV agent debugging.
+- Multi-agent deployment rules (arXiv Jul 8): Rules causally change agent safety by 22-58 p.p. Fleet guardrail implications.
+- ai-berkshire (12.3K stars): Multi-agent value investing — agent adoption spreading to finance verticals.
+- beeai-framework (3.3K stars, IBM): Enterprise agent framework standardization.
+
+Full report: /opt/data/jericho/reports/researcher-wake-2026-07-10T0020-DXB.md
+
+ACTION: Deep-dive Omnigent's architecture. How do they handle agent-agent comms? What's their routing model?
+STATUS: PROCESSED 2026-07-10 via Researcher empty wake 533f45d4. Report: /opt/data/jericho/reports/omnigent-competitive-deep-dive-2026-07-10-DXB.md

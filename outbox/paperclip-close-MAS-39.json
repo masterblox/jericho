@@ -1,0 +1,10 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "496762cc-aa16-422b-8172-2cafda80d99f",
+  "identifier": "MAS-39",
+  "target_status": "done",
+  "reason": "docs/handover/disaster-recovery.md complete (676 lines, 38KB). Merged to main via PR #174 (commit 26e57b8). All three acceptance criteria met: (1) PITR restore drill with step-by-step Dashboard flow + support ticket fallback in §2.3, (2) all upstream-down scenarios including Railway + Cloudflare cron with symptoms/degradation/operator actions in §3, (3) super_admin provisioning with P0008 trigger branch-by-branch analysis + admin UI path + bootstrap SQL in §5. Previous run d5029b05 failed on Paperclip HTTP 429 (rate limit) — work was already complete and merged. Paperclip API currently deadlocked (health=200, auth endpoints timeout=000). Deferred close queued.",
+  "queued_at": "2026-07-09T19:05:00+04:00",
+  "report": "/opt/data/jericho/reports/MAS-39-resolution-2026-07-09.md"
+}

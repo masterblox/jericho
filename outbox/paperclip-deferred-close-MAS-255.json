@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "d78e432a-e6f6-465a-a960-bf4942a3a818",
+  "identifier": "MAS-255",
+  "status": "done",
+  "resolution": "MAS-58 Resend webhook handler — completed, squash-merged to main via PR #107 (commit b87c0e7). All 8 API tests + unit tests passing. Files: route.ts, webhook.ts, engagement migration, 2 test suites.",
+  "evidence": "/opt/data/jericho/reports/MAS-255-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T16:20:00+04:00",
+  "agent": "DEV",
+  "run_id": "f13db6a7-4854-4727-943d-18563a071152"
+}

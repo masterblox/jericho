@@ -1,0 +1,9 @@
+{
+  "issue_id": "1a3d751c-9861-4842-9c36-c6f9ed858510",
+  "identifier": "MAS-75",
+  "target_status": "done",
+  "run_id": "5b5b3a46-3a48-46f0-9aa0-1976bc34876b",
+  "resolution_report": "/opt/data/jericho/reports/MAS-75-resolution-2026-07-09.md",
+  "summary": "DONE. MAS-160 drift gate deleted in PR #36 (commit d5d17e2, merged 2026-05-19). db-ci.yml, gen-types.yml, CLAUDE.md, package.json all updated. Transient failure retry — prior run completed work, 429 on Paperclip update.",
+  "queued_at": "2026-07-09T18:30:00+04:00"
+}

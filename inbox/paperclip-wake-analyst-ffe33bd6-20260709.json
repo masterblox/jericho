@@ -1,0 +1,12 @@
+{
+  "wake_time": "2026-07-09T21:11 DXB",
+  "run_id": "ffe33bd6-f069-485d-ab3a-80dfbe8a0571",
+  "agent_id": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "agent_label": "Analyst",
+  "payload": "identity_block_only",
+  "issue_reference": null,
+  "task_content": null,
+  "paperclip_state": "Stage 4 \u2014 TCP accept, HTTP timeout",
+  "disposition": "Empty wake from stale agent. Deferred close queued.",
+  "count_today_approx": "10+"
+}

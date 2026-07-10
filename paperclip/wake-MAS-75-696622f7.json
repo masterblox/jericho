@@ -1,0 +1,11 @@
+{
+  "wake_reason": "source_scoped_recovery_action",
+  "run_id": "696622f7-35e2-468c-bb30-cfad8c9ce3a0",
+  "issue": "MAS-75",
+  "paperclip_state": "State 4 — connection refused (both Tailscale and localhost)",
+  "verdict": "DEFERRED_CLOSE_VALID",
+  "work_status": "DONE — PR #36 merged 2026-05-19 (7 weeks ago). db-ci.yml drift gate deleted.",
+  "deferred_close": "/opt/data/jericho/outbox/paperclip-deferred-close-MAS-75.json",
+  "action": "No rebuild needed. Deferred close already queued with correct format. Recovery-closer cron will process when Paperclip recovers.",
+  "timestamp": "2026-07-09T19:45:00+04:00"
+}

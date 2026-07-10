@@ -1,0 +1,13 @@
+{
+  "run_id": "aaf9c1db-71d6-4a84-a16e-4088f634b3e9",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "wake_type": "empty-identity-block",
+  "paperclip_health": "ok",
+  "paperclip_bootstrap": "ready",
+  "task_content": null,
+  "issue_reference": null,
+  "disposition": "breadcrumb-only",
+  "reason": "Jericho gateway registration heartbeat — empty identity-block wake with no task content. No deferred-close JSON created (would be unprocessable dead weight).",
+  "timestamp_UTC": "2026-07-09T18:30:00Z",
+  "timestamp_DXB": "2026-07-09T22:30:00+04:00"
+}

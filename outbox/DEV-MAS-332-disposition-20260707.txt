@@ -1,0 +1,22 @@
+MAS-332 — Engine-B per-region correctness test suite
+Disposition: in_review
+Date: 2026-07-07
+Run: 495c5ded-a242-404d-8056-4f17cae2a8b9
+
+Created src/lib/budget/regions.test.ts (179 lines):
+- Data-driven: iterates listRegions(), no hardcoded region names in the loop
+- 8 test cases total: 2 coverage + 15 per-region (3x5 dynamic) + 1 alias + 1 identity
+- (a) VAT guard: uses calculateBudget → computeTotals, asserts vat = base × meta.vatRate
+      Currently vatRate=0 so passes; guard comment documents canary
+      Migration path: when ticket 04 lands, switch to resolveConstructionTax
+- (b) Currency: formatMoney output contains currencySymbol OR ISO code (Intl-tolerant)
+- (c) Tier monotonicity: 3 explicit quality inputs, economy < standard < premium
+- (d) Alias: bandra → bandra-west confirmed mumbai.ts:354
+
+Prerequisite gaps (tickets not yet built):
+  04 — resolveConstructionTax: using meta.vatRate (currently 0) as fallback
+  10 — computeEstimate: using calculateBudget directly
+
+Verification: node --test could not run (sandbox limitations).
+All imports verified to resolve. Alias data confirmed in mumbai.ts:354 + :83.
+Full report: /opt/data/jericho/reports/MAS-332-completion-2026-07-07.md

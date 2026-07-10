@@ -1,0 +1,23 @@
+# MAS-73/MAS-167 — Transient Failure Retry Resolved
+
+**Wake:** 045e5682 (retry of 1f85ed65)
+**Reason:** hermes_gateway_rate_limited (429)
+**Disposition:** DONE — audit-confirmed, no rebuild needed
+
+## What happened
+
+Previous run crashed on 429 after completing all work. Standard transient_failure_retry pattern.
+
+## Audit result
+
+Both commits on main:
+- `4ddf09a` — PR #74 (chrome + flushSave + toast + balance + vitest + Phase 1 e2e)
+- `51b2f56` — Phase 2 e2e addenda (5 durability scenarios)
+
+All 16 scope items verified. HEAD == origin/main. No stale branches.
+
+## Paperclip
+
+Can't update issue — API deadlocked (health=200, PATCH timeout). Same auth-middleware zombie since Jul 7. Manual closure needed after host restart.
+
+Full report: /opt/data/jericho/reports/MAS-73-MAS-167-resolution-2026-07-09.md

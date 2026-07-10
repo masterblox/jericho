@@ -1,0 +1,10 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "ce7c353d-3ab6-475c-9046-7df2c105b254",
+  "identifier": "MAS-184",
+  "target_status": "done",
+  "reason": "Commit 61dd2a2 merged to main (May 23). All 4 scope items verified on disk: .trim() on 16+ string secrets in lib/env.ts, 6 checkout tests, 5 env tests, docs updated. Previous run 3e5a94be 429'd (rate limit), not code failure. Paperclip API returns 401 (health-only key) — deferred close queued.",
+  "queued_at": "2026-07-09T18:20:00+04:00",
+  "report": "/opt/data/jericho/reports/MAS-184-resolution-2026-07-09.md"
+}

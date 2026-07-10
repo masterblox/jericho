@@ -1,0 +1,23 @@
+{
+  "action": "paperclip_close",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "issue_id": "57de5f0f-1e5a-472b-b67b-a9c64c67f4d7",
+  "identifier": "MAS-177",
+  "target_status": "done",
+  "resolution": "resolved",
+  "resolution_report": "/opt/data/jericho/reports/MAS-177-resolution-2026-07-09.md",
+  "summary": "Migration 20260523200000_restore_service_role_grants.sql merged via PR #51 (commit 0f6d76f). Restores service_role public-schema grants. Paperclip API is down (401 on all endpoints including auth/me). Code work complete. Close queued pending Paperclip API key restoration.",
+  "queued_at": "2026-07-09T15:00:00+04:00",
+  "verified_at": "2026-07-09T19:15:47+04:00",
+  "verification_checks": {
+    "commit_on_main": true,
+    "migration_in_tree": true,
+    "pr_merged": true,
+    "paperclip_api_reachable": false,
+    "paperclip_auth_working": false,
+    "paperclip_tier": 4,
+    "paperclip_detail": "all endpoints timeout (was Tier 3/401 on prior run)"
+  },
+  "closed": false,
+  "last_run_id": "6fed6cbd-3f31-4682-b689-f884fa4b03d1"
+}

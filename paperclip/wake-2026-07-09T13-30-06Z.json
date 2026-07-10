@@ -1,0 +1,12 @@
+{
+  "timestamp": "2026-07-09T13:30:06Z",
+  "run_id": "f83f1e2e-b274-4acc-9663-8d0c2bddc6fb",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "paperclip_status": "degraded-auth-deadlock",
+  "health_endpoint": "HTTP 200 ok",
+  "authenticated_endpoints": "HTTP 000 timeout",
+  "issues_active": "unknown - Paperclip unreachable",
+  "action": "no_task_received",
+  "notes": "Wake delivered with identity block only \u2014 no task, no issue reference. Consistent with no-active-issues state. Paperclip auth deadlock ongoing (day 3+). Health=200 but Bearer endpoints timeout. Host restart likely required per previous diagnosis. Not escalating \u2014 Carlos already aware."
+}

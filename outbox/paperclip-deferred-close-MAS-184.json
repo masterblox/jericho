@@ -1,0 +1,8 @@
+{
+  "issue_id": "ce7c353d-3ab6-475c-9046-7df2c105b254",
+  "identifier": "MAS-184",
+  "status": "done",
+  "resolution": "Merged to main via PR #56 (commit 61dd2a2, May 23 2026). All 4 scope items complete: .trim() on 7 string-secret schemas, vitest for customer_provision_failed redirect, vitest pinning env-trim behavior, docs updated. Prior run 60eb1bc9 hit 429 rate limit after code was already done.",
+  "queued_at": "2026-07-09T15:00:00+04:00",
+  "run_id": "5e1f2e62-7acc-4fe1-b682-71b1ba24ad88"
+}

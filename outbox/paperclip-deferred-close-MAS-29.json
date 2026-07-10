@@ -1,0 +1,6 @@
+{
+  "issue_id": "3e40fc53-75eb-4205-a6db-575575692343",
+  "identifier": "MAS-29",
+  "target_status": "done",
+  "reason": "docs/handover/env-vars.md created and committed. All acceptance criteria met: Stripe webhook rotation recipe present, AI-provider+CRON_SECRET+Railway/Cloudflare secrets documented, no stale ANON_KEY/OPENCLAW_DB_PASSWORD references. Commit 98c7123 on dev/mas-85-smoke-recovery, included in PR #222."
+}

@@ -1,0 +1,7 @@
+{
+  "issue_id": "04cc998d-001d-44ed-94e0-c4deb6e7e23f",
+  "identifier": "MAS-217",
+  "resolution": "done",
+  "resolution_note": "Transient failure retry \u2014 work completed and merged to main in PR #90 (commit 8edbf1d). All 8 files + 19 tests on main. Handler, templates, provider, token hashing all verified. No rebuild needed. Report: /opt/data/jericho/reports/MAS-217-resolution-20260709.md",
+  "queued_at": "2026-07-09T14:17:31Z"
+}

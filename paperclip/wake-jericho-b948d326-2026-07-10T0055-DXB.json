@@ -1,0 +1,9 @@
+{
+  "run_id": "b948d326-efc7-4e51-a61e-4bfe1dff36ee",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "agent_name": "Jericho",
+  "timestamp_dxb": "2026-07-10T00:55+04:00",
+  "paperclip_health": "Stage 4 — unreachable, all fetch() calls timeout within 5s",
+  "wake_type": "empty — identity block only, no task, no issue_reference, no continuation summary",
+  "disposition": "breadcrumb only — no deferred-close JSON (empty identity-block, null issue_id = unprocessable dead weight per non-fleet-agent-wakes pattern). Wake triggered by gateway registration heartbeat during Paperclip outage."
+}

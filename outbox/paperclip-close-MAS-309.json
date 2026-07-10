@@ -1,0 +1,1 @@
+{}DELETE_ME — stale close JSON with incorrect data (pnpm test, commit e4a898b, PR #132 — all wrong). The correct close is paperclip-deferred-close-MAS-309.json with target_status: done at commit c7f2686.

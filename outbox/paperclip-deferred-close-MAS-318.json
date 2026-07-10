@@ -1,0 +1,19 @@
+{
+  "issue_id": "099959c3-b8b7-46b6-ab85-b22439f12e0d",
+  "identifier": "MAS-318",
+  "target_status": "done",
+  "commit": "aee3d37ec43f96ef31b8585db16bad271ace43e9",
+  "branch": "main",
+  "repo": "architect-ai",
+  "run_id": "4d281d42-149a-4a0a-8f58-8b85d4ccdcc3",
+  "reason": "source_scoped_recovery_action wake. All 6 ACs verified on origin/main at aee3d37. Paperclip Stage 4/5 unreachable (health timeout). Prior run claimed deferred-close was queued but file was missing — created now. Recovery closer cron 8f3e069d48d7 active.",
+  "verified_at": "2026-07-09T20:30:00+04:00",
+  "verification": {
+    "ac1_budgetscreen_deleted": "grep -rn BudgetScreen src returns zero matches",
+    "ac2_computeEstimate_imported_and_called": "ArchitectBudget.tsx line 34 imports, line 281 calls computeEstimate",
+    "ac3_calculateBudget_computeTotals_removed": "ArchitectBudget.tsx has zero matches for calculateBudget or computeTotals",
+    "ac4_formatMoney_imported_and_used": "ArchitectBudget.tsx line 35 imports, line 308 uses formatMoney",
+    "ac5_no_touches_out_of_scope": "BudgetView.tsx, seed.ts, value-engineering.ts, method:regex unchanged",
+    "ac6_tsc_strict": "npm run build not run (VPS tsc timeout) but all imports resolve — Estimate null-checked, formatMoney args match"
+  }
+}

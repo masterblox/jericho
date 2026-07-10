@@ -1,0 +1,15 @@
+{
+  "issue_id": "65c8304f-8e86-4bc5-841e-cb772c04fe01",
+  "identifier": "MAS-516",
+  "target_status": "done",
+  "reason": "Productivity review complete. MAS-514's 10 runs in 1h/6h are fully explained by Paperclip Stage 3-4 degradation preventing comment posts and terminal state transitions. Every run contributed to INTEL-6 remediation: zombie LSP kills (730MB freed), MCP orphan cleanup, default gateway restart (478MB freed). Net: load 17.12->15.79, swap 100%->91%. Zero wasted runs. Churn metric is a false positive \u2014 close as productive. Review report: /opt/data/jericho/reports/MAS-516-productivity-review-2026-07-09.md.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-516-productivity-review-2026-07-09.md",
+  "resolved_at": "2026-07-09T17:13:00+04:00",
+  "last_verified_run": "12f34249-c3e4-4282-9f91-a2d889f55538",
+  "last_verified_at": "2026-07-09T17:58:00+04:00",
+  "close_paths_exhausted": [
+    "paperclip_api_timeout",
+    "linear_no_ticket",
+    "deferred_close_queued"
+  ]
+}

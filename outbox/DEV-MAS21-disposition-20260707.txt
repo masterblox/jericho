@@ -1,0 +1,40 @@
+DEV Run: c1930c8a-8254-48a0-b48e-982510c0a021
+Issue: MAS-21 / MAS-220 - Editor compose UX
+Time: 2026-07-07 ~19:30 UTC
+Status: done (code complete) / Paperclip unreachable (can't update API)
+
+## Resolution
+
+Previous run abb9e4ab failed on Hermes gateway HTTP 429 — transient rate limit, not code failure.
+
+### Implementation (PR #134) — verified complete
+
+All work shipped and tested:
+
+- Layout fix: fixed inset-x-0 top-14 bottom-0 full-bleed surface
+  Verified: .PinturaUtilFooter bottom 801→712, .PinturaRoot bottom 809→720
+
+- Text toolbar surfaced: annotateActiveTool:"text" + enableTapToAddText:true 
+  + markupEditorTextInputMode:"inline"
+
+- Tool-set cleanup: PINTURA_UTILS trimmed to ["annotate","filter","frame"]
+  Dropped sticker and decorate tabs. enableButtonRevert:false, previewUpscale:true
+
+- UserMenu z-50: account menu above fixed editor stacking context
+
+### Test results
+
+Playwright editor-compose-ux.spec.ts — passed CI (playwright job 83→85)
+typecheck + lint + 1178 vitest — all clean
+
+### Disposition: done
+
+No remaining work. Issue filed retroactively for work already shipped in PR #134.
+Deliberately deferred items (rotate-lock, portrait gutters, filter review, print sizes)
+are product decisions — not this issue's scope.
+
+### Blocker: Paperclip API unreachable
+
+Cannot PATCH issue status or POST comment. Docker daemon down, Paperclip
+not listening on port 3100 (curl timeout on all interfaces). Issue disposition
+is done — needs API update when Paperclip service is restored.

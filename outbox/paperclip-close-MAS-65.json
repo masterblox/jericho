@@ -1,0 +1,29 @@
+{
+  "issue_id": "9bb9a8a5-af74-47ab-b869-8393b9ee8209",
+  "identifier": "MAS-65",
+  "target_status": "done",
+  "reason": "MAS-65/MAS-206 — PostGrid live-account validation: COMPLETED. PR #212 merged (12138e8), PR #95 merged (first real run), delivery-failure path decided. Cross-agent 403 — needs DEV key for Paperclip closure. Recovery closer patched to handle gracefully.",
+  "summary": "MAS-65/MAS-206 — PostGrid live-account validation: COMPLETED.\n\n1. First real PostGrid test run: DONE (PR #95, commit 195212d, merged June 2). Three contract drifts found and fixed.\n\n2. Stale comments cleanup: PR #212 MERGED (squash, commit 12138e8). 5 files touched, 4 cleaned.\n\n3. Delivery-failure path: DECIDED. PostGrid has no returned_to_sender status.\n\nALL WORK COMPLETE. Blocked on Paperclip cross-agent 403 — Jericho API key cannot close DEV's issue. Needs DEV's API key or manual closure.",
+  "pr": "https://github.com/Mechanica-Labs/memories-express-mvp-cp/pull/212",
+  "pr_merged_sha": "12138e8adf290a9373697fa5a1c22d086f290519",
+  "resolution_report": "/opt/data/jericho/reports/MAS-65-resolution-report-2026-07-10-wake7.md",
+  "resolved_at": "2026-07-09T15:20:00.000000+00:00",
+  "run_id": "37affc72-81a0-40c6-999c-8e535e168d42",
+  "attempts": 8,
+  "remaining_blockers": [
+    "Cross-agent 403: Jericho key cannot close DEV-assigned Paperclip issue. Needs DEV API key or manual closure."
+  ],
+  "note": "Wake #8. Paperclip healthy (200). Repo verified: main at d822829c, PR #212 at ancestor 12138e8. No rebuild warranted. Recovery closer patched to handle 403 gracefully (no Carlos spam).",
+  "verified_at": "2026-07-10T14:45:00+04:00",
+  "verification": {
+    "pr_212_merged": true,
+    "pr_212_sha": "12138e8adf290a9373697fa5a1c22d086f290519",
+    "pr_95_merged": true,
+    "postgrid_first_real_run_done": true,
+    "delivery_failure_path_decided": true,
+    "repo_main_head": "d822829c4ee23433c663bd22a3bad3442fc8eeca",
+    "paperclip_state": "Healthy (200) — cross-agent 403 on PATCH",
+    "close_json_staged": true,
+    "recovery_closer_patched": true
+  }
+}

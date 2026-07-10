@@ -1,0 +1,10 @@
+{
+  "issue_id": "57de5f0f-1e5a-472b-b67b-a9c64c67f4d7",
+  "identifier": "MAS-177",
+  "target_status": "done",
+  "reason": "Migration merged as PR #51 on 2026-05-23 (commit 0f6d76f). Prior run 0e333eac failed on 429 rate limit during Paperclip status update — code work was already complete. Verified: file on main, PR merged, migration timestamp correct.",
+  "verified_at": "2026-07-09T16:40:00Z",
+  "repo": "Mechanica-Labs/memories-express-mvp-cp",
+  "pr": 51,
+  "commit": "0f6d76f"
+}

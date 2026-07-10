@@ -1,0 +1,12 @@
+diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml
+index 53c69db..2e6b9d3 100644
+--- a/.github/workflows/ci.yml
++++ b/.github/workflows/ci.yml
+@@ -29,6 +29,7 @@ jobs:
+         with:
+           node-version: "22"
+       - run: npm ci
++      - run: npm run test:unit
+       - run: npm run lint
+       - run: npm run build
+ 

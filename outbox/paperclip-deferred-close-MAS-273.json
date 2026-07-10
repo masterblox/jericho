@@ -1,0 +1,8 @@
+{
+  "issue_id": "7a9360c4-8046-431d-a241-6fcfd25803ad",
+  "identifier": "MAS-273",
+  "target_status": "done",
+  "reason": "source_scoped_recovery_action audit — all deliverables verified on memories-express-mvp-cp. Handler complete and safety-gated behind CLEANUP_ORPHANS_ENABLED. Resolution report at /opt/data/jericho/reports/MAS-273-resolution-2026-07-09T1900.md",
+  "run_id": "1551b63c-16f9-4cb6-86e6-8e26076ca1b7",
+  "resolved_at": "2026-07-09T19:00:00Z"
+}

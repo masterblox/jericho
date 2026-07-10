@@ -1,0 +1,13 @@
+{
+  "wake_time": "2026-07-09T21:10:00+04:00",
+  "run_id": "53d872ce-f664-445d-a29b-32fa933421a3",
+  "agent_id_received": "23ce64e7-ab44-4696-a709-133760f4d713",
+  "agent_label": "Analyst",
+  "payload": "identity_block_only",
+  "issue_reference": null,
+  "task_content": null,
+  "paperclip_state": "State 4 — HTTP 000, all endpoints dead",
+  "disposition": "Empty wake from stale agent. Deferred close queued: paperclip-deferred-close-analyst-53d872ce.json",
+  "count_today": "9+",
+  "root_cause": "Agent adapter=process (wrong type), status=error. Marked for deletion. Paperclip dead so cannot clean up."
+}

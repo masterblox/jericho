@@ -1,0 +1,8 @@
+{
+  "issue_id": "45c273a9-4fc1-48bb-903a-f2acbc037c6e",
+  "identifier": "MAS-507",
+  "target_status": "done",
+  "reason": "Productivity review complete. MAS-503 high churn was infrastructure-caused (Paperclip cascade + container restarts), not agent inefficiency. $0.00 cost. All 12 runs were fleet-state verification across a degraded Paperclip cycle. Verdict: productive, close.",
+  "run_id": "6ac7f8db-e9d3-416e-9119-bdfc61c96711",
+  "resolved_at": "2026-07-09T20:15:00Z"
+}

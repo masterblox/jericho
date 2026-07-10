@@ -1,0 +1,11 @@
+{
+  "action": "close",
+  "issue_id": "8101c2dd-7225-4b80-b4c0-0a3044d9d67f",
+  "identifier": "MAS-241",
+  "status": "done",
+  "resolution": "Merged to main via PR #21 (a227ddd) by Michael on 2026-05-15. sandbox-mail.masterblox.io verified in Resend, all env vars updated, code on main. False continuation wake — work was complete 2 months ago.",
+  "evidence": "/opt/data/jericho/reports/MAS-241-resolution-2026-07-09.md",
+  "queued_at": "2026-07-09T16:15:00+04:00",
+  "agent": "jericho",
+  "run_id": "16c7b51a-0595-4519-bf67-e09984cf288d"
+}

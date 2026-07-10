@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-07-06T21:57:06Z",
+  "agent_id": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "company_id": "5e826a0c-c9ea-4f28-8646-7d340629dc92",
+  "run_id": "69ea47df-c29e-4f2d-b72a-8c9255571765",
+  "paperclip_status": "healthy",
+  "bootstrap_status": "ready",
+  "api_key_available": true,
+  "local_api_server": "ok",
+  "issues_total": 337,
+  "issues_assigned": 1,
+  "issues_active": 0,
+  "action": "no_active_issues"
+}

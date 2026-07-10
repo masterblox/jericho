@@ -1,0 +1,8 @@
+{
+  "issue_id": "8aefecf1-5d93-4fa6-813c-2ddd77c8b4c7",
+  "identifier": "MAS-515",
+  "target_status": "done",
+  "reason": "Productivity review complete. Verdict: productive. MAS-359's long active duration is expected — root cause (Docker overlay disk pressure) requires host-level droplet expansion, cannot be fixed from inside container. Agent has applied real mitigations (3.2GB freed, memory overflow resolved). Failed runs are all Paperclip API timeouts from auth deadlock, not agent errors. Same pattern as MAS-488 which was also closed as productive. Resolution report at /opt/data/jericho/reports/MAS-515-resolution-2026-07-09.md",
+  "closed_at": "2026-07-09T16:45:00Z",
+  "paperclip_dead": true
+}

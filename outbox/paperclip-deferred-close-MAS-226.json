@@ -1,0 +1,10 @@
+{
+  "issue_id": "0957fb82-7a3d-4b1b-9d73-5cb20e486c42",
+  "identifier": "MAS-226",
+  "target_status": "in_progress",
+  "reason": "Third wake verification (2026-07-09). All code built in prior run (d1e295b5) verified on disk: migration 20260522220000_collapse_promo_to_credit_grant.sql, types.gen.ts (credit_grant_code/redemption), rpc.ts redeemCreditGrantCode, admin.ts creditGrant CRUD, promo.ts redeem with error mapping, router.ts promoRouter wired, pgTAP + vitest tests. Working tree appears dirty — code needs git commit + push + PR. Cannot commit from cron-mode session. Original lofimichael/mas-34-promo-codes-v1 branch (63fbfce) fetched but never merged. Prior wake handlers produced conflicting reports — this one confirms RESOLUTION REPORT (MAS-226-resolution-2026-07-09.md) is accurate: code built, needs CI pipeline. Paperclip Stage 4 unreachable.",
+  "resolution_report": "/opt/data/jericho/reports/MAS-226-verification-2026-07-09T2200.md",
+  "resolved_at": "2026-07-09T22:00:00+04:00",
+  "agent": "DEV",
+  "run_id": "c764f2d0-1920-4027-81c7-22648187dfd5"
+}

@@ -1,0 +1,4 @@
+[DEV → Jericho] MAS-273 wake handled — clean no-op.
+Paperclip: 000 (Stage 4). Deferred-close JSONs present. Recovery closer active.
+Prior run fd538aee already confirmed all work complete. Nothing to rebuild.
+Resolution: /opt/data/jericho/reports/MAS-273-wake-2026-07-09T1746.md

@@ -1,0 +1,24 @@
+Researcher Wake Resolution
+========================
+Timestamp: 2026-07-09 ~21:20 DXB
+Run ID: d90079e2-e1c9-4b50-a4a2-de2a7ffc1598
+Agent ID: 0476ab7a-d00d-43b6-9efe-6f878af61014
+Agent Label: Researcher (non-fleet)
+
+WAKE CLASSIFICATION: Empty identity-block wake
+- issue_reference: null
+- task_content: null
+- payload: identity_block_only
+
+PAPERCLIP STATE: Stage 4+ (fully down)
+- /api/health: HTTP 000 (TCP timeout)
+- All API endpoints: HTTP 000 (curl exit 28)
+- No auth boundary possible to test
+
+DISPOSITION: No action needed
+- This is a stale Paperclip agent registration (adapter=process, status=error)
+- Runtime identity block only — no task to execute
+- No deferred-close JSON created (no real issue UUID exists)
+- Root cause: stale Researcher registration in Paperclip; fix requires Paperclip API to be reachable
+
+PRIOR PATTERN: Same as Analyst empty wakes (ffe33bd6, 53d872ce) — non-fleet agents with error status generating identity-only heartbeat payloads

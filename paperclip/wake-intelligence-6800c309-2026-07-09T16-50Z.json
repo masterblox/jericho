@@ -1,0 +1,15 @@
+{
+  "run_id": "6800c309-7a1a-44a7-9be4-ed4c2ae8418b",
+  "timestamp": "2026-07-09T16:50:00Z",
+  "time_dxb": "2026-07-09T20:50:00+04:00",
+  "agent_id_received": "f2216417-fe26-4d0e-8836-a27ba0357bcd",
+  "agent_id_actual": "20cb56be-0921-49c3-9bf0-ad32ce5420c5",
+  "agent_name": "Intelligence",
+  "paperclip_status": "State 4 — HTTP 000, fully dead on all endpoints (health, agents, issues, runs all timeout)",
+  "wake_reason": "identity_block_only",
+  "task_received": false,
+  "issue": null,
+  "disposition": "EMPTY WAKE — no task, no issue reference. Paperclip State 4 (fully dead). Intelligence is Paperclip-native (no Telegram, no DM). Cannot query assigned issues. Agent purpose: cross-lane signal detection, deep research, competitive intelligence. Normally woken via Paperclip issues assigned by Jericho.",
+  "action": "no_task_received — wake breadcrumb only",
+  "notes": "Intelligence gateway exists (s6: gateway-intelligence) but agent has no Telegram platform — purely Paperclip-driven. This is the first Intelligence wake observed. Pattern matches Analyst empty-wake series (7 wakes today). No deferred close queued — no issue identifier to close."
+}
