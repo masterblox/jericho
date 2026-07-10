@@ -1,6 +1,6 @@
 import type { Point } from './tracking';
 
-export const CARD_HIT_SLOP_PX = 18;
+export const CARD_HIT_SLOP_PX = 28;
 export const GRAB_INSET_PX = 14;
 
 export interface RectTarget {

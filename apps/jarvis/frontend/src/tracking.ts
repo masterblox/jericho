@@ -30,6 +30,13 @@ export function palmAnchor(landmarks: Landmark[]): Point {
   return { x: sum.x / PALM_LANDMARKS.length, y: sum.y / PALM_LANDMARKS.length };
 }
 
+export function pinchPoint(landmarks: Landmark[]): Point {
+  if (landmarks.length < 9) throw new Error('A complete MediaPipe hand needs 21 landmarks');
+  const thumb = landmarks[4];
+  const index = landmarks[8];
+  return { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
+}
+
 export function palmWidth(landmarks: Landmark[]): number {
   const index = landmarks[5];
   const pinky = landmarks[17];

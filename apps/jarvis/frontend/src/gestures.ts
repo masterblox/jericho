@@ -8,6 +8,7 @@ import {
   hasOpenPalmGeometry,
   normalizedPinchRatio,
   palmAnchor,
+  pinchPoint,
   type Handedness,
   type Landmark,
 } from './tracking';
@@ -84,6 +85,7 @@ export class GestureEngine {
           const handednessConfidence = result.handednesses[index]?.[0]?.score ?? 0;
           const gesture = result.gestures[index]?.[0];
           const rawAnchor = palmAnchor(landmarks);
+          const rawPinch = pinchPoint(landmarks);
           observations.push({
             rawHandedness,
             handednessConfidence,
@@ -92,6 +94,7 @@ export class GestureEngine {
             confidence: Math.max(handednessConfidence, gesture?.score ?? 0),
             landmarks,
             palmAnchor: { x: 1 - rawAnchor.x, y: rawAnchor.y },
+            pinchPoint: { x: 1 - rawPinch.x, y: rawPinch.y },
             pinchRatio: normalizedPinchRatio(landmarks),
             atFrameEdge: rawAnchor.x < 0.04 || rawAnchor.x > 0.96 || rawAnchor.y < 0.04 || rawAnchor.y > 0.96,
             openPalm:

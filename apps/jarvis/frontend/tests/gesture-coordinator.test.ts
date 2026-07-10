@@ -19,6 +19,8 @@ function hand(handedness: Handedness, state: GestureState, fresh = true): Tracke
     landmarks,
     palmAnchor: { x: 0.5, y: 0.5 },
     smoothedAnchor: { x: 0.5, y: 0.5 },
+    pinchPoint: { x: 0.5, y: 0.5 },
+    smoothedPinch: { x: 0.5, y: 0.5 },
     velocity: { x: 0, y: 0 },
     pinchRatio: state === 'pinch' ? 0.2 : 0.8,
     pinchPhase: state === 'pinch' ? 'pinched' : 'open',
