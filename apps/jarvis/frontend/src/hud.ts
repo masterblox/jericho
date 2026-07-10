@@ -66,6 +66,8 @@ export class HUD {
   private lastPoints: Partial<Record<Handedness, Point>> = {};
   private suppressUntilPalm = new Set<Handedness>();
   private swapHandler: ((swapped: boolean) => void) | null = null;
+  private modeHandler: ((mode: 'jarvis' | 'megatron') => void) | null = null;
+  private currentMode: 'jarvis' | 'megatron' = 'jarvis';
 
   private calibrationActive = false;
   private calibrationHand: Handedness | null = null;
@@ -93,6 +95,7 @@ export class HUD {
         <button class="tracking-button ${swapped ? 'ready' : ''}" data-pointer-id="swap" data-right-target>SWAP</button>
         <button class="tracking-button" data-pointer-id="diagnostic" data-right-target>DIAGNOSTIC</button>
         <button class="tracking-button" data-pointer-id="export" data-right-target>EXPORT 30S</button>
+        <button class="tracking-button mode-toggle" data-pointer-id="mode-toggle" data-right-target>MEGATRON</button>
       </div>
       <pre class="diagnostic-panel"></pre>
       <nav class="nav">
@@ -101,12 +104,14 @@ export class HUD {
         <div class="nav-hint">pink left · palm scroll · pinch select</div>
       </nav>
       <div class="status-line">JERICHO · STANDBY</div>
+      <div class="mode-badge" id="mode-badge">JARVIS</div>
       <div class="wake-state standby" id="wake-state">● always listening · say "JARVIS"</div>
       <div class="stage"></div>
       <div class="transcript"></div>
       <div class="left-cursor" data-gesture="idle"></div>
       <div class="cursor" data-gesture="idle"></div>
       <div class="calibration-layer"><div class="calibration-copy"></div><div class="calibration-target"></div></div>
+      <div class="mode-transition-overlay"></div>
       <div class="hint">left: palm scroll · pinch select | right: palm aim · pinch click/drag | ESC pauses</div>
     `;
     this.rightCursor = this.root.querySelector('.cursor') as HTMLElement;
@@ -120,6 +125,7 @@ export class HUD {
     this.root.querySelector('[data-pointer-id="swap"]')!.addEventListener('click', () => this.toggleSwap());
     this.root.querySelector('[data-pointer-id="diagnostic"]')!.addEventListener('click', () => this.toggleDiagnostic());
     this.root.querySelector('[data-pointer-id="export"]')!.addEventListener('click', () => this.exportDiagnostics());
+    this.root.querySelector('[data-pointer-id="mode-toggle"]')!.addEventListener('click', () => this.modeHandler?.(this.currentMode === 'jarvis' ? 'megatron' : 'jarvis'));
 
     const stage = this.root.querySelector('.stage') as HTMLElement;
     SAMPLE_TASKS.forEach((task, index) => this.appendCard(stage, task.title, task.status, `card:${index}`));
@@ -136,6 +142,32 @@ export class HUD {
   get video(): HTMLVideoElement { return this.root.querySelector('.cam') as HTMLVideoElement; }
 
   onSwapHands(handler: (swapped: boolean) => void) { this.swapHandler = handler; }
+
+  onModeToggle(handler: (mode: 'jarvis' | 'megatron') => void) { this.modeHandler = handler; }
+
+  setMode(mode: 'jarvis' | 'megatron', name: string) {
+    this.currentMode = mode;
+    const badge = this.root.querySelector('#mode-badge') as HTMLElement;
+    badge.textContent = name;
+    badge.classList.remove('pending');
+    badge.classList.toggle('combat', mode === 'megatron');
+    this.root.classList.toggle('combat-mode', mode === 'megatron');
+    const toggle = this.root.querySelector('[data-pointer-id="mode-toggle"]') as HTMLElement;
+    toggle.textContent = mode === 'megatron' ? 'JARVIS' : 'MEGATRON';
+    toggle.classList.toggle('ready', mode === 'megatron');
+    // fire the transition flash
+    const overlay = this.root.querySelector('.mode-transition-overlay') as HTMLElement;
+    overlay.classList.remove('active');
+    void overlay.offsetWidth; // force reflow to restart animation
+    overlay.classList.add('active');
+    setTimeout(() => overlay.classList.remove('active'), 800);
+  }
+
+  setModePending(_mode: 'jarvis' | 'megatron', name: string) {
+    const badge = this.root.querySelector('#mode-badge') as HTMLElement;
+    badge.textContent = `→ ${name}`;
+    badge.classList.add('pending');
+  }
 
   setCameraInfo(cameraId: string, width: number, height: number) {
     this.cameraId = cameraId || 'default';
@@ -441,6 +473,7 @@ export class HUD {
     else if (id === 'swap') this.toggleSwap();
     else if (id === 'diagnostic') this.toggleDiagnostic();
     else if (id === 'export') this.exportDiagnostics();
+    else if (id === 'mode-toggle') this.modeHandler?.(this.currentMode === 'jarvis' ? 'megatron' : 'jarvis');
   }
 
   private renderSelection() {

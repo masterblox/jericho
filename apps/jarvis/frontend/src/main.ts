@@ -75,7 +75,14 @@ async function main() {
   const bridge = new BridgeClient({
     onReady: () => hud.setStatus('JARVIS · ONLINE', true),
     onArmed: (a) => hud.setArmed(a),
-    onStatus: (s) => hud.setStatus(`JARVIS · ${s.toUpperCase()}`),
+    onModeChange: (mode, name) => {
+      hud.setMode(mode, name);
+      hud.setStatus(`${name} · ${mode === 'megatron' ? 'COMBAT MODE' : 'ONLINE'}`, true);
+    },
+    onModePending: (mode, name) => {
+      hud.setModePending(mode, name);
+    },
+    onStatus: (s) => hud.setStatus(`${s.toUpperCase()}`),
     onText: (t) => hud.setTranscript(t),
     onToolStart: (name, args) => hud.addTask(name, TOOL_LABELS[name] ?? name),
     onToolResult: (name, result) => hud.completeTask(name, result),
@@ -83,6 +90,8 @@ async function main() {
   });
   // click the standby badge for a manual nudge
   hud.onWakeClick(() => bridge.wake());
+  // gesture/button toggle for persona mode
+  hud.onModeToggle((mode) => bridge.setMode(mode));
   bridge.start();
 
   app.classList.remove('boot');
