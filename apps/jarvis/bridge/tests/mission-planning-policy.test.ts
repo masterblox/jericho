@@ -79,6 +79,61 @@ describe('bounded mission planning', () => {
     };
     expect(() => createMissionPlan(recursive, registry(), now)).toThrow(/unrestricted/i);
   });
+
+  it('rejects tools, models, writable scopes, and worker expansion outside registered capabilities', () => {
+    const unknownTool = planInput();
+    unknownTool.taskGraph[1] = {
+      ...unknownTool.taskGraph[1],
+      requiredTools: ['root.shell'],
+    };
+    expect(() => createMissionPlan(unknownTool, registry(), now)).toThrow(/tool|root\.shell/i);
+
+    const model = planInput();
+    model.taskGraph[1] = { ...model.taskGraph[1], model: 'unregistered-model' };
+    expect(() => createMissionPlan(model, registry(), now)).toThrow(/model/i);
+
+    const repository = planInput();
+    repository.taskGraph[1] = {
+      ...repository.taskGraph[1],
+      writableScope: {
+        ...repository.taskGraph[1].writableScope,
+        allowedRepositories: [{
+          repository: 'jericho',
+          writablePaths: ['private/secrets'],
+          mutationClasses: [MutationClass.Reversible],
+        }],
+      },
+    };
+    expect(() => createMissionPlan(repository, registry(), now)).toThrow(/scope|repository|writable/i);
+
+    const data = planInput();
+    data.taskGraph[0] = {
+      ...data.taskGraph[0],
+      writableScope: {
+        ...data.taskGraph[0].writableScope,
+        allowedDataScopes: ['private:all'],
+      },
+    };
+    expect(() => createMissionPlan(data, registry(), now)).toThrow(/scope|data/i);
+
+    const expandingCapability = capability(
+      'cap-code',
+      'dev-agent',
+      AgentLane.Dev,
+      ['code.edit', 'code.test'],
+    );
+    expandingCapability.mayCreateAssignments = true;
+    expect(() =>
+      createMissionPlan(
+        planInput(),
+        new CapabilityRegistry([
+          capability('cap-research', 'research-agent', AgentLane.Researcher, ['research.web']),
+          expandingCapability,
+        ]),
+        now,
+      ),
+    ).toThrow(/create assignments|worker expansion|delegate/i);
+  });
 });
 
 describe('one-approval mission policy', () => {
@@ -219,7 +274,16 @@ function task(
     requiredActions,
     dependsOn,
     evidenceEventIds: ['evt-1'],
-    expectedArtifact: { type: 'report', description: 'Verified report', verification: ['tests-pass'] },
+    expectedArtifact: {
+      type: 'report',
+      description: 'Verified report',
+      verification: ['tests-pass'],
+      requiredEvidence: ['test-report'],
+    },
+    requiredTools: lane === AgentLane.Researcher ? ['web'] : ['git'],
+    model: 'local',
+    maxTokens: 5_000,
+    writableScope: permissions(),
     input: {},
     estimatedCostMicroUsd: 100_000,
     route: RouteType.Agent,

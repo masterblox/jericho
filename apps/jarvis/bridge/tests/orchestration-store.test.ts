@@ -109,7 +109,7 @@ describe('orchestration truth records', () => {
         ...approved,
         objective: 'Silently changed objective',
       }),
-    ).toThrow(/immutable|conflict/i);
+    ).toThrow(/immutable|conflict|lifecycle metadata/i);
 
     const revisionTasks = makePlan().taskGraph.map((task) => ({
       ...task,
@@ -132,6 +132,69 @@ describe('orchestration truth records', () => {
     expect(reopened.listMissions({ seriesId: 'mission-series' }).map((item) => item.version)).toEqual([2, 1]);
   });
 
+  it('rejects forged lifecycle or approval metadata when creating a plan', () => {
+    const store = openStore();
+    store.saveIntent(makeIntent());
+    for (const capability of capabilities()) store.registerAgentCapability(capability);
+    const plan = makePlan();
+
+    for (const forged of [
+      { ...plan, status: LifecycleStatus.Approved },
+      { ...plan, status: LifecycleStatus.Active },
+      { ...plan, approvalDecisionId: 'forged-decision' },
+      { ...plan, approvedAt: T1 },
+      { ...plan, startedAt: T1 },
+      { ...plan, completedAt: T1 },
+      { ...plan, cancelRequestedAt: T1 },
+    ]) {
+      expect(() => store.createMissionPlan(forged)).toThrow(/pending approval|lifecycle|metadata/i);
+    }
+    expect(store.listMissions()).toEqual([]);
+  });
+
+  it('records valid proposal and preference transitions as immutable decisions', () => {
+    const store = openStore();
+    store.saveProposal(makeProposal());
+    store.savePreferenceChange(makePreference());
+    const proposalDecision = makeDecision({
+      id: 'decision-proposal',
+      proposalId: 'proposal-1',
+    });
+    delete proposalDecision.missionId;
+    const preferenceDecision = makeDecision({
+      id: 'decision-preference',
+      preferenceChangeId: 'preference-1',
+    });
+    delete preferenceDecision.missionId;
+
+    const proposal = store.transitionProposal(
+      'proposal-1',
+      LifecycleStatus.PendingApproval,
+      LifecycleStatus.Approved,
+      proposalDecision,
+    );
+    const preference = store.transitionPreferenceChange(
+      'preference-1',
+      LifecycleStatus.PendingApproval,
+      LifecycleStatus.Approved,
+      preferenceDecision,
+    );
+
+    expect(proposal.status).toBe(LifecycleStatus.Approved);
+    expect(preference.status).toBe(LifecycleStatus.Approved);
+    expect(store.listDecisions()).toHaveLength(2);
+    expect(() =>
+      store.transitionProposal(
+        'proposal-1',
+        LifecycleStatus.Approved,
+        LifecycleStatus.PendingApproval,
+        makeDecision({ id: 'decision-backward' }),
+      ),
+    ).toThrow(/transition/i);
+    expect(store.getDecision('decision-proposal')?.proposalId).toBe('proposal-1');
+    expect(store.getDecision('decision-preference')?.preferenceChangeId).toBe('preference-1');
+  });
+
   it('authenticates orchestration projections and encrypted bodies', () => {
     const path = temporaryDatabasePath();
     const store = openStore(path);
@@ -151,6 +214,30 @@ describe('orchestration truth records', () => {
 });
 
 describe('durable assignment queue', () => {
+  it('binds one assignment exactly to its approved task definition', () => {
+    const mutations: Array<[string, (value: Assignment) => Assignment]> = [
+      ['instructions', (value) => ({ ...value, instructions: { expectedRuntimeMs: 99 } })],
+      ['evidence', (value) => ({ ...value, evidenceEventIds: ['evt-new'] })],
+      ['estimate', (value) => ({ ...value, estimatedCostMicroUsd: value.estimatedCostMicroUsd - 1 })],
+      ['attempts', (value) => ({ ...value, maxAttempts: value.maxAttempts + 1 })],
+      ['route', (value) => ({ ...value, route: RouteType.Connector })],
+      ['artifact', (value) => ({ ...value, expectedArtifact: { ...value.expectedArtifact, description: 'Changed' } })],
+    ];
+    for (const [name, mutate] of mutations) {
+      const store = openStore();
+      seedApprovedMission(store);
+      expect(() => store.enqueueAssignment(mutate(makeAssignment()))).toThrow(/approved|exact|task|retry/i);
+      expect(store.listAssignments(), name).toEqual([]);
+    }
+
+    const store = openStore();
+    seedApprovedMission(store);
+    store.enqueueAssignment(makeAssignment());
+    expect(() =>
+      store.enqueueAssignment(makeAssignment({ id: 'assignment-duplicate', idempotencyKey: 'other-key' })),
+    ).toThrow(/mission task|unique|duplicate/i);
+  });
+
   it('leases only dependency-ready work and advances the DAG after verified completion', () => {
     const store = openStore();
     const plan = seedApprovedMission(store);
@@ -161,7 +248,8 @@ describe('durable assignment queue', () => {
       agentId: 'dev-agent',
       capabilityIds: ['cap-code'],
       idempotencyKey: 'assignment-code-key',
-      expectedArtifact: { type: 'code', description: 'Code', verification: ['tests-pass'] },
+      expectedArtifact: { type: 'code', description: 'Code', verification: ['tests-pass'], requiredEvidence: ['test-report'] },
+      estimatedCostMicroUsd: 200,
     }));
 
     const first = store.leaseReadyAssignments({ workerId: 'worker-a', now: T1, leaseMs: 120_000, limit: 4 });
@@ -175,10 +263,9 @@ describe('durable assignment queue', () => {
 
   it('enforces per-mission concurrency and lease fencing after expiry', () => {
     const store = openStore();
-    seedApprovedMission(store, { maxConcurrency: 1 });
+    seedApprovedMission(store, { maxConcurrency: 1 }, independentTasks());
     store.enqueueAssignment(makeAssignment());
-    // A second assignment for the same ready task is legal but cannot lease concurrently.
-    store.enqueueAssignment(makeAssignment({ id: 'assignment-research-2', idempotencyKey: 'assignment-research-key-2' }));
+    store.enqueueAssignment(makeCodeAssignment());
 
     const first = store.leaseReadyAssignments({ workerId: 'worker-old', now: T1, leaseMs: 1_000, limit: 2 });
     expect(first).toHaveLength(1);
@@ -191,7 +278,7 @@ describe('durable assignment queue', () => {
     ).toThrow(/lease|fencing/i);
   });
 
-  it('retries only within the approved limit and supports queued and active cancellation', () => {
+  it('retries only within the approved limit', () => {
     const store = openStore();
     seedApprovedMission(store, { maxRetriesPerAssignment: 1, maxConcurrency: 2 });
     store.enqueueAssignment(makeAssignment());
@@ -203,14 +290,31 @@ describe('durable assignment queue', () => {
     const terminal = store.failAssignment(retried.id, retried.leaseToken!, { message: 'again' }, T3, T3);
     expect(terminal.status).toBe(LifecycleStatus.Failed);
 
-    store.enqueueAssignment(makeAssignment({ id: 'assignment-cancel-active', idempotencyKey: 'cancel-active', assignedAt: T3, availableAt: T3 }));
-    store.enqueueAssignment(makeAssignment({ id: 'assignment-cancel-queued', idempotencyKey: 'cancel-queued', assignedAt: T3, availableAt: T3 }));
-    const [otherActive] = store.leaseReadyAssignments({ workerId: 'worker', now: T3, leaseMs: 10_000, limit: 1 });
-    store.requestMissionCancellation('mission-v1', 'Carlos cancelled', T3);
-    expect(store.getAssignment('assignment-cancel-queued')?.status).toBe(LifecycleStatus.Cancelled);
-    expect(store.getAssignment(otherActive.id)?.cancelRequestedAt).toBe(T3);
-    const cancelled = store.acknowledgeAssignmentCancellation(otherActive.id, otherActive.leaseToken!, T3);
-    expect(cancelled.status).toBe(LifecycleStatus.Cancelled);
+    expect(store.getMission('mission-v1')?.status).toBe(LifecycleStatus.Failed);
+  });
+
+  it('cancels an expired cancel-requested lease and propagates terminal failure to the mission', () => {
+    const cancelledStore = openStore();
+    seedApprovedMission(cancelledStore, { maxConcurrency: 1 }, independentTasks());
+    cancelledStore.enqueueAssignment(makeAssignment());
+    cancelledStore.enqueueAssignment(makeCodeAssignment());
+    const [leased] = cancelledStore.leaseReadyAssignments({ workerId: 'worker', now: T1, leaseMs: 1_000, limit: 1 });
+    cancelledStore.requestMissionCancellation('mission-v1', 'stop', T1);
+    const queued = cancelledStore.listAssignments().find((item) => item.id !== leased.id)!;
+    expect(queued.status).toBe(LifecycleStatus.Cancelled);
+    expect(() =>
+      cancelledStore.completeAssignment(leased.id, leased.leaseToken!, { type: 'report' }, T2),
+    ).toThrow(/cancel|lease/i);
+    cancelledStore.leaseReadyAssignments({ workerId: 'other', now: T2, leaseMs: 1_000, limit: 1 });
+    expect(cancelledStore.getAssignment(leased.id)?.status).toBe(LifecycleStatus.Cancelled);
+
+    const failedStore = openStore();
+    seedApprovedMission(failedStore, { maxRetriesPerAssignment: 0 });
+    failedStore.enqueueAssignment(makeAssignment({ maxAttempts: 1 }));
+    const [attempt] = failedStore.leaseReadyAssignments({ workerId: 'worker', now: T1, leaseMs: 120_000, limit: 1 });
+    failedStore.failAssignment(attempt.id, attempt.leaseToken!, { message: 'terminal' }, T2, T2);
+    expect(failedStore.getMissionTask('task-research')?.status).toBe(LifecycleStatus.Failed);
+    expect(failedStore.getMission('mission-v1')?.status).toBe(LifecycleStatus.Failed);
   });
 });
 
@@ -233,6 +337,41 @@ describe('receipt idempotency', () => {
       evidenceEventIds: ['evt-delivery'],
     });
     expect(completed).toMatchObject({ verified: true, externalId: 'telegram-message-10' });
+  });
+
+  it('accepts only pristine pending reservations and makes terminal receipts immutable', () => {
+    const store = openStore();
+    expect(() =>
+      store.reserveReceipt(makeReceipt({ status: ReceiptStatus.Succeeded, verified: true })),
+    ).toThrow(/pending|reservation/i);
+    expect(() =>
+      store.reserveReceipt(makeReceipt({ externalId: 'already-sent' })),
+    ).toThrow(/pending|reservation/i);
+
+    const receipt = store.reserveReceipt(makeReceipt());
+    store.completeReceipt(receipt.id, {
+      status: ReceiptStatus.Succeeded,
+      externalId: 'external-1',
+      result: { delivered: true },
+      verified: true,
+      verifiedAt: T2,
+      completedAt: T2,
+      evidenceEventIds: ['evt-verified'],
+    });
+    expect(() =>
+      store.completeReceipt(receipt.id, {
+        status: ReceiptStatus.Failed,
+        error: { message: 'rewrite' },
+        verified: false,
+        completedAt: T3,
+        evidenceEventIds: [],
+      }),
+    ).toThrow(/terminal|immutable|transition/i);
+    expect(store.getReceipt(receipt.id)).toMatchObject({
+      status: ReceiptStatus.Succeeded,
+      externalId: 'external-1',
+      verified: true,
+    });
   });
 });
 
@@ -342,10 +481,14 @@ function makePlan(overrides: Partial<MissionPlanInput> = {}): MissionPlan {
         selectedAgentId: 'research-agent',
         capabilityIds: ['cap-research'],
         requiredActions: ['research.web'],
+        requiredTools: ['web'],
+        model: 'local',
+        maxTokens: 5_000,
+        writableScope: permissions(),
         dependsOn: [],
         evidenceEventIds: [],
-        expectedArtifact: { type: 'report', description: 'Report', verification: ['source-check'] },
-        input: {},
+        expectedArtifact: { type: 'report', description: 'Report', verification: ['source-check'], requiredEvidence: ['source-evidence'] },
+        input: { note: 'private instructions', expectedRuntimeMs: 1_000 },
         estimatedCostMicroUsd: 100,
         route: RouteType.Agent,
         risk: RiskLevel.Low,
@@ -359,10 +502,14 @@ function makePlan(overrides: Partial<MissionPlanInput> = {}): MissionPlan {
         selectedAgentId: 'dev-agent',
         capabilityIds: ['cap-code'],
         requiredActions: ['code.edit', 'code.test'],
+        requiredTools: ['git'],
+        model: 'local',
+        maxTokens: 5_000,
+        writableScope: permissions(),
         dependsOn: ['task-research'],
         evidenceEventIds: [],
-        expectedArtifact: { type: 'code', description: 'Code', verification: ['tests-pass'] },
-        input: {},
+        expectedArtifact: { type: 'code', description: 'Code', verification: ['tests-pass'], requiredEvidence: ['test-report'] },
+        input: { note: 'private instructions', expectedRuntimeMs: 1_000 },
         estimatedCostMicroUsd: 200,
         route: RouteType.Agent,
         risk: RiskLevel.Low,
@@ -397,12 +544,23 @@ function seedMission(store: JerichoStore): MissionPlan {
   return store.createMissionPlan(makePlan());
 }
 
-function seedApprovedMission(store: JerichoStore, budget: Partial<MissionPlan['budget']> = {}): MissionPlan {
+function seedApprovedMission(
+  store: JerichoStore,
+  budget: Partial<MissionPlan['budget']> = {},
+  taskGraph?: MissionPlan['taskGraph'],
+): MissionPlan {
   store.saveIntent(makeIntent());
   for (const capability of capabilities()) store.registerAgentCapability(capability);
-  const plan = makePlan({ budget: { ...makePlan().budget, ...budget } });
+  const plan = makePlan({
+    budget: { ...makePlan().budget, ...budget },
+    ...(taskGraph ? { taskGraph } : {}),
+  });
   store.createMissionPlan(plan);
   return store.approveMission(plan.id, plan.planHash, makeDecision());
+}
+
+function independentTasks(): MissionPlan['taskGraph'] {
+  return makePlan().taskGraph.map((task) => ({ ...task, dependsOn: [] }));
 }
 
 function makeDecision(overrides: Partial<DecisionRecord> = {}): DecisionRecord {
@@ -432,9 +590,9 @@ function makeAssignment(overrides: Partial<Assignment> = {}): Assignment {
     status: LifecycleStatus.Queued,
     route: RouteType.Agent,
     risk: RiskLevel.Low,
-    instructions: { note: 'private instructions' },
+    instructions: { note: 'private instructions', expectedRuntimeMs: 1_000 },
     evidenceEventIds: [],
-    expectedArtifact: { type: 'report', description: 'Report', verification: ['source-check'] },
+    expectedArtifact: { type: 'report', description: 'Report', verification: ['source-check'], requiredEvidence: ['source-evidence'] },
     idempotencyKey: 'assignment-research-key',
     attempt: 0,
     maxAttempts: 2,
@@ -444,6 +602,24 @@ function makeAssignment(overrides: Partial<Assignment> = {}): Assignment {
     provenance: provenance(T1),
     ...overrides,
   };
+}
+
+function makeCodeAssignment(overrides: Partial<Assignment> = {}): Assignment {
+  return makeAssignment({
+    id: 'assignment-code',
+    missionTaskId: 'task-code',
+    agentId: 'dev-agent',
+    capabilityIds: ['cap-code'],
+    expectedArtifact: {
+      type: 'code',
+      description: 'Code',
+      verification: ['tests-pass'],
+      requiredEvidence: ['test-report'],
+    },
+    idempotencyKey: 'assignment-code-key',
+    estimatedCostMicroUsd: 200,
+    ...overrides,
+  });
 }
 
 function makeProposal(overrides: Partial<Proposal> = {}): Proposal {

@@ -510,6 +510,13 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX cost_records_mission_idx ON cost_records (mission_id, incurred_at);
     `,
   },
+  {
+    version: 5,
+    sql: `
+      CREATE UNIQUE INDEX assignments_one_per_task_idx
+      ON assignments (mission_id, mission_task_id);
+    `,
+  },
 ];
 
 export class JerichoStore {
@@ -952,6 +959,18 @@ export class JerichoStore {
     assertMissionPlan(plan);
     const normalized = normalizeMission(plan);
     assertMissionPlan(normalized);
+    if (
+      normalized.status !== LifecycleStatus.PendingApproval ||
+      normalized.approvalDecisionId !== undefined ||
+      normalized.approvedAt !== undefined ||
+      normalized.startedAt !== undefined ||
+      normalized.completedAt !== undefined ||
+      normalized.cancelRequestedAt !== undefined
+    ) {
+      throw new Error(
+        `Mission ${normalized.id} creation requires pending approval with no lifecycle metadata`,
+      );
+    }
     if (computeMissionPlanHash(normalized) !== normalized.planHash) {
       throw new MissionPlanConflictError(normalized.id);
     }
@@ -1146,6 +1165,24 @@ export class JerichoStore {
     ));
   }
 
+  transitionProposal(
+    id: string,
+    expectedStatus: LifecycleStatus,
+    nextStatus: LifecycleStatus,
+    decision: DecisionRecord,
+  ): Proposal {
+    return this.#writeTransaction(() => {
+      const proposal = this.getProposal(id);
+      if (!proposal) throw new Error(`Proposal ${id} does not exist`);
+      assertLifecycleTransition('proposal', proposal.status, expectedStatus, nextStatus);
+      assertDecisionMatchesStatus(decision, nextStatus);
+      const boundDecision = normalizeDecision({ ...decision, proposalId: id });
+      this.#insertDecision(boundDecision);
+      this.#writeProposalRecord({ ...proposal, status: nextStatus });
+      return this.getProposal(id)!;
+    });
+  }
+
   appendDecision(decision: DecisionRecord): DecisionRecord {
     assertDecisionRecord(decision);
     return this.#writeTransaction(() => this.#insertDecision(normalizeDecision(decision)));
@@ -1209,9 +1246,47 @@ export class JerichoStore {
     ));
   }
 
+  transitionPreferenceChange(
+    id: string,
+    expectedStatus: LifecycleStatus,
+    nextStatus: LifecycleStatus,
+    decision: DecisionRecord,
+  ): PreferenceChange {
+    return this.#writeTransaction(() => {
+      const preference = this.getPreferenceChange(id);
+      if (!preference) throw new Error(`Preference change ${id} does not exist`);
+      assertLifecycleTransition(
+        'preference',
+        preference.status,
+        expectedStatus,
+        nextStatus,
+      );
+      assertDecisionMatchesStatus(decision, nextStatus);
+      const boundDecision = normalizeDecision({
+        ...decision,
+        preferenceChangeId: id,
+      });
+      this.#insertDecision(boundDecision);
+      this.#writePreferenceRecord({ ...preference, status: nextStatus });
+      return this.getPreferenceChange(id)!;
+    });
+  }
+
   reserveReceipt(receipt: ActionReceipt): ActionReceipt {
     assertActionReceipt(receipt);
     const normalized = normalizeReceipt(receipt);
+    if (
+      normalized.status !== ReceiptStatus.Pending ||
+      normalized.verified ||
+      normalized.startedAt !== undefined ||
+      normalized.completedAt !== undefined ||
+      normalized.externalId !== undefined ||
+      normalized.result !== undefined ||
+      normalized.error !== undefined ||
+      normalized.verifiedAt !== undefined
+    ) {
+      throw new Error('Receipt reservation must be pristine, pending, and unverified');
+    }
     return this.#writeTransaction(() => {
       const row = this.#database.prepare('SELECT * FROM receipts WHERE idempotency_key = ?').get(normalized.idempotencyKey);
       if (row) {
@@ -1221,7 +1296,10 @@ export class JerichoStore {
         if (
           existing.action === normalized.action &&
           existing.destination === normalized.destination &&
-          existing.connectorId === normalized.connectorId
+          existing.connectorId === normalized.connectorId &&
+          existing.assignmentId === normalized.assignmentId &&
+          existing.missionTaskId === normalized.missionTaskId &&
+          existing.proposalId === normalized.proposalId
         ) return existing;
         throw new IdempotencyConflictError(normalized.idempotencyKey);
       }
@@ -1276,6 +1354,27 @@ export class JerichoStore {
       const current = this.#readRecord<ActionReceipt>(
         'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
       );
+      if (
+        current.status === ReceiptStatus.Succeeded ||
+        current.status === ReceiptStatus.Failed ||
+        current.status === ReceiptStatus.Denied ||
+        current.status === ReceiptStatus.RolledBack
+      ) {
+        throw new Error(`Receipt ${id} is terminal and immutable`);
+      }
+      if (
+        input.status !== ReceiptStatus.Succeeded &&
+        input.status !== ReceiptStatus.Failed &&
+        input.status !== ReceiptStatus.Denied
+      ) {
+        throw new Error(`Receipt ${id} has an invalid forward transition`);
+      }
+      if (
+        input.status === ReceiptStatus.Succeeded &&
+        (!input.verified || !input.externalId || !input.verifiedAt)
+      ) {
+        throw new Error(`Receipt ${id} success requires verified external evidence`);
+      }
       const completed: ActionReceipt = normalizeReceipt({
         ...current,
         status: input.status,
@@ -1357,6 +1456,14 @@ export class JerichoStore {
       const byKey = this.#database.prepare('SELECT id FROM assignments WHERE idempotency_key = ?')
         .get(normalized.idempotencyKey);
       if (byKey) throw new IdempotencyConflictError(normalized.idempotencyKey);
+      const taskAssignment = this.#database.prepare(
+        'SELECT id FROM assignments WHERE mission_id = ? AND mission_task_id = ?',
+      ).get(normalized.missionId, normalized.missionTaskId);
+      if (taskAssignment) {
+        throw new Error(
+          `Mission task ${normalized.missionTaskId} already has an assignment`,
+        );
+      }
       const mission = this.getMission(normalized.missionId);
       if (!mission || (mission.status !== LifecycleStatus.Approved && mission.status !== LifecycleStatus.Active)) {
         throw new Error(`Assignment mission ${normalized.missionId} is not approved`);
@@ -1386,8 +1493,12 @@ export class JerichoStore {
       if (normalized.maxAttempts !== mission.budget.maxRetriesPerAssignment + 1) {
         throw new Error(`Assignment ${normalized.id} max attempts exceed the approved retry budget`);
       }
-      if (normalized.estimatedCostMicroUsd > definition.estimatedCostMicroUsd) {
-        throw new Error(`Assignment ${normalized.id} expands the approved cost estimate`);
+      if (
+        canonicalJson(normalized.instructions) !== canonicalJson(definition.input) ||
+        !sameStrings(normalized.evidenceEventIds, definition.evidenceEventIds) ||
+        normalized.estimatedCostMicroUsd !== definition.estimatedCostMicroUsd
+      ) {
+        throw new Error(`Assignment ${normalized.id} is not exactly bound to the approved task`);
       }
       const sealed = this.#sealRecord('assignments', normalized.id, normalized);
       const stored = sealed.record;
@@ -1521,6 +1632,9 @@ export class JerichoStore {
     return this.#writeTransaction(() => {
       const at = normalizeTimestamp(completedAt);
       const assignment = this.#requireAssignmentLease(id, leaseToken, at);
+      if (assignment.cancelRequestedAt) {
+        throw new Error(`Assignment ${id} is cancelled and cannot complete`);
+      }
       const completed: Assignment = withoutLease({
         ...assignment,
         status: LifecycleStatus.Succeeded,
@@ -1610,6 +1724,15 @@ export class JerichoStore {
         updatedAt: at,
         ...(retry ? {} : { completedAt: at }),
       });
+      if (!retry) {
+        const mission = this.getMission(assignment.missionId)!;
+        this.#writeMissionRecord({
+          ...mission,
+          status: LifecycleStatus.Failed,
+          completedAt: at,
+          updatedAt: at,
+        });
+      }
       return this.getAssignment(id)!;
     });
   }
@@ -1815,13 +1938,20 @@ export class JerichoStore {
       const assignment = this.#readRecord<Assignment>(
         'assignments', String(row.id), row, (value) => assertAssignment(value), (value) => value.id,
       );
+      const cancelled = Boolean(assignment.cancelRequestedAt);
       this.#writeAssignmentRecord(withoutLease({
         ...assignment,
-        status: LifecycleStatus.Queued,
+        status: cancelled ? LifecycleStatus.Cancelled : LifecycleStatus.Queued,
+        ...(cancelled ? { completedAt: now } : {}),
       }));
       const task = this.getMissionTask(assignment.missionTaskId);
       if (task && task.status === LifecycleStatus.Active) {
-        this.#writeMissionTaskRecord({ ...task, status: LifecycleStatus.Queued, updatedAt: now });
+        this.#writeMissionTaskRecord({
+          ...task,
+          status: cancelled ? LifecycleStatus.Cancelled : LifecycleStatus.Queued,
+          updatedAt: now,
+          ...(cancelled ? { completedAt: now } : {}),
+        });
       }
     }
   }
@@ -1966,6 +2096,45 @@ export class JerichoStore {
       stored.completedAt ?? null, sealed.integrityHash, sealed.body,
       stored.idempotencyKey, stored.destination, stored.externalId ?? null,
       stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt, stored.id,
+    );
+  }
+
+  #writeProposalRecord(proposal: Proposal): void {
+    assertProposal(proposal);
+    const normalized = normalizeProposal(proposal);
+    const sealed = this.#sealRecord('proposals', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE proposals SET
+        assignment_id = ?, mission_task_id = ?, proposal_type = ?, status = ?,
+        route = ?, risk = ?, confidence = ?, created_at = ?, expires_at = ?,
+        integrity_hash = ?, body = ?
+      WHERE id = ?
+    `).run(
+      stored.assignmentId ?? null, stored.missionTaskId ?? null, stored.kind,
+      stored.status, stored.route, stored.risk, stored.confidence ?? null,
+      stored.createdAt, stored.expiresAt ?? null, sealed.integrityHash,
+      sealed.body, stored.id,
+    );
+  }
+
+  #writePreferenceRecord(preference: PreferenceChange): void {
+    assertPreferenceChange(preference);
+    const normalized = normalizePreference(preference);
+    const sealed = this.#sealRecord(
+      'preference_changes',
+      normalized.id,
+      normalized,
+    );
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE preference_changes SET
+        entity_id = ?, status = ?, route = ?, risk = ?, changed_at = ?,
+        integrity_hash = ?, body = ?
+      WHERE id = ?
+    `).run(
+      stored.entityId ?? null, stored.status, stored.route, stored.risk,
+      stored.changedAt, sealed.integrityHash, sealed.body, stored.id,
     );
   }
 
@@ -2642,6 +2811,38 @@ function withoutLease(assignment: Assignment): Assignment {
     ...remaining
   } = assignment;
   return remaining;
+}
+
+function assertLifecycleTransition(
+  kind: 'proposal' | 'preference',
+  actual: LifecycleStatus,
+  expected: LifecycleStatus,
+  next: LifecycleStatus,
+): void {
+  if (actual !== expected) {
+    throw new Error(`${kind} lifecycle transition expected ${expected} but found ${actual}`);
+  }
+  const common = new Map<LifecycleStatus, readonly LifecycleStatus[]>([
+    [LifecycleStatus.Draft, [LifecycleStatus.PendingApproval]],
+    [LifecycleStatus.PendingApproval, [LifecycleStatus.Approved, LifecycleStatus.Rejected]],
+    [LifecycleStatus.Approved, [LifecycleStatus.Active, LifecycleStatus.Archived]],
+    [LifecycleStatus.Active, [LifecycleStatus.Archived]],
+  ]);
+  if (!common.get(actual)?.includes(next)) {
+    throw new Error(`Invalid ${kind} lifecycle transition from ${actual} to ${next}`);
+  }
+}
+
+function assertDecisionMatchesStatus(
+  decision: DecisionRecord,
+  status: LifecycleStatus,
+): void {
+  if (
+    (status === LifecycleStatus.Approved && decision.outcome !== DecisionOutcome.Approved) ||
+    (status === LifecycleStatus.Rejected && decision.outcome !== DecisionOutcome.Rejected)
+  ) {
+    throw new Error(`Decision outcome does not authorize ${status} transition`);
+  }
 }
 
 function maximumDefined(

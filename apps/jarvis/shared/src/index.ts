@@ -359,6 +359,7 @@ export interface ArtifactRequirement {
   description: string;
   schema?: JsonObject;
   verification: string[];
+  requiredEvidence: string[];
 }
 
 export interface MissionTaskDefinition {
@@ -371,6 +372,10 @@ export interface MissionTaskDefinition {
   selectedAgentId: string;
   capabilityIds: string[];
   requiredActions: string[];
+  requiredTools: string[];
+  model: string;
+  maxTokens: number;
+  writableScope: MissionPermissions;
   dependsOn: string[];
   evidenceEventIds: string[];
   expectedArtifact: ArtifactRequirement;
@@ -467,6 +472,10 @@ export interface MissionTask {
   selectedAgentId: string;
   capabilityIds: string[];
   requiredActions: string[];
+  requiredTools: string[];
+  model: string;
+  maxTokens: number;
+  writableScope: MissionPermissions;
   requiredCapabilities: string[];
   dependsOn: string[];
   evidenceEventIds: string[];
@@ -614,6 +623,7 @@ export interface DecisionRecord {
   missionId?: string;
   missionTaskId?: string;
   proposalId?: string;
+  preferenceChangeId?: string;
   decidedBy: string;
   outcome: DecisionOutcome;
   planHash?: string;
@@ -873,9 +883,12 @@ export function assertMissionTask(value: unknown): asserts value is MissionTask 
   assertEnum(value.lane, AgentLane, 'Mission task lane');
   assertNonNegativeInteger(value.sequence, 'Mission task sequence');
   assertNonNegativeInteger(value.estimatedCostMicroUsd, 'Mission task estimatedCostMicroUsd');
-  for (const field of ['capabilityIds', 'requiredActions', 'requiredCapabilities', 'dependsOn', 'evidenceEventIds']) {
+  assertNonEmptyString(value.model, 'Mission task model');
+  assertPositiveInteger(value.maxTokens, 'Mission task maxTokens');
+  for (const field of ['capabilityIds', 'requiredActions', 'requiredTools', 'requiredCapabilities', 'dependsOn', 'evidenceEventIds']) {
     assertDenseStringArray(value[field], `Mission task ${field}`);
   }
+  assertPermissions(value.writableScope, 'Mission task writableScope');
   assertArtifactRequirement(value.expectedArtifact, 'Mission task expectedArtifact');
   if ('externalAction' in value) assertExternalAction(value.externalAction, 'Mission task externalAction');
   assertJsonObject(value.input, 'Mission task input');
@@ -982,7 +995,7 @@ export function assertActionReceipt(value: unknown): asserts value is ActionRece
 export function assertDecisionRecord(value: unknown): asserts value is DecisionRecord {
   assertRecord(value, 'Decision');
   for (const field of ['id', 'decidedBy', 'rationale']) assertNonEmptyString(value[field], `Decision ${field}`);
-  for (const field of ['intentId', 'missionId', 'missionTaskId', 'proposalId']) if (field in value) assertNonEmptyString(value[field], `Decision ${field}`);
+  for (const field of ['intentId', 'missionId', 'missionTaskId', 'proposalId', 'preferenceChangeId']) if (field in value) assertNonEmptyString(value[field], `Decision ${field}`);
   if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
   assertEnum(value.outcome, DecisionOutcome, 'Decision outcome');
   assertDenseStringArray(value.assumptions, 'Decision assumptions');
@@ -1107,6 +1120,7 @@ function assertArtifactRequirement(value: unknown, field: string): void {
   assertNonEmptyString(value.description, `${field}.description`);
   if ('schema' in value) assertJsonObject(value.schema, `${field}.schema`);
   assertDenseStringArray(value.verification, `${field}.verification`);
+  assertDenseStringArray(value.requiredEvidence, `${field}.requiredEvidence`);
 }
 
 function assertMissionTaskDefinitionList(value: unknown, field: string): void {
@@ -1118,9 +1132,12 @@ function assertMissionTaskDefinitionList(value: unknown, field: string): void {
     assertEnum(item.kind, MissionTaskKind, `${field}[${index}].kind`);
     assertNonNegativeInteger(item.sequence, `${field}[${index}].sequence`);
     assertEnum(item.lane, AgentLane, `${field}[${index}].lane`);
-    for (const key of ['capabilityIds', 'requiredActions', 'dependsOn', 'evidenceEventIds']) {
+    assertNonEmptyString(item.model, `${field}[${index}].model`);
+    assertPositiveInteger(item.maxTokens, `${field}[${index}].maxTokens`);
+    for (const key of ['capabilityIds', 'requiredActions', 'requiredTools', 'dependsOn', 'evidenceEventIds']) {
       assertDenseStringArray(item[key], `${field}[${index}].${key}`);
     }
+    assertPermissions(item.writableScope, `${field}[${index}].writableScope`);
     assertArtifactRequirement(item.expectedArtifact, `${field}[${index}].expectedArtifact`);
     if ('externalAction' in item) assertExternalAction(item.externalAction, `${field}[${index}].externalAction`);
     assertJsonObject(item.input, `${field}[${index}].input`);

@@ -15,6 +15,10 @@ import {
 
 import type { CapabilityRegistry } from './capability-registry.js';
 import { computeMissionPlanHash } from './mission-hash.js';
+import {
+  externalActionScopeViolations,
+  permissionScopeViolations,
+} from './scope.js';
 
 export interface MissionPlanInput {
   id: string;
@@ -101,6 +105,28 @@ export function validateMissionPlanInput(
     }
     ids.add(task.id);
     sequences.add(task.sequence);
+    const missionScopeViolations = permissionScopeViolations(task.writableScope, input.permissions);
+    if (missionScopeViolations.length > 0) {
+      throw new Error(
+        `Task ${task.id} writable scope exceeds the mission: ${missionScopeViolations.join(', ')}`,
+      );
+    }
+    for (const tool of task.requiredTools) {
+      if (!task.writableScope.allowedTools.includes(tool)) {
+        throw new Error(`Task ${task.id} tool ${tool} is outside its writable scope`);
+      }
+    }
+    if (task.externalAction) {
+      const actionViolations = externalActionScopeViolations(
+        task.externalAction,
+        task.writableScope,
+      );
+      if (actionViolations.length > 0) {
+        throw new Error(
+          `Task ${task.id} external action exceeds its writable scope: ${actionViolations.join(', ')}`,
+        );
+      }
+    }
     registry.assertTaskSupported(task);
   }
   for (const task of input.taskGraph) {

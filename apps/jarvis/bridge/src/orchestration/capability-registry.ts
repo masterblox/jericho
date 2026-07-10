@@ -5,6 +5,8 @@ import {
   type MissionTaskDefinition,
 } from '@jericho/shared';
 
+import { mergePermissionScopes, permissionScopeViolations } from './scope.js';
+
 const RISK_ORDER: Record<RiskLevel, number> = {
   [RiskLevel.None]: 0,
   [RiskLevel.Low]: 1,
@@ -61,6 +63,9 @@ export class CapabilityRegistry {
       if (RISK_ORDER[capability.maximumRisk] < RISK_ORDER[task.risk]) {
         throw new Error(`Capability ${id} cannot accept ${task.risk} risk`);
       }
+      if (capability.mayCreateAssignments) {
+        throw new Error(`Capability ${id} may create assignments without a bounded delegation plan`);
+      }
       return capability;
     });
 
@@ -69,6 +74,38 @@ export class CapabilityRegistry {
       if (!supported.has(action)) {
         throw new Error(`Task ${task.id} action ${action} is not registered`);
       }
+    }
+    const supportedTools = new Set(capabilities.flatMap((item) => item.tools));
+    for (const tool of task.requiredTools) {
+      if (!supportedTools.has(tool)) {
+        throw new Error(`Task ${task.id} tool ${tool} is not registered`);
+      }
+    }
+    if (task.externalAction?.tool && !task.requiredTools.includes(task.externalAction.tool)) {
+      throw new Error(`Task ${task.id} external tool ${task.externalAction.tool} is not required`);
+    }
+    if (task.externalAction && !task.requiredActions.includes(task.externalAction.action)) {
+      throw new Error(`Task ${task.id} external action ${task.externalAction.action} is not registered`);
+    }
+    const modelCapabilities = capabilities.filter((item) =>
+      item.modelPolicy.allowedModels.includes(task.model),
+    );
+    if (modelCapabilities.length === 0) {
+      throw new Error(`Task ${task.id} model ${task.model} is not registered`);
+    }
+    if (
+      modelCapabilities.every(
+        (item) => task.maxTokens > item.modelPolicy.maxTokensPerAssignment,
+      )
+    ) {
+      throw new Error(`Task ${task.id} max tokens exceed the registered model policy`);
+    }
+    const scopeViolations = permissionScopeViolations(
+      task.writableScope,
+      mergePermissionScopes(capabilities.map((item) => item.writableScope)),
+    );
+    if (scopeViolations.length > 0) {
+      throw new Error(`Task ${task.id} writable scope is not registered: ${scopeViolations.join(', ')}`);
     }
     return capabilities.map((item) => structuredClone(item));
   }
