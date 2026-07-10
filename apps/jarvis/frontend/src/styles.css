@@ -484,3 +484,72 @@ html, body {
   display: flex; align-items: center; justify-content: center;
   color: var(--warn); font-size: 14px; padding: 40px; text-align: center;
 }
+
+/* mode badge — shows current persona */
+.mode-badge {
+  position: absolute; top: 72px; left: 50%; transform: translateX(-50%);
+  font-size: 9px; letter-spacing: 4px; color: var(--accent);
+  padding: 3px 12px; border: 1px solid var(--accent-dim); border-radius: 4px;
+  background: rgba(4,7,12,0.6);
+  transition: all 0.4s;
+}
+.mode-badge.pending {
+  color: var(--warn); border-color: var(--warn);
+  animation: mode-pending-pulse 0.8s ease-in-out infinite;
+}
+@keyframes mode-pending-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+.mode-badge.combat {
+  color: #ff3030; border-color: #ff3030;
+  text-shadow: 0 0 8px rgba(255,48,48,0.6);
+  box-shadow: 0 0 16px rgba(255,48,48,0.3);
+  animation: combat-pulse 2s ease-in-out infinite;
+}
+@keyframes combat-pulse {
+  0%, 100% { box-shadow: 0 0 16px rgba(255,48,48,0.3); }
+  50% { box-shadow: 0 0 32px rgba(255,48,48,0.6); }
+}
+
+/* transition overlay — brief flash when mode actually changes */
+.mode-transition-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  pointer-events: none; opacity: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(255,48,48,0.12), transparent 60%);
+}
+.mode-transition-overlay.active {
+  animation: mode-flash 0.8s ease-out;
+}
+@keyframes mode-flash {
+  0% { opacity: 0; }
+  15% { opacity: 1; }
+  100% { opacity: 0; }
+}
+
+.mode-toggle.ready {
+  color: #ff3030; border-color: #ff3030;
+}
+
+/* COMBAT MODE — the entire HUD shifts to red/crimson when Megatron is active */
+#app.combat-mode {
+  --accent: #ff3030;
+  --accent-dim: #3a0a0a;
+  --hot: #ff6600;
+  --line: rgba(255, 48, 48, 0.22);
+  background:
+    radial-gradient(1200px 800px at 50% 120%, rgba(255, 48, 48, 0.09), transparent 60%),
+    radial-gradient(900px 600px at 8% -8%, rgba(255, 48, 48, 0.07), transparent 55%),
+    var(--bg);
+}
+#app.combat-mode .start-overlay h1 {
+  color: #ff3030;
+  text-shadow: 0 0 30px rgba(255, 48, 48, 0.5);
+}
+#app.combat-mode .nav-head { color: #ff3030; }
+#app.combat-mode .status-line.online { color: #ff3030; }
+#app.combat-mode .nav-key { color: #ff3030; }
+#app.combat-mode .gesture-hover {
+  border-color: rgba(255, 48, 48, 0.72) !important;
+  box-shadow: 0 0 24px rgba(255, 48, 48, 0.22);
+}

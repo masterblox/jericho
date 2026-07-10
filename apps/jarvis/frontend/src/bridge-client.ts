@@ -1,10 +1,14 @@
 import { MicCapture, SpeakerPlayback } from './audio';
 
+export type PersonaMode = 'jarvis' | 'megatron';
+
 export interface BridgeEvents {
   onReady?: () => void;
   onVoices?: (voices: string[], active: string) => void;
   onVoiceSwitching?: (voice: string) => void;
   onVoiceFailed?: (voice: string) => void;
+  onModeChange?: (mode: PersonaMode, name: string) => void;
+  onModePending?: (mode: PersonaMode, name: string) => void;
   onArmed?: (armed: boolean) => void;
   onText?: (text: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
@@ -57,6 +61,12 @@ export class BridgeClient {
   setVoice(voice: string) {
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: 'set_voice', voice }));
+    }
+  }
+
+  setMode(mode: PersonaMode) {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type: 'set_mode', mode }));
     }
   }
 
@@ -137,6 +147,12 @@ export class BridgeClient {
         break;
       case 'voice_failed':
         this.events.onVoiceFailed?.(msg.voice);
+        break;
+      case 'mode_change':
+        this.events.onModeChange?.(msg.mode, msg.name);
+        break;
+      case 'mode_pending':
+        this.events.onModePending?.(msg.mode, msg.name);
         break;
       case 'armed':
         this.events.onArmed?.(!!msg.armed);
