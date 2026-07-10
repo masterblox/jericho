@@ -28,7 +28,7 @@ export function loadMasterKey(options: MasterKeyOptions = {}): Buffer {
   }
   const username = options.username ?? userInfo().username;
   const runSecurityCommand = options.runSecurityCommand ?? defaultSecurityCommand;
-  try {
+  const readPersistedKey = () => {
     const encoded = runSecurityCommand([
       'find-generic-password',
       '-s',
@@ -38,6 +38,9 @@ export function loadMasterKey(options: MasterKeyOptions = {}): Buffer {
       '-w',
     ]);
     return decodeMasterKey(encoded, 'macOS Keychain item jericho-core');
+  };
+  try {
+    return readPersistedKey();
   } catch (cause) {
     if (!isMissingKeychainItem(cause)) {
       throw new Error('Unable to read Jericho master key from macOS Keychain', {
@@ -51,19 +54,41 @@ export function loadMasterKey(options: MasterKeyOptions = {}): Buffer {
     throw new Error('Generated Jericho master key must be exactly 32 bytes');
   }
   const encoded = key.toString('base64');
-  runSecurityCommand(
-    [
-      'add-generic-password',
-      '-U',
-      '-s',
-      'jericho-core',
-      '-a',
-      username,
-      '-w',
-    ],
-    `${encoded}\n`,
-  );
-  return Buffer.from(key);
+  try {
+    runSecurityCommand(
+      [
+        'add-generic-password',
+        '-s',
+        'jericho-core',
+        '-a',
+        username,
+        '-w',
+      ],
+      `${encoded}\n`,
+    );
+  } catch (cause) {
+    if (!isDuplicateKeychainItem(cause)) {
+      throw new Error('Unable to persist Jericho master key in macOS Keychain', {
+        cause,
+      });
+    }
+    try {
+      return readPersistedKey();
+    } catch (readCause) {
+      throw new Error(
+        'Unable to read Jericho master key after concurrent Keychain initialization',
+        { cause: readCause },
+      );
+    }
+  }
+  try {
+    return readPersistedKey();
+  } catch (cause) {
+    throw new Error(
+      'Unable to read Jericho master key after Keychain initialization',
+      { cause },
+    );
+  }
 }
 
 function isMissingKeychainItem(cause: unknown): boolean {
@@ -72,6 +97,15 @@ function isMissingKeychainItem(cause: unknown): boolean {
     cause !== null &&
     'status' in cause &&
     cause.status === 44
+  );
+}
+
+function isDuplicateKeychainItem(cause: unknown): boolean {
+  return (
+    typeof cause === 'object' &&
+    cause !== null &&
+    'status' in cause &&
+    cause.status === 45
   );
 }
 

@@ -84,6 +84,8 @@ describe('loadMasterKey', () => {
   it('generates and persists a missing macOS Keychain key without putting it in argv', () => {
     const generated = Buffer.alloc(32, 31);
     const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    let persisted: string | undefined;
+    let findCalls = 0;
 
     const loaded = loadMasterKey({
       environment: {},
@@ -93,8 +95,13 @@ describe('loadMasterKey', () => {
       runSecurityCommand: (args, input) => {
         calls.push({ args, input });
         if (args[0] === 'find-generic-password') {
-          throw Object.assign(new Error('item not found'), { status: 44 });
+          findCalls += 1;
+          if (!persisted) {
+            throw Object.assign(new Error('item not found'), { status: 44 });
+          }
+          return `${persisted}\n`;
         }
+        persisted = input?.trim();
         return '';
       },
     });
@@ -103,7 +110,6 @@ describe('loadMasterKey', () => {
     expect(calls[1]).toEqual({
       args: [
         'add-generic-password',
-        '-U',
         '-s',
         'jericho-core',
         '-a',
@@ -113,6 +119,41 @@ describe('loadMasterKey', () => {
       input: `${generated.toString('base64')}\n`,
     });
     expect(calls[1].args).not.toContain(generated.toString('base64'));
+    expect(findCalls).toBe(2);
+  });
+
+  it('returns the persisted winner when another process wins key initialization', () => {
+    const generated = Buffer.alloc(32, 37);
+    const winner = Buffer.alloc(32, 43);
+    const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    let findCalls = 0;
+
+    const loaded = loadMasterKey({
+      environment: {},
+      platform: 'darwin',
+      username: 'test-user',
+      generateKey: () => Buffer.from(generated),
+      runSecurityCommand: (args, input) => {
+        calls.push({ args, input });
+        if (args[0] === 'find-generic-password') {
+          findCalls += 1;
+          if (findCalls === 1) {
+            throw Object.assign(new Error('item not found'), { status: 44 });
+          }
+          return `${winner.toString('base64')}\n`;
+        }
+        if (args.includes('-U')) {
+          return '';
+        }
+        throw Object.assign(new Error('duplicate item'), { status: 45 });
+      },
+    });
+
+    expect(loaded).toEqual(winner);
+    expect(findCalls).toBe(2);
+    expect(calls[1].args).not.toContain('-U');
+    expect(calls[1].args).not.toContain(generated.toString('base64'));
+    expect(calls[1].input).toBe(`${generated.toString('base64')}\n`);
   });
 
   it('fails closed with an actionable error off macOS when no key is configured', () => {
