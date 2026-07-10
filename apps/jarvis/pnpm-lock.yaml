@@ -17,6 +17,9 @@ importers:
       '@google/genai':
         specifier: ^1.0.0
         version: 1.52.0
+      '@jericho/shared':
+        specifier: workspace:*
+        version: link:../shared
       dotenv:
         specifier: ^16.4.5
         version: 16.6.1
@@ -36,9 +39,15 @@ importers:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
 
   frontend:
     dependencies:
+      '@jericho/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@mediapipe/tasks-vision':
         specifier: ^0.10.35
         version: 0.10.35
@@ -52,6 +61,12 @@ importers:
       vitest:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@22.20.1)(tsx@4.23.0)
+
+  shared:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
 
 packages:
 

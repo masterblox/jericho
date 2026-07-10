@@ -1,6 +1,7 @@
 packages:
   - 'frontend'
   - 'bridge'
+  - 'shared'
 allowBuilds:
   '@google/genai': true
   esbuild: true
