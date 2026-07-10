@@ -288,6 +288,36 @@ describe('MissionRunner external action receipts', () => {
     store.enqueueAssignment(externalAssignment({ expectedArtifact: requirement }));
     succeedReceipt(store, pendingReceipt());
     const execute = vi.fn<AssignmentExecutor['execute']>();
+    const verify = vi.fn<ArtifactVerifier['verify']>().mockResolvedValue(
+      verificationFor(requirement),
+    );
+    const runner = new MissionRunner(
+      store,
+      executor(execute),
+      verifier(verify, requirement),
+      runnerOptions(),
+    );
+
+    expect((await runner.runNext()).kind).toBe('completed');
+    expect(execute).not.toHaveBeenCalled();
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(store.getAssignment('assignment-1')?.status).toBe(LifecycleStatus.Succeeded);
+  });
+
+  it('does not reuse a verified receipt whose result violates the approved artifact schema', async () => {
+    const requirement: ArtifactRequirement = {
+      ...receiptRequirement(),
+      schema: {
+        type: 'object',
+        required: ['delivered'],
+        properties: { delivered: { type: 'boolean', const: false } },
+        additionalProperties: false,
+      },
+    };
+    const store = setup({ external: true, requirement });
+    store.enqueueAssignment(externalAssignment({ expectedArtifact: requirement }));
+    succeedReceipt(store, pendingReceipt());
+    const execute = vi.fn<AssignmentExecutor['execute']>();
     const runner = new MissionRunner(
       store,
       executor(execute),
@@ -295,9 +325,38 @@ describe('MissionRunner external action receipts', () => {
       runnerOptions(),
     );
 
-    expect((await runner.runNext()).kind).toBe('completed');
+    const outcome = await runner.runNext();
+
+    expect(outcome.kind).toBe('checkpoint');
     expect(execute).not.toHaveBeenCalled();
-    expect(store.getAssignment('assignment-1')?.status).toBe(LifecycleStatus.Succeeded);
+    expect(store.getAssignment('assignment-1')?.status).toBe(LifecycleStatus.Paused);
+    expect(store.getAssignment('assignment-1')?.artifact).toBeUndefined();
+  });
+
+  it('does not reuse a verified receipt when independent evidence lacks an approved selector', async () => {
+    const requirement = receiptRequirement();
+    const store = setup({ external: true, requirement });
+    store.enqueueAssignment(externalAssignment({ expectedArtifact: requirement }));
+    succeedReceipt(store, pendingReceipt());
+    const execute = vi.fn<AssignmentExecutor['execute']>();
+    const verify = vi.fn<ArtifactVerifier['verify']>().mockResolvedValue({
+      verified: true,
+      checks: ['destination-verified'],
+      evidence: [{ eventId: 'evt-existing-receipt', selector: 'wrong-selector' }],
+    });
+    const runner = new MissionRunner(
+      store,
+      executor(execute),
+      verifier(verify, requirement),
+      runnerOptions(),
+    );
+
+    const outcome = await runner.runNext();
+
+    expect(outcome.kind).toBe('checkpoint');
+    expect(execute).not.toHaveBeenCalled();
+    expect(verify).toHaveBeenCalledTimes(1);
+    expect(store.getAssignment('assignment-1')?.artifact).toBeUndefined();
   });
 
   it('checkpoints a mismatched receipt identity even when the key and result are verified', async () => {
@@ -363,6 +422,159 @@ describe('MissionRunner external action receipts', () => {
 });
 
 describe('MissionRunner runtime and cancellation fences', () => {
+  it('rejects lease settings that cannot heartbeat safely before expiry', () => {
+    const store = setup();
+    expect(() => new MissionRunner(
+      store,
+      executor(),
+      verifier(),
+      runnerOptions({ leaseMs: 1 }),
+    )).toThrow(/lease|heartbeat/i);
+    expect(() => new MissionRunner(
+      store,
+      executor(),
+      verifier(),
+      runnerOptions({ leaseMs: 30, heartbeatMs: 20 }),
+    )).toThrow(/lease|heartbeat/i);
+  });
+
+  it('renews a short lease while work runs so a second worker cannot overlap it', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(T1));
+    const store = setup();
+    store.enqueueAssignment(assignment());
+    const clock = () => new Date().toISOString();
+    let activeExecutions = 0;
+    let maximumOverlap = 0;
+    const firstExecute = vi.fn<AssignmentExecutor['execute']>().mockImplementation(
+      () => new Promise((resolve) => {
+        activeExecutions += 1;
+        maximumOverlap = Math.max(maximumOverlap, activeExecutions);
+        setTimeout(() => {
+          activeExecutions -= 1;
+          resolve(result());
+        }, 100);
+      }),
+    );
+    const secondExecute = vi.fn<AssignmentExecutor['execute']>().mockResolvedValue(result());
+    const renew = vi.spyOn(store, 'renewAssignmentLease');
+    const firstRunner = new MissionRunner(
+      store,
+      executor(firstExecute),
+      verifier(),
+      runnerOptions({ workerId: 'runner-1', leaseMs: 30, heartbeatMs: 10, clock }),
+    );
+    const secondRunner = new MissionRunner(
+      store,
+      executor(secondExecute),
+      verifier(),
+      runnerOptions({ workerId: 'runner-2', leaseMs: 30, heartbeatMs: 10, clock }),
+    );
+
+    const firstRun = firstRunner.runNext();
+    await vi.advanceTimersByTimeAsync(40);
+    expect((await secondRunner.runNext()).kind).toBe('idle');
+    await vi.advanceTimersByTimeAsync(60);
+    expect((await firstRun).kind).toBe('completed');
+
+    expect(firstExecute).toHaveBeenCalledTimes(1);
+    expect(secondExecute).not.toHaveBeenCalled();
+    expect(maximumOverlap).toBe(1);
+    expect(renew).toHaveBeenCalled();
+    const renewalsAfterCompletion = renew.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(renew).toHaveBeenCalledTimes(renewalsAfterCompletion);
+  });
+
+  it('aborts on lease-renewal loss and leaves an external receipt uncertain without committing', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(T1));
+    const requirement = receiptRequirement();
+    const store = setup({ external: true, requirement });
+    store.enqueueAssignment(externalAssignment({ expectedArtifact: requirement }));
+    const renew = vi.spyOn(store, 'renewAssignmentLease').mockImplementation(() => {
+      throw new Error('simulated lease loss');
+    });
+    let executionSignal: AbortSignal | undefined;
+    const execute = vi.fn<AssignmentExecutor['execute']>().mockImplementation(
+      ({ signal }) => new Promise((resolve) => {
+        executionSignal = signal;
+        const executionResult = result({
+          artifact: { type: 'receipt', data: { delivered: true } },
+          costs: [{
+            id: 'lost-lease-cost', category: CostCategory.Model,
+            estimatedMicroUsd: 10, actualMicroUsd: 10,
+            idempotencyKey: 'lost-lease-cost-key',
+          }],
+          external: {
+            externalId: 'must-not-commit', result: { delivered: true },
+            verified: true, evidenceEventIds: ['evt-must-not-commit'],
+          },
+        });
+        signal.addEventListener('abort', () => resolve(executionResult), { once: true });
+        setTimeout(() => resolve(executionResult), 50);
+      }),
+    );
+    const verify = vi.fn<ArtifactVerifier['verify']>();
+    const clock = () => new Date().toISOString();
+    const runner = new MissionRunner(
+      store,
+      executor(execute),
+      verifier(verify, requirement),
+      runnerOptions({ leaseMs: 30, heartbeatMs: 10, clock }),
+    );
+
+    const running = runner.runNext();
+    await vi.advanceTimersByTimeAsync(60);
+    const outcome = await running;
+
+    expect(outcome).toMatchObject({
+      kind: 'checkpoint',
+      reasons: [EscalationReason.UncertainExternalAction],
+    });
+    expect(renew).toHaveBeenCalledTimes(1);
+    expect(executionSignal?.aborted).toBe(true);
+    expect(verify).not.toHaveBeenCalled();
+    expect(store.listCosts('mission-v1')).toEqual([]);
+    expect(store.getAssignment('assignment-1')?.artifact).toBeUndefined();
+    expect(store.getReceiptByIdempotencyKey('external-action-key')?.status).toBe(ReceiptStatus.Pending);
+    const renewalsAfterLoss = renew.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(100);
+    expect(renew).toHaveBeenCalledTimes(renewalsAfterLoss);
+  });
+
+  it('checkpoints an exhausted runtime before invoking the executor or verifier', async () => {
+    const store = setup({ maxRuntimeMs: 100, expectedRuntimeMs: 0 });
+    store.enqueueAssignment(assignment({ instructions: { expectedRuntimeMs: 0 } }));
+    const [expiredLease] = store.leaseReadyAssignments({
+      workerId: 'expired-worker',
+      now: T1,
+      leaseMs: 50,
+      limit: 1,
+    });
+    expect(expiredLease).toBeDefined();
+    const execute = vi.fn<AssignmentExecutor['execute']>().mockResolvedValue(result());
+    const verify = vi.fn<ArtifactVerifier['verify']>().mockResolvedValue(
+      verificationFor(reportRequirement()),
+    );
+    const exhaustedAt = new Date(Date.parse(T1) + 100).toISOString();
+    const runner = new MissionRunner(
+      store,
+      executor(execute),
+      verifier(verify),
+      runnerOptions({ clock: () => exhaustedAt }),
+    );
+
+    const outcome = await runner.runNext();
+
+    expect(outcome).toMatchObject({
+      kind: 'checkpoint',
+      reasons: [EscalationReason.RuntimeBudget],
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(verify).not.toHaveBeenCalled();
+  });
+
   it('aborts execution at the real mission deadline and checkpoints without committing output', async () => {
     vi.useFakeTimers();
     const store = setup({ maxRuntimeMs: 100, expectedRuntimeMs: 50 });
@@ -710,6 +922,7 @@ function runnerOptions(overrides: Partial<{
   clock: () => string;
   retryDelayMs: number;
   cancellationPollMs: number;
+  heartbeatMs: number;
 }> = {}) {
   return { workerId: 'runner', leaseMs: 30_000, clock: () => T2, ...overrides };
 }

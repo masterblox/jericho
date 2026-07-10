@@ -21,7 +21,7 @@ import {
   type MissionTaskDefinition,
 } from '@jericho/shared';
 
-import type { JerichoStore } from '../core/store.js';
+import { AssignmentLeaseError, type JerichoStore } from '../core/store.js';
 import { CapabilityRegistry } from './capability-registry.js';
 import { evaluateMissionAction, type MissionActionRequest } from './policy.js';
 import {
@@ -100,6 +100,7 @@ export interface MissionRunnerOptions {
   clock?: () => string;
   retryDelayMs?: number;
   cancellationPollMs?: number;
+  heartbeatMs?: number;
 }
 
 export interface RunnerOutcome {
@@ -111,7 +112,8 @@ export interface RunnerOutcome {
 type ControlledInterruption =
   | { kind: 'deadline' }
   | { kind: 'cancelled' }
-  | { kind: 'aborted' };
+  | { kind: 'aborted' }
+  | { kind: 'lease_lost'; error: unknown };
 
 type ControlledResult<T> =
   | { kind: 'completed'; value: T }
@@ -138,10 +140,18 @@ class MissionCancelledError extends Error {
   }
 }
 
+class AssignmentLeaseLostError extends Error {
+  constructor(cause: unknown) {
+    super('Assignment lease heartbeat was lost', { cause });
+    this.name = 'AssignmentLeaseLostError';
+  }
+}
+
 export class MissionRunner {
   readonly #clock: () => string;
   readonly #retryDelayMs: number;
   readonly #cancellationPollMs: number;
+  readonly #heartbeatMs: number;
 
   constructor(
     private readonly store: JerichoStore,
@@ -152,6 +162,17 @@ export class MissionRunner {
     this.#clock = options.clock ?? (() => new Date().toISOString());
     this.#retryDelayMs = options.retryDelayMs ?? 1_000;
     this.#cancellationPollMs = options.cancellationPollMs ?? 100;
+    if (!Number.isInteger(options.leaseMs) || options.leaseMs < 2) {
+      throw new Error('Runner lease duration must allow a heartbeat before expiry');
+    }
+    this.#heartbeatMs = options.heartbeatMs ?? Math.max(1, Math.floor(options.leaseMs / 3));
+    if (
+      !Number.isInteger(this.#heartbeatMs) ||
+      this.#heartbeatMs < 1 ||
+      this.#heartbeatMs > Math.floor(options.leaseMs / 2)
+    ) {
+      throw new Error('Runner heartbeat must be safely shorter than its lease duration');
+    }
     if (!Number.isInteger(this.#cancellationPollMs) || this.#cancellationPollMs < 1) {
       throw new Error('Cancellation poll interval is invalid');
     }
@@ -194,11 +215,24 @@ export class MissionRunner {
         return { kind: 'checkpoint', assignmentId: assignment.id, reasons: policy.reasons };
       }
 
+      if (this.remainingRuntimeMs(mission, now) <= 0) {
+        return this.checkpointRuntime(assignment, now, false);
+      }
+
       if (assignment.externalAction) {
         const existing = this.store.getReceiptByIdempotencyKey(
           assignment.externalAction.idempotencyKey,
         );
-        if (existing) return this.reconcileExistingReceipt(assignment, existing, now);
+        if (existing) {
+          return await this.reconcileExistingReceipt(
+            assignment,
+            mission,
+            task,
+            existing,
+            now,
+            signal,
+          );
+        }
       }
 
       assertExecutorDescriptor(definition, this.executor.descriptor);
@@ -209,7 +243,14 @@ export class MissionRunner {
           return this.checkpointUncertain(assignment, now);
         }
         if (reserved.status !== ReceiptStatus.Pending || reserved.verified) {
-          return this.reconcileExistingReceipt(assignment, reserved, now);
+          return await this.reconcileExistingReceipt(
+            assignment,
+            mission,
+            task,
+            reserved,
+            now,
+            signal,
+          );
         }
       }
 
@@ -246,8 +287,16 @@ export class MissionRunner {
         return { result, verifiedArtifact, completedAt };
       })();
 
-      const controlled = await control.race(work);
-      control.dispose();
+      let controlled: ControlledResult<{
+        result: ExecutorResult;
+        verifiedArtifact: JsonObject;
+        completedAt: string;
+      }>;
+      try {
+        controlled = await control.race(work);
+      } finally {
+        control.dispose();
+      }
       if (controlled.kind === 'cancelled') {
         return this.acknowledgeCancellation(assignment, this.#clock());
       }
@@ -257,6 +306,16 @@ export class MissionRunner {
       if (controlled.kind === 'aborted') {
         if (assignment.externalAction) return this.checkpointUncertain(assignment, this.#clock());
         throw new Error('Assignment execution was aborted');
+      }
+      if (controlled.kind === 'lease_lost') {
+        if (assignment.externalAction) {
+          return this.checkpointUncertain(assignment, this.#clock());
+        }
+        return {
+          kind: 'failed',
+          assignmentId: assignment.id,
+          reasons: ['assignment_lease_lost'],
+        };
       }
       if (controlled.kind === 'error') {
         if (controlled.error instanceof MissionCancelledError) {
@@ -325,28 +384,82 @@ export class MissionRunner {
     }
   }
 
-  private reconcileExistingReceipt(
+  private async reconcileExistingReceipt(
     assignment: Assignment,
+    mission: MissionPlan,
+    task: MissionTask,
     receipt: ActionReceipt,
     now: string,
-  ): RunnerOutcome {
+    callerSignal: AbortSignal,
+  ): Promise<RunnerOutcome> {
     if (!receiptMatchesAssignment(receipt, assignment)) {
       return this.checkpointUncertain(assignment, now);
     }
     if (receipt.status === ReceiptStatus.Succeeded && receipt.verified) {
+      if (this.cancellationRequested(assignment)) {
+        return this.acknowledgeCancellation(assignment, this.#clock());
+      }
+      const control = this.createExecutionControl(assignment, mission, now, callerSignal);
+      const work = (async () => {
+        const verifiedArtifact = await verifyArtifact(
+          assignment,
+          mission,
+          task,
+          {
+            type: assignment.expectedArtifact.type,
+            data: receipt.result ?? null,
+          },
+          this.artifactVerifier,
+          control.signal,
+        );
+        if (control.signal.aborted || this.cancellationRequested(assignment)) {
+          throw new MissionCancelledError();
+        }
+        const completedAt = this.#clock();
+        this.assertRuntimeWithinBudget(mission, completedAt);
+        return { verifiedArtifact, completedAt };
+      })();
+      let controlled: ControlledResult<{
+        verifiedArtifact: JsonObject;
+        completedAt: string;
+      }>;
+      try {
+        controlled = await control.race(work);
+      } finally {
+        control.dispose();
+      }
+      if (controlled.kind === 'cancelled') {
+        return this.acknowledgeCancellation(assignment, this.#clock());
+      }
+      if (controlled.kind === 'deadline') {
+        return this.checkpointRuntime(assignment, this.#clock());
+      }
+      if (controlled.kind === 'aborted') {
+        return this.checkpointUncertain(assignment, this.#clock());
+      }
+      if (controlled.kind === 'lease_lost') {
+        return this.checkpointUncertain(assignment, this.#clock());
+      }
+      if (controlled.kind === 'error') {
+        if (controlled.error instanceof MissionCancelledError) {
+          return this.acknowledgeCancellation(assignment, this.#clock());
+        }
+        if (controlled.error instanceof RuntimeBudgetExceededError) {
+          return this.checkpointRuntime(assignment, this.#clock());
+        }
+        return this.checkpointUncertain(assignment, this.#clock());
+      }
+      if (this.cancellationRequested(assignment)) {
+        return this.acknowledgeCancellation(assignment, controlled.value.completedAt);
+      }
       this.store.completeAssignment(
         assignment.id,
         assignment.leaseToken!,
         {
-          type: assignment.expectedArtifact.type,
-          data: receipt.result ?? null,
-          verified: true,
-          verifierId: 'action-receipt',
-          checks: [...assignment.expectedArtifact.verification],
-          evidence: receipt.evidenceEventIds.map((eventId) => ({ eventId })),
+          ...controlled.value.verifiedArtifact,
           receiptId: receipt.id,
         },
-        now,
+        controlled.value.completedAt,
       );
       return { kind: 'completed', assignmentId: assignment.id, reasons: [] };
     }
@@ -354,12 +467,16 @@ export class MissionRunner {
   }
 
   private checkpointUncertain(assignment: Assignment, now: string): RunnerOutcome {
-    this.store.pauseAssignmentForCheckpoint(
-      assignment.id,
-      assignment.leaseToken!,
-      [EscalationReason.UncertainExternalAction],
-      now,
-    );
+    try {
+      this.store.pauseAssignmentForCheckpoint(
+        assignment.id,
+        assignment.leaseToken!,
+        [EscalationReason.UncertainExternalAction],
+        now,
+      );
+    } catch (error) {
+      if (!(error instanceof AssignmentLeaseError)) throw error;
+    }
     return {
       kind: 'checkpoint',
       assignmentId: assignment.id,
@@ -367,8 +484,12 @@ export class MissionRunner {
     };
   }
 
-  private checkpointRuntime(assignment: Assignment, now: string): RunnerOutcome {
-    const reasons = assignment.externalAction
+  private checkpointRuntime(
+    assignment: Assignment,
+    now: string,
+    externalMayHaveRun = Boolean(assignment.externalAction),
+  ): RunnerOutcome {
+    const reasons = externalMayHaveRun
       ? [EscalationReason.RuntimeBudget, EscalationReason.UncertainExternalAction]
       : [EscalationReason.RuntimeBudget];
     this.store.pauseAssignmentForCheckpoint(
@@ -416,10 +537,14 @@ export class MissionRunner {
   }
 
   private assertRuntimeWithinBudget(mission: MissionPlan, at: string): void {
-    const startedAt = mission.startedAt ?? mission.approvedAt ?? at;
-    if (Date.parse(at) - Date.parse(startedAt) >= mission.budget.maxRuntimeMs) {
+    if (this.remainingRuntimeMs(mission, at) <= 0) {
       throw new RuntimeBudgetExceededError();
     }
+  }
+
+  private remainingRuntimeMs(mission: MissionPlan, at: string): number {
+    const startedAt = mission.startedAt ?? mission.approvedAt ?? at;
+    return mission.budget.maxRuntimeMs - Math.max(0, Date.parse(at) - Date.parse(startedAt));
   }
 
   private createExecutionControl(
@@ -429,13 +554,10 @@ export class MissionRunner {
     callerSignal: AbortSignal,
   ): ExecutionControl {
     const controller = new AbortController();
-    const startedAt = mission.startedAt ?? mission.approvedAt ?? now;
-    const remainingMs = Math.max(
-      0,
-      mission.budget.maxRuntimeMs - Math.max(0, Date.parse(now) - Date.parse(startedAt)),
-    );
+    const remainingMs = Math.max(0, this.remainingRuntimeMs(mission, now));
     let deadlineTimer: ReturnType<typeof setTimeout> | undefined;
     let cancellationTimer: ReturnType<typeof setInterval> | undefined;
+    let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
     let removeCallerAbort = () => {};
 
     let settleDeadline!: (value: ControlledInterruption) => void;
@@ -456,6 +578,24 @@ export class MissionRunner {
       settleCancellation({ kind: 'cancelled' });
       controller.abort(new MissionCancelledError());
     }, this.#cancellationPollMs);
+
+    let settleLeaseLost!: (value: ControlledInterruption) => void;
+    const leaseLost = new Promise<ControlledInterruption>((resolve) => {
+      settleLeaseLost = resolve;
+    });
+    heartbeatTimer = setInterval(() => {
+      try {
+        this.store.renewAssignmentLease(
+          assignment.id,
+          assignment.leaseToken!,
+          this.#clock(),
+          this.options.leaseMs,
+        );
+      } catch (error) {
+        settleLeaseLost({ kind: 'lease_lost', error });
+        controller.abort(new AssignmentLeaseLostError(error));
+      }
+    }, this.#heartbeatMs);
 
     let settleCallerAbort!: (value: ControlledInterruption) => void;
     const callerAbort = new Promise<ControlledInterruption>((resolve) => {
@@ -482,10 +622,12 @@ export class MissionRunner {
         deadline,
         cancellation,
         callerAbort,
+        leaseLost,
       ]),
       dispose: () => {
         if (deadlineTimer) clearTimeout(deadlineTimer);
         if (cancellationTimer) clearInterval(cancellationTimer);
+        if (heartbeatTimer) clearInterval(heartbeatTimer);
         removeCallerAbort();
       },
     };

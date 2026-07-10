@@ -53,7 +53,7 @@ export function evaluateMissionAction(
   if (usage.actualCostMicroUsd + action.estimatedCostMicroUsd > plan.budget.maxCostMicroUsd) {
     reasons.push(EscalationReason.CostBudget);
   }
-  if (usage.elapsedRuntimeMs + action.expectedRuntimeMs > plan.budget.maxRuntimeMs) {
+  if (usage.elapsedRuntimeMs + action.expectedRuntimeMs >= plan.budget.maxRuntimeMs) {
     reasons.push(EscalationReason.RuntimeBudget);
   }
   if (Math.max(usage.activeAssignments, action.activeAssignments) > plan.budget.maxConcurrency) {

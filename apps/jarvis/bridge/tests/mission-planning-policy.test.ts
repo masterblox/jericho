@@ -163,6 +163,7 @@ describe('one-approval mission policy', () => {
   it.each([
     ['cost', { estimatedCostMicroUsd: 900_001 }, EscalationReason.CostBudget],
     ['runtime', { expectedRuntimeMs: 600_001 }, EscalationReason.RuntimeBudget],
+    ['runtime exact boundary', { expectedRuntimeMs: 590_000 }, EscalationReason.RuntimeBudget],
     ['concurrency', { activeAssignments: 3 }, EscalationReason.ConcurrencyBudget],
     ['retry', { retryCount: 2 }, EscalationReason.RetryBudget],
     ['recipient', { recipient: 'person-new' }, EscalationReason.NewRecipient],

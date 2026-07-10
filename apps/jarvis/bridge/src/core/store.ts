@@ -1123,6 +1123,9 @@ export class JerichoStore {
   saveProposal(proposal: Proposal): Proposal {
     assertProposal(proposal);
     const normalized = normalizeProposal(proposal);
+    if (normalized.status !== LifecycleStatus.PendingApproval) {
+      throw new Error(`Proposal ${normalized.id} initial lifecycle must be pending approval`);
+    }
     return this.#writeTransaction(() => {
       const existingRow = this.#database.prepare('SELECT * FROM proposals WHERE id = ?').get(normalized.id);
       if (existingRow) {
@@ -1207,6 +1210,11 @@ export class JerichoStore {
   savePreferenceChange(preference: PreferenceChange): PreferenceChange {
     assertPreferenceChange(preference);
     const normalized = normalizePreference(preference);
+    if (normalized.status !== LifecycleStatus.PendingApproval) {
+      throw new Error(
+        `Preference change ${normalized.id} initial lifecycle must be pending approval`,
+      );
+    }
     return this.#writeTransaction(() => {
       const row = this.#database.prepare('SELECT * FROM preference_changes WHERE id = ?').get(normalized.id);
       if (row) {
@@ -1447,6 +1455,22 @@ export class JerichoStore {
   enqueueAssignment(assignment: Assignment): Assignment {
     assertAssignment(assignment);
     const normalized = normalizeAssignment(assignment);
+    if (
+      normalized.status !== LifecycleStatus.Queued ||
+      normalized.attempt !== 0 ||
+      normalized.acceptedAt !== undefined ||
+      normalized.completedAt !== undefined ||
+      normalized.artifact !== undefined ||
+      normalized.leaseOwner !== undefined ||
+      normalized.leaseToken !== undefined ||
+      normalized.leaseExpiresAt !== undefined ||
+      normalized.cancelRequestedAt !== undefined ||
+      normalized.cancelReason !== undefined
+    ) {
+      throw new Error(
+        `Assignment ${normalized.id} must enter the queue in a pristine lifecycle at attempt zero`,
+      );
+    }
     return this.#writeTransaction(() => {
       const byId = this.getAssignment(normalized.id);
       if (byId) {

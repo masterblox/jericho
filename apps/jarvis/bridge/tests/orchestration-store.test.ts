@@ -195,6 +195,25 @@ describe('orchestration truth records', () => {
     expect(store.getDecision('decision-preference')?.preferenceChangeId).toBe('preference-1');
   });
 
+  it('rejects forged initial proposal and preference lifecycle states', () => {
+    for (const status of [
+      LifecycleStatus.Draft,
+      LifecycleStatus.Queued,
+      LifecycleStatus.Approved,
+      LifecycleStatus.Active,
+      LifecycleStatus.Rejected,
+      LifecycleStatus.Archived,
+    ]) {
+      const proposalStore = openStore();
+      expect(() => proposalStore.saveProposal(makeProposal({ status }))).toThrow(/pending approval|initial|lifecycle/i);
+      expect(proposalStore.listProposals()).toEqual([]);
+
+      const preferenceStore = openStore();
+      expect(() => preferenceStore.savePreferenceChange(makePreference({ status }))).toThrow(/pending approval|initial|lifecycle/i);
+      expect(preferenceStore.listPreferenceChanges()).toEqual([]);
+    }
+  });
+
   it('authenticates orchestration projections and encrypted bodies', () => {
     const path = temporaryDatabasePath();
     const store = openStore(path);
@@ -214,6 +233,27 @@ describe('orchestration truth records', () => {
 });
 
 describe('durable assignment queue', () => {
+  it('accepts only pristine queued assignments at attempt zero', () => {
+    const forgeries: Array<[string, Partial<Assignment>]> = [
+      ['active status', { status: LifecycleStatus.Active }],
+      ['chosen attempt', { attempt: 1 }],
+      ['accepted timestamp', { acceptedAt: T1 }],
+      ['completed timestamp', { completedAt: T2 }],
+      ['preloaded artifact', { artifact: { forged: true } }],
+      ['chosen lease owner', { leaseOwner: 'attacker' }],
+      ['chosen lease token', { leaseToken: 'attacker-token' }],
+      ['chosen lease expiry', { leaseExpiresAt: T2 }],
+      ['cancel timestamp', { cancelRequestedAt: T1 }],
+      ['cancel reason', { cancelReason: 'forged cancellation' }],
+    ];
+    for (const [name, forged] of forgeries) {
+      const store = openStore();
+      seedApprovedMission(store);
+      expect(() => store.enqueueAssignment(makeAssignment(forged))).toThrow(/pristine|queued|attempt|lifecycle/i);
+      expect(store.listAssignments(), name).toEqual([]);
+    }
+  });
+
   it('binds one assignment exactly to its approved task definition', () => {
     const mutations: Array<[string, (value: Assignment) => Assignment]> = [
       ['instructions', (value) => ({ ...value, instructions: { expectedRuntimeMs: 99 } })],
