@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
@@ -33,6 +36,33 @@ afterEach(() => {
 });
 
 describe('JerichoStore events', () => {
+  it('normalizes accepted RFC3339 offsets to UTC before hashing and storage', () => {
+    const store = openStore();
+    const appended = store.appendEvent(
+      makeEvent({
+        occurredAt: '2026-07-11T05:00:00+04:00',
+        ingestedAt: '2026-07-11T05:00:01+04:00',
+        freshness: { observedAt: '2026-07-11T05:00:00+04:00' },
+        provenance: [
+          {
+            source: 'gmail',
+            sourceType: SourceType.Connector,
+            observedAt: '2026-07-11T05:00:00+04:00',
+          },
+        ],
+      }),
+    );
+
+    expect(appended.event.occurredAt).toBe('2026-07-11T01:00:00.000Z');
+    expect(appended.event.ingestedAt).toBe('2026-07-11T01:00:01.000Z');
+    expect(appended.event.freshness?.observedAt).toBe(
+      '2026-07-11T01:00:00.000Z',
+    );
+    expect(appended.event.provenance[0].observedAt).toBe(
+      '2026-07-11T01:00:00.000Z',
+    );
+  });
+
   it('appends and retrieves an immutable encrypted event', () => {
     const store = openStore();
     const event = makeEvent();
@@ -105,6 +135,7 @@ describe('JerichoStore migrations', () => {
       'receipts',
       'relations',
       'schema_migrations',
+      'store_metadata',
     ]);
   });
 
@@ -124,12 +155,133 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2]);
+    ).toEqual([1, 2, 3]);
     database.close();
   });
+
+  it('safely upgrades an empty v2 test database and binds its key', () => {
+    const databasePath = temporaryDatabasePath();
+    openStore(databasePath).close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE store_metadata;
+      DELETE FROM schema_migrations WHERE version = 3;
+    `);
+    legacy.close();
+
+    const upgraded = openStore(databasePath);
+    upgraded.close();
+    expect(
+      () =>
+        new JerichoStore({
+          path: databasePath,
+          key: Buffer.alloc(32, 100),
+        }),
+    ).toThrow('Jericho store master key does not match this database');
+  });
+
+  it('safely upgrades an empty v1 test database through all migrations', () => {
+    const databasePath = temporaryDatabasePath();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      CREATE TABLE schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+      );
+      INSERT INTO schema_migrations (version, applied_at)
+      VALUES (1, '2026-07-11T00:00:00.000Z');
+      CREATE TABLE events (
+        id TEXT PRIMARY KEY,
+        source TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        source_event_id TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        ingested_at TEXT NOT NULL,
+        status TEXT,
+        route TEXT,
+        risk TEXT,
+        confidence REAL,
+        freshness_at TEXT,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL,
+        UNIQUE (source, source_event_id)
+      );
+      CREATE INDEX events_occurred_at_idx ON events (occurred_at);
+      CREATE INDEX events_status_route_idx ON events (status, route);
+    `);
+    legacy.close();
+
+    const upgraded = openStore(databasePath);
+    expect(upgraded.appendEvent(makeEvent()).inserted).toBe(true);
+    upgraded.close();
+    const database = new DatabaseSync(databasePath);
+    expect(
+      database
+        .prepare('SELECT version FROM schema_migrations ORDER BY version')
+        .all()
+        .map((row) => row.version),
+    ).toEqual([1, 2, 3]);
+    database.close();
+  });
+
+  it(
+    'serializes concurrent process opens and entity read-merge-write upserts',
+    async () => {
+      const databasePath = temporaryDatabasePath();
+      const fixture = fileURLToPath(
+        new URL('./fixtures/concurrent-entity-upsert.ts', import.meta.url),
+      );
+
+      await Promise.all(
+        Array.from({ length: 4 }, (_, index) =>
+          runChildProcess(fixture, [
+            databasePath,
+            KEY.toString('base64'),
+            String(index),
+          ]),
+        ),
+      );
+
+      const store = openStore(databasePath);
+      const entity = store.getEntity('entity-concurrent');
+      expect(entity?.aliases.sort()).toEqual([
+        'alias-0',
+        'alias-1',
+        'alias-2',
+        'alias-3',
+      ]);
+      expect(entity?.attributes).toEqual({
+        field0: 'value-0',
+        field1: 'value-1',
+        field2: 'value-2',
+        field3: 'value-3',
+      });
+      expect(entity?.provenance).toHaveLength(4);
+    },
+    15_000,
+  );
 });
 
 describe('JerichoStore encryption at rest', () => {
+  it('binds a file database to its master key before allowing access', () => {
+    const databasePath = temporaryDatabasePath();
+    const first = openStore(databasePath);
+    const appended = first.appendEvent(makeEvent());
+    first.close();
+
+    expect(
+      () =>
+        new JerichoStore({
+          path: databasePath,
+          key: Buffer.alloc(32, 99),
+        }),
+    ).toThrow('Jericho store master key does not match this database');
+
+    const correct = openStore(databasePath);
+    expect(correct.getEvent(appended.event.id)).toEqual(appended.event);
+  });
+
   it('does not leave a known payload secret in the raw SQLite event row', () => {
     const databasePath = temporaryDatabasePath();
     const secret = 'KNOWN-SECRET-PAYLOAD-4b8d9f';
@@ -144,9 +296,73 @@ describe('JerichoStore encryption at rest', () => {
     expect(row).toBeDefined();
     expect(Buffer.from(row?.body as Uint8Array).includes(Buffer.from(secret))).toBe(false);
   });
+
+  it('stores a keyed integrity digest instead of a visible plaintext hash', () => {
+    const store = openStore();
+    const appended = store.appendEvent(makeEvent()).event;
+    const { integrityHash, ...hashable } = appended;
+    const rawHash = createHash('sha256')
+      .update(canonicalJsonForTest(hashable))
+      .digest('hex');
+
+    expect(integrityHash).not.toBe(rawHash);
+  });
+
+  it('rejects a tampered visible integrity digest before returning a row', () => {
+    const databasePath = temporaryDatabasePath();
+    const store = openStore(databasePath);
+    store.appendEvent(makeEvent());
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    database
+      .prepare('UPDATE events SET integrity_hash = ? WHERE id = ?')
+      .run('0'.repeat(64), 'evt-1');
+    database.close();
+
+    const reopened = openStore(databasePath);
+    expect(() => reopened.getEvent('evt-1')).toThrow('integrity verification failed');
+  });
+
+  it('binds encrypted event bodies to their table and row identity', () => {
+    const databasePath = temporaryDatabasePath();
+    const store = openStore(databasePath);
+    store.appendEvent(makeEvent());
+    store.appendEvent(
+      makeEvent({
+        id: 'evt-2',
+        sourceEventId: 'message-2',
+        payload: { subject: 'second' },
+      }),
+    );
+    store.close();
+    const database = new DatabaseSync(databasePath);
+    const rows = database
+      .prepare('SELECT id, body FROM events ORDER BY id')
+      .all();
+    database.prepare('UPDATE events SET body = ? WHERE id = ?').run(rows[1].body, 'evt-1');
+    database.prepare('UPDATE events SET body = ? WHERE id = ?').run(rows[0].body, 'evt-2');
+    database.close();
+
+    const reopened = openStore(databasePath);
+    expect(() => reopened.getEvent('evt-1')).toThrow(
+      'Encrypted payload authentication failed',
+    );
+  });
 });
 
 describe('JerichoStore entities', () => {
+  it('validates an entity before hashing or writing it', () => {
+    const store = openStore();
+    const invalid = {
+      ...makeEntity(),
+      type: 'contact',
+      attributes: { hidden: new Date() },
+    } as unknown as Entity;
+
+    expect(() => store.upsertEntity(invalid)).toThrow(TypeError);
+    expect(store.getEntity(invalid.id)).toBeUndefined();
+  });
+
   it('reconciles aliases, attributes, provenance, and freshness on upsert', () => {
     const store = openStore();
     const original = makeEntity();
@@ -180,6 +396,43 @@ describe('JerichoStore entities', () => {
     expect(store.getEntity(original.id)).toEqual(reconciled);
   });
 
+  it('keeps current colliding attributes for stale and equal-time observations', () => {
+    const store = openStore();
+    store.upsertEntity(
+      makeEntity({
+        attributes: { owner: 'current', currentOnly: true },
+        freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+      }),
+    );
+
+    const stale = store.upsertEntity(
+      makeEntity({
+        canonicalName: 'Stale Name',
+        attributes: { owner: 'stale', staleOnly: true },
+        freshness: { observedAt: '2026-07-11T01:30:00+01:00' },
+        updatedAt: '2026-07-11T01:30:00+01:00',
+      }),
+    );
+    const equalTime = store.upsertEntity(
+      makeEntity({
+        canonicalName: 'Equal Name',
+        attributes: { owner: 'equal', equalOnly: true },
+        freshness: { observedAt: '2026-07-11T05:00:00+04:00' },
+        updatedAt: '2026-07-11T05:00:00+04:00',
+      }),
+    );
+
+    expect(stale.canonicalName).toBe('Carlos Prada');
+    expect(equalTime.canonicalName).toBe('Carlos Prada');
+    expect(equalTime.attributes).toEqual({
+      staleOnly: true,
+      equalOnly: true,
+      owner: 'current',
+      currentOnly: true,
+    });
+    expect(equalTime.freshness.observedAt).toBe('2026-07-11T01:00:00.000Z');
+  });
+
   it('lists decrypted entities by queryable type', () => {
     const store = openStore();
     const person = store.upsertEntity(makeEntity());
@@ -194,9 +447,43 @@ describe('JerichoStore entities', () => {
 
     expect(store.listEntities({ type: EntityType.Person })).toEqual([person]);
   });
+
+  it('normalizes freshness filters before timestamp comparison', () => {
+    const store = openStore();
+    store.upsertEntity(
+      makeEntity({
+        id: 'entity-early',
+        freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+      }),
+    );
+    const late = store.upsertEntity(
+      makeEntity({
+        id: 'entity-late',
+        freshness: { observedAt: '2026-07-11T02:00:00.000Z' },
+      }),
+    );
+
+    expect(
+      store.listEntities({ freshAfter: '2026-07-11T05:30:00+04:00' }),
+    ).toEqual([late]);
+  });
 });
 
 describe('JerichoStore relations', () => {
+  it('validates a relation before hashing or writing it', () => {
+    const store = openStore();
+    store.upsertEntity(makeEntity({ id: 'entity-from' }));
+    store.upsertEntity(makeEntity({ id: 'entity-to' }));
+    const invalid = {
+      ...makeRelation(),
+      type: 'knows',
+      confidence: Number.POSITIVE_INFINITY,
+    } as unknown as Relation;
+
+    expect(() => store.upsertRelation(invalid)).toThrow(TypeError);
+    expect(store.listRelations()).toEqual([]);
+  });
+
   it('upserts one typed relation per endpoint pair and relation type', () => {
     const store = openStore();
     store.upsertEntity(makeEntity({ id: 'entity-from' }));
@@ -222,9 +509,44 @@ describe('JerichoStore relations', () => {
     expect(updated.attributes).toEqual({ role: 'owner' });
     expect(store.listRelations({ fromEntityId: 'entity-from' })).toEqual([updated]);
   });
+
+  it('keeps current colliding relation attributes on an equal-time observation', () => {
+    const store = openStore();
+    store.upsertEntity(makeEntity({ id: 'entity-from' }));
+    store.upsertEntity(makeEntity({ id: 'entity-to' }));
+    store.upsertRelation(
+      makeRelation({
+        attributes: { role: 'current' },
+        freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+      }),
+    );
+
+    const relation = store.upsertRelation(
+      makeRelation({
+        attributes: { role: 'equal', added: true },
+        freshness: { observedAt: '2026-07-11T05:00:00+04:00' },
+        updatedAt: '2026-07-11T05:00:00+04:00',
+      }),
+    );
+
+    expect(relation.attributes).toEqual({ added: true, role: 'current' });
+    expect(relation.freshness.observedAt).toBe('2026-07-11T01:00:00.000Z');
+  });
 });
 
 describe('JerichoStore connector health', () => {
+  it('validates connector health before hashing or writing it', () => {
+    const store = openStore();
+    const invalid = {
+      ...makeConnectorHealth(),
+      status: 'online',
+      details: { invalid: undefined },
+    } as unknown as ConnectorHealth;
+
+    expect(() => store.upsertConnectorHealth(invalid)).toThrow(TypeError);
+    expect(store.listConnectorHealth()).toEqual([]);
+  });
+
   it('upserts and lists the latest encrypted connector-health record', () => {
     const store = openStore();
     store.upsertConnectorHealth(makeConnectorHealth());
@@ -243,6 +565,29 @@ describe('JerichoStore connector health', () => {
 
     expect(healthy.integrityHash).toMatch(/^[a-f0-9]{64}$/);
     expect(store.listConnectorHealth()).toEqual([healthy]);
+  });
+
+  it('uses first-write-wins for equal connector check instants', () => {
+    const store = openStore();
+    const first = store.upsertConnectorHealth(
+      makeConnectorHealth({
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt: '2026-07-11T01:00:00.000Z',
+        freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+        details: { state: 'current' },
+      }),
+    );
+
+    const tied = store.upsertConnectorHealth(
+      makeConnectorHealth({
+        status: ConnectorHealthStatus.Unavailable,
+        checkedAt: '2026-07-11T05:00:00+04:00',
+        freshness: { observedAt: '2026-07-11T05:00:00+04:00' },
+        details: { state: 'equal' },
+      }),
+    );
+
+    expect(tied).toEqual(first);
   });
 });
 
@@ -353,4 +698,40 @@ function makeConnectorHealth(
     ],
     ...overrides,
   };
+}
+
+function canonicalJsonForTest(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJsonForTest).join(',')}]`;
+  }
+  const record = value as Record<string, unknown>;
+  return `{${Object.keys(record)
+    .filter((key) => record[key] !== undefined)
+    .sort()
+    .map((key) => `${JSON.stringify(key)}:${canonicalJsonForTest(record[key])}`)
+    .join(',')}}`;
+}
+
+function runChildProcess(script: string, args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, ['--import', 'tsx', script, ...args], {
+      cwd: fileURLToPath(new URL('..', import.meta.url)),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.setEncoding('utf8').on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`child exited ${code}\n${stdout}${stderr}`));
+    });
+  });
 }

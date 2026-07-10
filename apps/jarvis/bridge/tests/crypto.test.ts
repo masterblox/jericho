@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
 
 import { CoreCrypto, loadMasterKey } from '../src/core/crypto.js';
 
@@ -31,6 +32,31 @@ describe('CoreCrypto', () => {
     expect(() => crypto.decryptJson(encrypted)).toThrow(
       'Encrypted payload authentication failed',
     );
+  });
+
+  it('authenticates caller-provided record identity as AEAD associated data', () => {
+    const crypto = new CoreCrypto(Buffer.alloc(32, 17));
+    const encrypted = crypto.encryptJson({ id: 'event-1' }, 'events:event-1');
+
+    expect(crypto.decryptJson(encrypted, 'events:event-1')).toEqual({
+      id: 'event-1',
+    });
+    expect(() => crypto.decryptJson(encrypted, 'events:event-2')).toThrow(
+      'Encrypted payload authentication failed',
+    );
+  });
+
+  it('derives a separate key for deterministic HMAC integrity digests', () => {
+    const payload = '{"id":"event-1","secret":"value"}';
+    const first = new CoreCrypto(Buffer.alloc(32, 19));
+    const second = new CoreCrypto(Buffer.alloc(32, 20));
+
+    const digest = first.integrityDigest(payload);
+
+    expect(digest).toMatch(/^[a-f0-9]{64}$/);
+    expect(first.integrityDigest(payload)).toBe(digest);
+    expect(second.integrityDigest(payload)).not.toBe(digest);
+    expect(digest).not.toBe(createHash('sha256').update(payload).digest('hex'));
   });
 
   it('rejects injected keys that are not exactly 32 bytes', () => {

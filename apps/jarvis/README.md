@@ -31,6 +31,9 @@ calibration residual. **EXPORT 30S** downloads the local diagnostic replay.
 
 ## Run
 
+Jericho requires Node.js 22.13 or newer. The bridge uses Node's built-in SQLite
+module and will not start on older runtimes.
+
 ```bash
 cd apps/jarvis
 corepack pnpm install
@@ -40,6 +43,21 @@ corepack pnpm dev
 
 Open <http://localhost:5173>, click the start overlay, and allow camera/mic.
 Press Escape at any time to pause gesture tracking and restore the mouse cursor.
+
+## Local truth store
+
+The bridge truth store defaults to `~/.jericho/jericho.db`. Sensitive record
+bodies and provenance are encrypted with a master key from
+`JERICHO_MASTER_KEY` or the current user's macOS Keychain. A database is bound
+to the key that initialized it and fails closed when opened with another key.
+Entity and relation reconciliation compares normalized UTC instants; stale or
+equal-time observations can add provenance and new fields, but existing values
+win attribute collisions deterministically.
+
+Automatic master-key rotation is intentionally deferred. Rotating a production
+key will require an explicit authenticated re-encryption migration; replacing
+the key in place will make the existing database unavailable rather than risk
+mixed-key writes.
 
 ## Verify
 

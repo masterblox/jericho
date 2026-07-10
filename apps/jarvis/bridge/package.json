@@ -3,10 +3,13 @@
   "private": true,
   "version": "1.0.4",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
-    "test": "NODE_OPTIONS='--import=./tests/filter-sqlite-warning.mjs' vitest run",
+    "test": "node tests/run-tests.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

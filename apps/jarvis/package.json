@@ -3,6 +3,9 @@
   "private": true,
   "version": "1.0.4",
   "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
   "scripts": {
     "dev": "concurrently -n bridge,web -c cyan,magenta \"pnpm --filter bridge dev\" \"pnpm --filter frontend dev\"",
     "build": "pnpm --filter @jericho/shared typecheck && pnpm --filter frontend build",

@@ -1,8 +1,14 @@
-import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
+import {
+  createCipheriv,
+  createDecipheriv,
+  createHmac,
+  hkdfSync,
+  randomBytes,
+} from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { userInfo } from 'node:os';
 
-const FORMAT_VERSION = 1;
+const FORMAT_VERSION = 2;
 const IV_BYTES = 12;
 const AUTH_TAG_BYTES = 16;
 
@@ -128,19 +134,35 @@ function defaultSecurityCommand(args: readonly string[], input?: string): string
 
 export class CoreCrypto {
   readonly #key: Buffer;
+  readonly #integrityKey: Buffer;
 
   constructor(key: Buffer) {
     if (key.length !== 32) {
       throw new Error('Jericho master key must be exactly 32 bytes');
     }
     this.#key = Buffer.from(key);
+    this.#integrityKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        key,
+        Buffer.from('jericho-core:v1', 'utf8'),
+        Buffer.from('record-integrity-hmac', 'utf8'),
+        32,
+      ),
+    );
   }
 
-  encryptJson(value: unknown): Buffer {
+  integrityDigest(canonicalPayload: string): string {
+    return createHmac('sha256', this.#integrityKey)
+      .update(canonicalPayload, 'utf8')
+      .digest('hex');
+  }
+
+  encryptJson(value: unknown, associatedData: string | Buffer = ''): Buffer {
     const header = Buffer.from([FORMAT_VERSION]);
     const iv = randomBytes(IV_BYTES);
     const cipher = createCipheriv('aes-256-gcm', this.#key, iv);
-    cipher.setAAD(header);
+    cipher.setAAD(authenticatedData(header, associatedData));
     const ciphertext = Buffer.concat([
       cipher.update(JSON.stringify(value), 'utf8'),
       cipher.final(),
@@ -155,7 +177,7 @@ export class CoreCrypto {
     ]);
   }
 
-  decryptJson<T>(payload: Buffer): T {
+  decryptJson<T>(payload: Buffer, associatedData: string | Buffer = ''): T {
     try {
       if (
         payload.length < 1 + IV_BYTES + AUTH_TAG_BYTES ||
@@ -168,7 +190,7 @@ export class CoreCrypto {
       const authTag = payload.subarray(1 + IV_BYTES, 1 + IV_BYTES + AUTH_TAG_BYTES);
       const ciphertext = payload.subarray(1 + IV_BYTES + AUTH_TAG_BYTES);
       const decipher = createDecipheriv('aes-256-gcm', this.#key, iv);
-      decipher.setAAD(header);
+      decipher.setAAD(authenticatedData(header, associatedData));
       decipher.setAuthTag(authTag);
       const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
 
@@ -177,4 +199,17 @@ export class CoreCrypto {
       throw new Error('Encrypted payload authentication failed', { cause });
     }
   }
+}
+
+function authenticatedData(
+  header: Buffer,
+  associatedData: string | Buffer,
+): Buffer {
+  const context =
+    typeof associatedData === 'string'
+      ? Buffer.from(associatedData, 'utf8')
+      : associatedData;
+  const contextLength = Buffer.allocUnsafe(4);
+  contextLength.writeUInt32BE(context.length);
+  return Buffer.concat([header, contextLength, context]);
 }
