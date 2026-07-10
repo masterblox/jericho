@@ -390,12 +390,26 @@ export class HUD {
   }
 
   private screenPoint(hand: TrackedHandFrame): Point {
+    // The right hand is the pointer: track the pinch point (thumb/index midpoint)
+    // so the cursor sits where the fingers actually grab, not at the palm center.
+    // Calibration stays palm-based (stable); we add the live finger offset every
+    // frame so there is no jump between the open and pinched poses.
+    const offsetX = hand.handedness === 'Right' ? hand.smoothedPinch.x - hand.smoothedAnchor.x : 0;
+    const offsetY = hand.handedness === 'Right' ? hand.smoothedPinch.y - hand.smoothedAnchor.y : 0;
     const profile = this.profileFor(hand.handedness);
     if (profile) {
       const normalized = applyCalibration(profile.matrix, hand.smoothedAnchor);
-      return { x: normalized.x * window.innerWidth, y: normalized.y * window.innerHeight };
+      return {
+        x: (normalized.x + offsetX) * window.innerWidth,
+        y: (normalized.y + offsetY) * window.innerHeight,
+      };
     }
-    const fallback = mapHandToScreen(hand.smoothedAnchor.x, hand.smoothedAnchor.y, window.innerWidth, window.innerHeight);
+    const fallback = mapHandToScreen(
+      hand.smoothedAnchor.x + offsetX,
+      hand.smoothedAnchor.y + offsetY,
+      window.innerWidth,
+      window.innerHeight,
+    );
     return { x: fallback.px, y: fallback.py };
   }
 
