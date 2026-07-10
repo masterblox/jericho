@@ -1,0 +1,16 @@
+{
+  "name": "jarvis",
+  "private": true,
+  "version": "1.0.3",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -n bridge,web -c cyan,magenta \"pnpm --filter bridge dev\" \"pnpm --filter frontend dev\"",
+    "build": "pnpm --filter frontend build",
+    "test": "pnpm --filter frontend test",
+    "typecheck": "pnpm --filter frontend typecheck && pnpm --filter bridge typecheck",
+    "preview": "pnpm --filter frontend preview"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  }
+}
