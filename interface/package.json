@@ -1,0 +1,23 @@
+{
+  "name": "jericho-command-interface",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev:a": "VITE_DESIGN_VARIANT=workshop vite --host 127.0.0.1 --port 4173",
+    "dev:b": "VITE_DESIGN_VARIANT=hadal vite --host 127.0.0.1 --port 4174",
+    "build:a": "VITE_DESIGN_VARIANT=workshop vite build --outDir dist/workshop",
+    "build:b": "VITE_DESIGN_VARIANT=hadal vite build --outDir dist/hadal",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "latest",
+    "react": "latest",
+    "react-dom": "latest",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "@fal-ai/client": "^1.10.1",
+    "@playwright/test": "latest"
+  }
+}
