@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -62,6 +62,35 @@ interface Migration {
   version: number;
   sql: string;
 }
+
+type EncryptedRecordTable =
+  | 'events'
+  | 'entities'
+  | 'relations'
+  | 'connector_health';
+
+type DatabaseRow = Record<string, SQLInputValue>;
+type RecordProjection = Record<string, string | number | null>;
+
+const STORE_UUID_NAME = 'store-uuid';
+const KEY_VERIFIER_NAME = 'key-verifier';
+const STORE_UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const LEGACY_RECORD_TABLES = [
+  'events',
+  'entities',
+  'relations',
+  'intents',
+  'missions',
+  'mission_tasks',
+  'agent_capabilities',
+  'assignments',
+  'proposals',
+  'receipts',
+  'decisions',
+  'connector_health',
+  'preference_changes',
+] as const;
 
 const MIGRATIONS: readonly Migration[] = [
   {
@@ -298,10 +327,12 @@ const MIGRATIONS: readonly Migration[] = [
 
 export class JerichoStore {
   readonly #database: DatabaseSync;
+  readonly #masterCrypto: CoreCrypto;
   readonly #crypto: CoreCrypto;
+  readonly #storeUuid: string;
 
   constructor(options: JerichoStoreOptions = {}) {
-    this.#crypto = new CoreCrypto(options.key ?? loadMasterKey());
+    this.#masterCrypto = new CoreCrypto(options.key ?? loadMasterKey());
     const databasePath = options.path ?? join(homedir(), '.jericho', 'jericho.db');
     if (databasePath !== ':memory:') {
       mkdirSync(dirname(databasePath), { recursive: true, mode: 0o700 });
@@ -317,7 +348,10 @@ export class JerichoStore {
       withBusyRetry(() => this.#database.exec('PRAGMA journal_mode = WAL'));
     }
     try {
-      this.#migrate();
+      this.#storeUuid = this.#migrate();
+      this.#crypto = this.#masterCrypto.deriveScoped(
+        `jericho-store:${this.#storeUuid}`,
+      );
     } catch (error) {
       this.#database.close();
       throw error;
@@ -332,7 +366,7 @@ export class JerichoStore {
       const integrityHash = this.#integrityHashFor(normalized);
       const existing = this.#database
         .prepare(`
-          SELECT id, integrity_hash, body
+          SELECT *
           FROM events
           WHERE source = ? AND source_event_id = ?
         `)
@@ -341,8 +375,7 @@ export class JerichoStore {
         const existingEvent = this.#readRecord<EventEnvelope>(
           'events',
           String(existing.id),
-          existing.body,
-          existing.integrity_hash,
+          existing,
           (value) => assertEventEnvelope(value),
           (value) => value.id,
         );
@@ -384,7 +417,7 @@ export class JerichoStore {
 
   getEvent(id: string): EventEnvelope | undefined {
     const row = this.#database
-      .prepare('SELECT id, integrity_hash, body FROM events WHERE id = ?')
+      .prepare('SELECT * FROM events WHERE id = ?')
       .get(id);
     if (!row) {
       return undefined;
@@ -392,8 +425,7 @@ export class JerichoStore {
     return this.#readRecord<EventEnvelope>(
       'events',
       String(row.id),
-      row.body,
-      row.integrity_hash,
+      row,
       (value) => assertEventEnvelope(value),
       (value) => value.id,
     );
@@ -408,6 +440,7 @@ export class JerichoStore {
         !current ||
         timestampEpoch(incoming.freshness.observedAt) >
           timestampEpoch(current.freshness.observedAt);
+      const confidence = maximumDefined(current?.confidence, incoming.confidence);
       const reconciled: Entity = current
         ? {
             ...current,
@@ -415,16 +448,16 @@ export class JerichoStore {
               ? {
                   type: incoming.type,
                   canonicalName: incoming.canonicalName,
-                  status: incoming.status,
-                  risk: incoming.risk,
                   freshness: incoming.freshness,
+                  ...('status' in incoming ? { status: incoming.status } : {}),
+                  ...('risk' in incoming ? { risk: incoming.risk } : {}),
                 }
               : {}),
             aliases: uniqueStrings([...current.aliases, ...incoming.aliases]),
             attributes: incomingIsNewer
               ? { ...current.attributes, ...incoming.attributes }
               : { ...incoming.attributes, ...current.attributes },
-            confidence: maximumDefined(current.confidence, incoming.confidence),
+            ...(confidence !== undefined ? { confidence } : {}),
             provenance: mergeProvenance(current.provenance, incoming.provenance),
             createdAt: earlierTimestamp(current.createdAt, incoming.createdAt),
             updatedAt: laterTimestamp(current.updatedAt, incoming.updatedAt),
@@ -469,7 +502,7 @@ export class JerichoStore {
 
   getEntity(id: string): Entity | undefined {
     const row = this.#database
-      .prepare('SELECT id, integrity_hash, body FROM entities WHERE id = ?')
+      .prepare('SELECT * FROM entities WHERE id = ?')
       .get(id);
     if (!row) {
       return undefined;
@@ -477,8 +510,7 @@ export class JerichoStore {
     return this.#readRecord<Entity>(
       'entities',
       String(row.id),
-      row.body,
-      row.integrity_hash,
+      row,
       (value) => assertEntity(value),
       (value) => value.id,
     );
@@ -502,15 +534,14 @@ export class JerichoStore {
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     return this.#database
       .prepare(
-        `SELECT id, integrity_hash, body FROM entities${where} ORDER BY updated_at DESC, id ASC`,
+        `SELECT * FROM entities${where} ORDER BY updated_at DESC, id ASC`,
       )
       .all(...parameters)
       .map((row) =>
         this.#readRecord<Entity>(
           'entities',
           String(row.id),
-          row.body,
-          row.integrity_hash,
+          row,
           (value) => assertEntity(value),
           (value) => value.id,
         ),
@@ -523,7 +554,7 @@ export class JerichoStore {
     return this.#writeTransaction(() => {
       const row = this.#database
         .prepare(`
-          SELECT id, integrity_hash, body FROM relations
+          SELECT * FROM relations
           WHERE from_entity_id = ? AND to_entity_id = ? AND relation_type = ?
         `)
         .get(incoming.fromEntityId, incoming.toEntityId, incoming.type);
@@ -531,8 +562,7 @@ export class JerichoStore {
         ? this.#readRecord<Relation>(
             'relations',
             String(row.id),
-            row.body,
-            row.integrity_hash,
+            row,
             (value) => assertRelation(value),
             (value) => value.id,
           )
@@ -541,20 +571,21 @@ export class JerichoStore {
         !current ||
         timestampEpoch(incoming.freshness.observedAt) >
           timestampEpoch(current.freshness.observedAt);
+      const confidence = maximumDefined(current?.confidence, incoming.confidence);
       const reconciled: Relation = current
         ? {
             ...current,
             ...(incomingIsNewer
               ? {
-                  status: incoming.status,
-                  risk: incoming.risk,
                   freshness: incoming.freshness,
+                  ...('status' in incoming ? { status: incoming.status } : {}),
+                  ...('risk' in incoming ? { risk: incoming.risk } : {}),
                 }
               : {}),
             attributes: incomingIsNewer
               ? { ...current.attributes, ...incoming.attributes }
               : { ...incoming.attributes, ...current.attributes },
-            confidence: maximumDefined(current.confidence, incoming.confidence),
+            ...(confidence !== undefined ? { confidence } : {}),
             provenance: mergeProvenance(current.provenance, incoming.provenance),
             createdAt: earlierTimestamp(current.createdAt, incoming.createdAt),
             updatedAt: laterTimestamp(current.updatedAt, incoming.updatedAt),
@@ -623,15 +654,14 @@ export class JerichoStore {
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     return this.#database
       .prepare(
-        `SELECT id, integrity_hash, body FROM relations${where} ORDER BY updated_at DESC, id ASC`,
+        `SELECT * FROM relations${where} ORDER BY updated_at DESC, id ASC`,
       )
       .all(...parameters)
       .map((item) =>
         this.#readRecord<Relation>(
           'relations',
           String(item.id),
-          item.body,
-          item.integrity_hash,
+          item,
           (value) => assertRelation(value),
           (value) => value.id,
         ),
@@ -645,15 +675,14 @@ export class JerichoStore {
     return this.#writeTransaction(() => {
       const existing = this.#database
         .prepare(
-          'SELECT connector_id, integrity_hash, body FROM connector_health WHERE connector_id = ?',
+          'SELECT * FROM connector_health WHERE connector_id = ?',
         )
         .get(normalized.connectorId);
       if (existing) {
         const current = this.#readRecord<ConnectorHealth>(
           'connector_health',
           String(existing.connector_id),
-          existing.body,
-          existing.integrity_hash,
+          existing,
           (value) => assertConnectorHealth(value),
           (value) => value.connectorId,
         );
@@ -709,14 +738,14 @@ export class JerichoStore {
     const rows = options.status
       ? this.#database
           .prepare(`
-            SELECT connector_id, integrity_hash, body FROM connector_health
+            SELECT * FROM connector_health
             WHERE status = ?
             ORDER BY checked_at DESC, connector_id ASC
           `)
           .all(options.status)
       : this.#database
           .prepare(`
-            SELECT connector_id, integrity_hash, body FROM connector_health
+            SELECT * FROM connector_health
             ORDER BY checked_at DESC, connector_id ASC
           `)
           .all();
@@ -724,8 +753,7 @@ export class JerichoStore {
       this.#readRecord<ConnectorHealth>(
         'connector_health',
         String(row.connector_id),
-        row.body,
-        row.integrity_hash,
+        row,
         (value) => assertConnectorHealth(value),
         (value) => value.connectorId,
       ),
@@ -750,43 +778,53 @@ export class JerichoStore {
   }
 
   #sealRecord<T extends { integrityHash?: string } & object>(
-    table: string,
+    table: EncryptedRecordTable,
     rowId: string,
     value: T,
   ): { record: T; integrityHash: string; body: Buffer } {
     const integrityHash = this.#integrityHashFor(value);
     const record = { ...value, integrityHash } as T;
+    const projection = recordProjection(table, record);
     return {
       record,
       integrityHash,
       body: this.#crypto.encryptJson(
         record,
-        recordAssociatedData(table, rowId),
+        recordAssociatedData(this.#storeUuid, table, rowId, projection),
       ),
     };
   }
 
   #readRecord<T extends { integrityHash?: string } & object>(
-    table: string,
+    table: EncryptedRecordTable,
     rowId: string,
-    body: SQLInputValue | undefined,
-    visibleIntegrity: SQLInputValue | undefined,
+    row: DatabaseRow,
     validate: (value: unknown) => void,
     identity: (value: T) => string,
   ): T {
+    const visibleProjection = rowProjection(table, row, rowId);
     const value = this.#crypto.decryptJson<unknown>(
-      asBuffer(body),
-      recordAssociatedData(table, rowId),
+      asBuffer(row.body),
+      recordAssociatedData(
+        this.#storeUuid,
+        table,
+        rowId,
+        visibleProjection,
+      ),
     );
     validate(value);
     const record = value as T;
     if (identity(record) !== rowId) {
       throw new Error(`${table}/${rowId} decrypted identity mismatch`);
     }
+    const expectedProjection = recordProjection(table, record);
+    if (canonicalJson(expectedProjection) !== canonicalJson(visibleProjection)) {
+      throw new Error(`${table}/${rowId} visible projection mismatch`);
+    }
     const expected = this.#integrityHashFor(record);
     if (
       !digestsEqual(record.integrityHash, expected) ||
-      !digestsEqual(visibleIntegrity, expected)
+      !digestsEqual(row.integrity_hash, expected)
     ) {
       throw new Error(`${table}/${rowId} integrity verification failed`);
     }
@@ -799,7 +837,7 @@ export class JerichoStore {
     }
   }
 
-  #migrate(): void {
+  #migrate(): string {
     withBusyRetry(() => this.#database.exec('BEGIN IMMEDIATE'));
     try {
       this.#database.exec(`
@@ -808,15 +846,37 @@ export class JerichoStore {
           applied_at TEXT NOT NULL
         )
       `);
-      if (this.#hasKeyVerifier()) {
-        this.#verifyMasterKey();
-      }
       const applied = new Set(
         this.#database
           .prepare('SELECT version FROM schema_migrations')
           .all()
           .map((row) => Number(row.version)),
       );
+      const isBoundStore = applied.has(3);
+      let storeUuid: string | undefined;
+      if (isBoundStore) {
+        if (!this.#tableExists('store_metadata')) {
+          throw new Error(
+            'Jericho store metadata is corrupt: metadata table is missing',
+          );
+        }
+        if (!this.#metadataExists(KEY_VERIFIER_NAME)) {
+          throw new Error(
+            'Jericho store metadata is corrupt: key verifier is missing',
+          );
+        }
+        storeUuid = this.#readStoreUuid();
+        this.#verifyMasterKey(storeUuid);
+      } else {
+        if (this.#legacyStoreHasRows()) {
+          throw new Error('Refusing to migrate nonempty pre-v3 Jericho store');
+        }
+        if (this.#tableExists('store_metadata')) {
+          throw new Error(
+            'Jericho store metadata is corrupt: v3 migration marker is missing',
+          );
+        }
+      }
       for (const migration of MIGRATIONS) {
         if (applied.has(migration.version)) continue;
         this.#database.exec(migration.sql);
@@ -824,50 +884,100 @@ export class JerichoStore {
           .prepare('INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)')
           .run(migration.version, new Date().toISOString());
       }
-      this.#verifyMasterKey();
+      storeUuid ??= this.#initializeStoreBinding();
       this.#database.exec('COMMIT');
+      return storeUuid;
     } catch (error) {
       this.#database.exec('ROLLBACK');
       throw error;
     }
   }
 
-  #hasKeyVerifier(): boolean {
-    const table = this.#database
-      .prepare(`
-        SELECT 1 AS present FROM sqlite_schema
-        WHERE type = 'table' AND name = 'store_metadata'
-      `)
-      .get();
-    if (!table) return false;
+  #tableExists(name: string): boolean {
     return Boolean(
       this.#database
-        .prepare('SELECT 1 AS present FROM store_metadata WHERE name = ?')
-        .get('key-verifier'),
+        .prepare(`
+          SELECT 1 AS present FROM sqlite_schema
+          WHERE type = 'table' AND name = ?
+        `)
+        .get(name),
     );
   }
 
-  #verifyMasterKey(): void {
-    const name = 'key-verifier';
-    const associatedData = recordAssociatedData('store_metadata', name);
-    const verifier = {
-      purpose: 'jericho-core-store-key-verifier',
-      version: 1,
-    };
-    this.#database
-      .prepare('INSERT OR IGNORE INTO store_metadata (name, value) VALUES (?, ?)')
-      .run(name, this.#crypto.encryptJson(verifier, associatedData));
+  #metadataExists(name: string): boolean {
+    return Boolean(
+      this.#database
+        .prepare('SELECT 1 AS present FROM store_metadata WHERE name = ?')
+        .get(name),
+    );
+  }
+
+  #legacyStoreHasRows(): boolean {
+    for (const table of LEGACY_RECORD_TABLES) {
+      if (
+        this.#tableExists(table) &&
+        this.#database.prepare(`SELECT 1 AS present FROM ${table} LIMIT 1`).get()
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #readStoreUuid(): string {
     const row = this.#database
       .prepare('SELECT value FROM store_metadata WHERE name = ?')
-      .get(name);
+      .get(STORE_UUID_NAME);
+    if (!row) {
+      throw new Error('Jericho store metadata is corrupt: store UUID is missing');
+    }
+    if (!(row.value instanceof Uint8Array)) {
+      throw new Error('Jericho store metadata is corrupt: store UUID is not a BLOB');
+    }
+    const storeUuid = Buffer.from(row.value).toString('utf8');
+    if (!STORE_UUID_PATTERN.test(storeUuid)) {
+      throw new Error('Jericho store metadata is corrupt: store UUID is invalid');
+    }
+    return storeUuid;
+  }
+
+  #initializeStoreBinding(): string {
+    const storeUuid = randomUUID();
+    const verifier = storeKeyVerifier(storeUuid);
+    this.#database
+      .prepare('INSERT INTO store_metadata (name, value) VALUES (?, ?)')
+      .run(STORE_UUID_NAME, Buffer.from(storeUuid, 'utf8'));
+    this.#database
+      .prepare('INSERT INTO store_metadata (name, value) VALUES (?, ?)')
+      .run(
+        KEY_VERIFIER_NAME,
+        this.#masterCrypto.encryptJson(
+          verifier,
+          metadataAssociatedData(storeUuid, KEY_VERIFIER_NAME),
+        ),
+      );
+    return storeUuid;
+  }
+
+  #verifyMasterKey(storeUuid: string): void {
+    const verifier = storeKeyVerifier(storeUuid);
+    const row = this.#database
+      .prepare('SELECT value FROM store_metadata WHERE name = ?')
+      .get(KEY_VERIFIER_NAME);
+    if (!row) {
+      throw new Error(
+        'Jericho store metadata is corrupt: key verifier is missing',
+      );
+    }
     try {
-      const decrypted = this.#crypto.decryptJson<typeof verifier>(
-        asBuffer(row?.value),
-        associatedData,
+      const decrypted = this.#masterCrypto.decryptJson<typeof verifier>(
+        asBuffer(row.value),
+        metadataAssociatedData(storeUuid, KEY_VERIFIER_NAME),
       );
       if (
         decrypted.purpose !== verifier.purpose ||
-        decrypted.version !== verifier.version
+        decrypted.version !== verifier.version ||
+        decrypted.storeUuid !== verifier.storeUuid
       ) {
         throw new Error('Invalid Jericho store key verifier');
       }
@@ -879,8 +989,182 @@ export class JerichoStore {
   }
 }
 
-function recordAssociatedData(table: string, rowId: string): string {
-  return JSON.stringify(['jericho-store', 1, table, rowId]);
+function storeKeyVerifier(storeUuid: string) {
+  return {
+    purpose: 'jericho-core-store-key-verifier',
+    version: 2,
+    storeUuid,
+  } as const;
+}
+
+function metadataAssociatedData(storeUuid: string, name: string): string {
+  return JSON.stringify(['jericho-store-metadata', 2, storeUuid, name]);
+}
+
+function recordAssociatedData(
+  storeUuid: string,
+  table: EncryptedRecordTable,
+  rowId: string,
+  projection: RecordProjection,
+): string {
+  return canonicalJson([
+    'jericho-store-record',
+    2,
+    storeUuid,
+    table,
+    rowId,
+    projection,
+  ]);
+}
+
+function recordProjection(
+  table: EncryptedRecordTable,
+  value: object,
+): RecordProjection {
+  switch (table) {
+    case 'events': {
+      const event = value as EventEnvelope;
+      return {
+        id: event.id,
+        source: event.source,
+        source_type: event.sourceType,
+        source_event_id: event.sourceEventId,
+        event_type: event.type,
+        occurred_at: event.occurredAt,
+        ingested_at: event.ingestedAt,
+        status: event.status ?? null,
+        route: event.route ?? null,
+        risk: event.risk ?? null,
+        confidence: event.confidence ?? null,
+        freshness_at: event.freshness?.observedAt ?? null,
+      };
+    }
+    case 'entities': {
+      const entity = value as Entity;
+      return {
+        id: entity.id,
+        entity_type: entity.type,
+        status: entity.status ?? null,
+        risk: entity.risk ?? null,
+        confidence: entity.confidence ?? null,
+        freshness_at: entity.freshness.observedAt,
+        created_at: entity.createdAt,
+        updated_at: entity.updatedAt,
+      };
+    }
+    case 'relations': {
+      const relation = value as Relation;
+      return {
+        id: relation.id,
+        from_entity_id: relation.fromEntityId,
+        to_entity_id: relation.toEntityId,
+        relation_type: relation.type,
+        status: relation.status ?? null,
+        risk: relation.risk ?? null,
+        confidence: relation.confidence ?? null,
+        freshness_at: relation.freshness.observedAt,
+        created_at: relation.createdAt,
+        updated_at: relation.updatedAt,
+      };
+    }
+    case 'connector_health': {
+      const health = value as ConnectorHealth;
+      return {
+        connector_id: health.connectorId,
+        status: health.status,
+        checked_at: health.checkedAt,
+        last_success_at: health.lastSuccessAt ?? null,
+        last_failure_at: health.lastFailureAt ?? null,
+        latency_ms: health.latencyMs ?? null,
+        consecutive_failures: health.consecutiveFailures,
+        freshness_at: health.freshness.observedAt,
+      };
+    }
+  }
+}
+
+function rowProjection(
+  table: EncryptedRecordTable,
+  row: DatabaseRow,
+  rowId: string,
+): RecordProjection {
+  return Object.fromEntries(
+    projectionColumns(table).map((column) => [
+      column,
+      projectionValue(row[column], table, rowId, column),
+    ]),
+  );
+}
+
+function projectionColumns(table: EncryptedRecordTable): readonly string[] {
+  switch (table) {
+    case 'events':
+      return [
+        'id',
+        'source',
+        'source_type',
+        'source_event_id',
+        'event_type',
+        'occurred_at',
+        'ingested_at',
+        'status',
+        'route',
+        'risk',
+        'confidence',
+        'freshness_at',
+      ];
+    case 'entities':
+      return [
+        'id',
+        'entity_type',
+        'status',
+        'risk',
+        'confidence',
+        'freshness_at',
+        'created_at',
+        'updated_at',
+      ];
+    case 'relations':
+      return [
+        'id',
+        'from_entity_id',
+        'to_entity_id',
+        'relation_type',
+        'status',
+        'risk',
+        'confidence',
+        'freshness_at',
+        'created_at',
+        'updated_at',
+      ];
+    case 'connector_health':
+      return [
+        'connector_id',
+        'status',
+        'checked_at',
+        'last_success_at',
+        'last_failure_at',
+        'latency_ms',
+        'consecutive_failures',
+        'freshness_at',
+      ];
+  }
+}
+
+function projectionValue(
+  value: SQLInputValue | undefined,
+  table: EncryptedRecordTable,
+  rowId: string,
+  column: string,
+): string | number | null {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    (typeof value === 'number' && Number.isFinite(value))
+  ) {
+    return value;
+  }
+  throw new Error(`${table}/${rowId} visible projection ${column} is invalid`);
 }
 
 function digestsEqual(first: unknown, second: unknown): boolean {

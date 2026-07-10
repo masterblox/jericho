@@ -23,6 +23,28 @@ describe('assertEventEnvelope', () => {
     expect(() => assertEventEnvelope(event)).not.toThrow();
   });
 
+  it('accepts timestamps with either zero or exactly three fractional digits', () => {
+    expect(() =>
+      assertEventEnvelope(
+        makeValidEvent({
+          occurredAt: '2026-07-11T00:00:00Z',
+          freshness: { observedAt: '2026-07-11T00:00:00.123Z' },
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  it.each([
+    ['event', { occurredAt: '2026-07-11T00:00:00.1Z' }],
+    ['event', { occurredAt: '2026-07-11T00:00:00.123456Z' }],
+    [
+      'freshness',
+      { freshness: { observedAt: '2026-07-11T00:00:00.123456789Z' } },
+    ],
+  ])('rejects unsupported %s timestamp precision', (_field, override) => {
+    expect(() => assertEventEnvelope(makeValidEvent(override))).toThrow(TypeError);
+  });
+
   it('rejects non-JSON payload values at the ingestion boundary', () => {
     const event = makeValidEvent({
       payload: { missing: undefined },

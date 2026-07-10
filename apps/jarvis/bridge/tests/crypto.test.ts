@@ -59,6 +59,21 @@ describe('CoreCrypto', () => {
     expect(digest).not.toBe(createHash('sha256').update(payload).digest('hex'));
   });
 
+  it('derives isolated encryption and integrity keys for a store scope', () => {
+    const master = new CoreCrypto(Buffer.alloc(32, 21));
+    const firstStore = master.deriveScoped('store:11111111');
+    const secondStore = master.deriveScoped('store:22222222');
+    const payload = '{"id":"event-1"}';
+    const encrypted = firstStore.encryptJson({ id: 'event-1' }, 'events:event-1');
+
+    expect(firstStore.integrityDigest(payload)).not.toBe(
+      secondStore.integrityDigest(payload),
+    );
+    expect(() =>
+      secondStore.decryptJson(encrypted, 'events:event-1'),
+    ).toThrow('Encrypted payload authentication failed');
+  });
+
   it('rejects injected keys that are not exactly 32 bytes', () => {
     expect(() => new CoreCrypto(Buffer.alloc(31))).toThrow(
       'Jericho master key must be exactly 32 bytes',

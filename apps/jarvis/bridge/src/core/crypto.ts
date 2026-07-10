@@ -158,6 +158,22 @@ export class CoreCrypto {
       .digest('hex');
   }
 
+  deriveScoped(scope: string): CoreCrypto {
+    if (scope.length === 0) {
+      throw new Error('Jericho crypto scope must not be empty');
+    }
+    const scopedKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        this.#key,
+        Buffer.from('jericho-core:scope:v1', 'utf8'),
+        Buffer.from(scope, 'utf8'),
+        32,
+      ),
+    );
+    return new CoreCrypto(scopedKey);
+  }
+
   encryptJson(value: unknown, associatedData: string | Buffer = ''): Buffer {
     const header = Buffer.from([FORMAT_VERSION]);
     const iv = randomBytes(IV_BYTES);

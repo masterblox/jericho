@@ -182,35 +182,7 @@ describe('JerichoStore migrations', () => {
 
   it('safely upgrades an empty v1 test database through all migrations', () => {
     const databasePath = temporaryDatabasePath();
-    const legacy = new DatabaseSync(databasePath);
-    legacy.exec(`
-      CREATE TABLE schema_migrations (
-        version INTEGER PRIMARY KEY,
-        applied_at TEXT NOT NULL
-      );
-      INSERT INTO schema_migrations (version, applied_at)
-      VALUES (1, '2026-07-11T00:00:00.000Z');
-      CREATE TABLE events (
-        id TEXT PRIMARY KEY,
-        source TEXT NOT NULL,
-        source_type TEXT NOT NULL,
-        source_event_id TEXT NOT NULL,
-        event_type TEXT NOT NULL,
-        occurred_at TEXT NOT NULL,
-        ingested_at TEXT NOT NULL,
-        status TEXT,
-        route TEXT,
-        risk TEXT,
-        confidence REAL,
-        freshness_at TEXT,
-        integrity_hash TEXT NOT NULL,
-        body BLOB NOT NULL,
-        UNIQUE (source, source_event_id)
-      );
-      CREATE INDEX events_occurred_at_idx ON events (occurred_at);
-      CREATE INDEX events_status_route_idx ON events (status, route);
-    `);
-    legacy.close();
+    createV1TestDatabase(databasePath, false);
 
     const upgraded = openStore(databasePath);
     expect(upgraded.appendEvent(makeEvent()).inserted).toBe(true);
@@ -223,6 +195,62 @@ describe('JerichoStore migrations', () => {
         .map((row) => row.version),
     ).toEqual([1, 2, 3]);
     database.close();
+  });
+
+  it('refuses to bind or migrate a populated v1 store', () => {
+    const databasePath = temporaryDatabasePath();
+    createV1TestDatabase(databasePath, true);
+
+    expect(() => openStore(databasePath)).toThrow(
+      'Refusing to migrate nonempty pre-v3 Jericho store',
+    );
+
+    const database = new DatabaseSync(databasePath);
+    expect(
+      database
+        .prepare('SELECT version FROM schema_migrations ORDER BY version')
+        .all()
+        .map((row) => row.version),
+    ).toEqual([1]);
+    expect(
+      database
+        .prepare(
+          "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'store_metadata'",
+        )
+        .get(),
+    ).toBeUndefined();
+    database.close();
+  });
+
+  it('refuses to bind or migrate a populated v2 store', () => {
+    const databasePath = temporaryDatabasePath();
+    const current = openStore(databasePath);
+    current.upsertEntity(makeEntity());
+    current.close();
+    const legacy = new DatabaseSync(databasePath);
+    legacy.exec(`
+      DROP TABLE store_metadata;
+      DELETE FROM schema_migrations WHERE version = 3;
+    `);
+    legacy.close();
+
+    expect(() => openStore(databasePath)).toThrow(
+      'Refusing to migrate nonempty pre-v3 Jericho store',
+    );
+  });
+
+  it('treats a missing v3 key verifier as corruption instead of rebinding', () => {
+    const databasePath = temporaryDatabasePath();
+    openStore(databasePath).close();
+    const database = new DatabaseSync(databasePath);
+    database
+      .prepare('DELETE FROM store_metadata WHERE name = ?')
+      .run('key-verifier');
+    database.close();
+
+    expect(() => openStore(databasePath)).toThrow(
+      'Jericho store metadata is corrupt: key verifier is missing',
+    );
   });
 
   it(
@@ -348,9 +376,81 @@ describe('JerichoStore encryption at rest', () => {
       'Encrypted payload authentication failed',
     );
   });
+
+  it('binds encrypted rows and integrity digests to a persistent random store UUID', () => {
+    const firstPath = temporaryDatabasePath();
+    const secondPath = temporaryDatabasePath();
+    const first = openStore(firstPath);
+    const firstEvent = first.appendEvent(makeEvent()).event;
+    first.close();
+    const second = openStore(secondPath);
+    second.appendEvent(
+      makeEvent({ payload: { subject: 'different database contents' } }),
+    );
+    second.close();
+
+    const firstDatabase = new DatabaseSync(firstPath);
+    const secondDatabase = new DatabaseSync(secondPath);
+    const firstUuid = metadataText(firstDatabase, 'store-uuid');
+    const secondUuid = metadataText(secondDatabase, 'store-uuid');
+    expect(firstUuid).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+    );
+    expect(secondUuid).not.toBe(firstUuid);
+
+    const firstRow = firstDatabase
+      .prepare('SELECT body, integrity_hash FROM events WHERE id = ?')
+      .get('evt-1');
+    if (!firstRow) throw new Error('Missing first database event fixture');
+    secondDatabase
+      .prepare('UPDATE events SET body = ?, integrity_hash = ? WHERE id = ?')
+      .run(firstRow.body, firstRow.integrity_hash, 'evt-1');
+    firstDatabase.close();
+    secondDatabase.close();
+
+    const reopenedFirst = openStore(firstPath);
+    expect(reopenedFirst.getEvent('evt-1')).toEqual(firstEvent);
+    reopenedFirst.close();
+    const reopenedSecond = openStore(secondPath);
+    expect(() => reopenedSecond.getEvent('evt-1')).toThrow(
+      'Encrypted payload authentication failed',
+    );
+  });
 });
 
 describe('JerichoStore entities', () => {
+  it('omits absent optional entity fields and preserves current values on update', () => {
+    const store = openStore();
+    const current = store.upsertEntity(makeEntity());
+    const {
+      status: _status,
+      risk: _risk,
+      confidence: _confidence,
+      ...withoutOptionals
+    } = makeEntity({
+      aliases: ['Updated Alias'],
+      freshness: { observedAt: '2026-07-11T02:00:00.000Z' },
+      updatedAt: '2026-07-11T02:00:00.000Z',
+    });
+
+    const updated = store.upsertEntity(withoutOptionals);
+
+    expect(updated.status).toBe(current.status);
+    expect(updated.risk).toBe(current.risk);
+    expect(updated.confidence).toBe(current.confidence);
+
+    const {
+      status: _newStatus,
+      risk: _newRisk,
+      confidence: _newConfidence,
+      ...newWithoutOptionals
+    } = makeEntity({ id: 'entity-no-optionals' });
+    const created = store.upsertEntity(newWithoutOptionals);
+    expect(Object.hasOwn(created, 'status')).toBe(false);
+    expect(Object.hasOwn(created, 'risk')).toBe(false);
+    expect(Object.hasOwn(created, 'confidence')).toBe(false);
+  });
+
   it('validates an entity before hashing or writing it', () => {
     const store = openStore();
     const invalid = {
@@ -362,6 +462,42 @@ describe('JerichoStore entities', () => {
     expect(() => store.upsertEntity(invalid)).toThrow(TypeError);
     expect(store.getEntity(invalid.id)).toBeUndefined();
   });
+
+  it.each([
+    ['entity_type', EntityType.Organization],
+    ['status', LifecycleStatus.Archived],
+    ['freshness_at', '2027-01-01T00:00:00.000Z'],
+  ])(
+    'authenticates the visible entity %s projection before returning a row',
+    (column, tamperedValue) => {
+      const databasePath = temporaryDatabasePath();
+      const store = openStore(databasePath);
+      store.upsertEntity(makeEntity());
+      store.close();
+      const database = new DatabaseSync(databasePath);
+      database
+        .prepare(`UPDATE entities SET ${column} = ? WHERE id = ?`)
+        .run(tamperedValue, 'entity-carlos');
+      database.close();
+
+      const reopened = openStore(databasePath);
+      const query =
+        column === 'entity_type'
+          ? () => reopened.listEntities({ type: tamperedValue as EntityType })
+          : column === 'status'
+            ? () =>
+                reopened.listEntities({
+                  status: tamperedValue as LifecycleStatus,
+                })
+            : () =>
+                reopened.listEntities({
+                  freshAfter: '2027-01-01T00:00:00.000Z',
+                });
+      expect(query).toThrow(
+        'Encrypted payload authentication failed',
+      );
+    },
+  );
 
   it('reconciles aliases, attributes, provenance, and freshness on upsert', () => {
     const store = openStore();
@@ -470,6 +606,43 @@ describe('JerichoStore entities', () => {
 });
 
 describe('JerichoStore relations', () => {
+  it('omits absent optional relation fields and preserves current values on update', () => {
+    const store = openStore();
+    store.upsertEntity(makeEntity({ id: 'entity-from' }));
+    store.upsertEntity(makeEntity({ id: 'entity-to' }));
+    const current = store.upsertRelation(makeRelation());
+    const {
+      status: _status,
+      risk: _risk,
+      confidence: _confidence,
+      ...withoutOptionals
+    } = makeRelation({
+      attributes: { updated: true },
+      freshness: { observedAt: '2026-07-11T02:00:00.000Z' },
+      updatedAt: '2026-07-11T02:00:00.000Z',
+    });
+
+    const updated = store.upsertRelation(withoutOptionals);
+
+    expect(updated.status).toBe(current.status);
+    expect(updated.risk).toBe(current.risk);
+    expect(updated.confidence).toBe(current.confidence);
+
+    const {
+      status: _newStatus,
+      risk: _newRisk,
+      confidence: _newConfidence,
+      ...newWithoutOptionals
+    } = makeRelation({
+      id: 'relation-no-optionals',
+      type: RelationType.RelatedTo,
+    });
+    const created = store.upsertRelation(newWithoutOptionals);
+    expect(Object.hasOwn(created, 'status')).toBe(false);
+    expect(Object.hasOwn(created, 'risk')).toBe(false);
+    expect(Object.hasOwn(created, 'confidence')).toBe(false);
+  });
+
   it('validates a relation before hashing or writing it', () => {
     const store = openStore();
     store.upsertEntity(makeEntity({ id: 'entity-from' }));
@@ -711,6 +884,68 @@ function canonicalJsonForTest(value: unknown): string {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalJsonForTest(record[key])}`)
     .join(',')}}`;
+}
+
+function metadataText(database: DatabaseSync, name: string): string {
+  const row = database
+    .prepare('SELECT value FROM store_metadata WHERE name = ?')
+    .get(name);
+  if (!(row?.value instanceof Uint8Array)) {
+    throw new Error(`Missing BLOB metadata value ${name}`);
+  }
+  return Buffer.from(row.value).toString('utf8');
+}
+
+function createV1TestDatabase(path: string, populated: boolean): void {
+  const database = new DatabaseSync(path);
+  database.exec(`
+    CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY,
+      applied_at TEXT NOT NULL
+    );
+    INSERT INTO schema_migrations (version, applied_at)
+    VALUES (1, '2026-07-11T00:00:00.000Z');
+    CREATE TABLE events (
+      id TEXT PRIMARY KEY,
+      source TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_event_id TEXT NOT NULL,
+      event_type TEXT NOT NULL,
+      occurred_at TEXT NOT NULL,
+      ingested_at TEXT NOT NULL,
+      status TEXT,
+      route TEXT,
+      risk TEXT,
+      confidence REAL,
+      freshness_at TEXT,
+      integrity_hash TEXT NOT NULL,
+      body BLOB NOT NULL,
+      UNIQUE (source, source_event_id)
+    );
+    CREATE INDEX events_occurred_at_idx ON events (occurred_at);
+    CREATE INDEX events_status_route_idx ON events (status, route);
+  `);
+  if (populated) {
+    database
+      .prepare(`
+        INSERT INTO events (
+          id, source, source_type, source_event_id, event_type,
+          occurred_at, ingested_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        'legacy-event',
+        'legacy',
+        'import',
+        'legacy-1',
+        'legacy.event',
+        '2026-07-11T00:00:00.000Z',
+        '2026-07-11T00:00:00.000Z',
+        '0'.repeat(64),
+        Buffer.from([0]),
+      );
+  }
+  database.close();
 }
 
 function runChildProcess(script: string, args: string[]): Promise<void> {
