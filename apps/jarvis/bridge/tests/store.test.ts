@@ -124,10 +124,12 @@ describe('JerichoStore migrations', () => {
       'agent_capabilities',
       'assignments',
       'connector_health',
+      'cost_records',
       'decisions',
       'entities',
       'events',
       'intents',
+      'mission_task_dependencies',
       'mission_tasks',
       'missions',
       'preference_changes',
@@ -155,7 +157,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3]);
+    ).toEqual([1, 2, 3, 4]);
     database.close();
   });
 
@@ -193,7 +195,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3]);
+    ).toEqual([1, 2, 3, 4]);
     database.close();
   });
 

@@ -45,6 +45,66 @@ export enum RouteType {
   Blocked = 'blocked',
 }
 
+/** The single semantic route chosen for an understood intent. */
+export enum IntentRoute {
+  Reply = 'reply',
+  Action = 'action',
+  Project = 'project',
+  Knowledge = 'knowledge',
+  Signal = 'signal',
+  Review = 'review',
+}
+
+export enum AgentLane {
+  Dev = 'dev',
+  Angela = 'angela',
+  Donald = 'donald',
+  Iris = 'iris',
+  Researcher = 'researcher',
+  Analyst = 'analyst',
+}
+
+export enum MutationClass {
+  ReadOnly = 'read_only',
+  Reversible = 'reversible',
+  Destructive = 'destructive',
+  Production = 'production',
+}
+
+export enum EscalationReason {
+  CostBudget = 'cost_budget',
+  RuntimeBudget = 'runtime_budget',
+  ConcurrencyBudget = 'concurrency_budget',
+  RetryBudget = 'retry_budget',
+  NewRecipient = 'new_recipient',
+  NewSystem = 'new_system',
+  RepositoryExpansion = 'repository_expansion',
+  CredentialExpansion = 'credential_expansion',
+  DataExpansion = 'data_expansion',
+  ToolExpansion = 'tool_expansion',
+  ChannelExpansion = 'channel_expansion',
+  ObjectiveChange = 'objective_change',
+  AcceptanceTestChange = 'acceptance_test_change',
+  DestructiveMutation = 'destructive_mutation',
+  ProductionMutation = 'production_mutation',
+  ContradictoryEvidence = 'contradictory_evidence',
+  UncertainExternalAction = 'uncertain_external_action',
+}
+
+export enum CostClass {
+  Local = 'local',
+  Low = 'low',
+  Standard = 'standard',
+  Premium = 'premium',
+}
+
+export enum CostCategory {
+  Model = 'model',
+  Tool = 'tool',
+  Connector = 'connector',
+  Other = 'other',
+}
+
 export enum FreshnessStatus {
   Fresh = 'fresh',
   Stale = 'stale',
@@ -210,6 +270,44 @@ export interface Relation {
   integrityHash?: string;
 }
 
+export interface EvidenceReference {
+  eventId: string;
+  integrityHash?: string;
+  selector?: string;
+}
+
+export interface EvidenceBackedStatement {
+  text: string;
+  evidence: EvidenceReference[];
+  confidence: number;
+}
+
+export interface IntentDeadline {
+  description: string;
+  at: IsoTimestamp;
+  confidence: number;
+}
+
+/** Read-only classifier output. It intentionally has no lifecycle state. */
+export interface ClassificationDraft {
+  kind: IntentKind;
+  summary: string;
+  suggestedRoute: IntentRoute;
+  entityIds: string[];
+  expectedOutcome?: string;
+  commitments: EvidenceBackedStatement[];
+  claims: EvidenceBackedStatement[];
+  assumptions: EvidenceBackedStatement[];
+  deadlines: IntentDeadline[];
+  affectedPartyIds: string[];
+  requiredEvidence: EvidenceReference[];
+  requiredCapabilities: string[];
+  ambiguityReasons: string[];
+  contradictoryEvidenceEventIds: string[];
+  risk: RiskLevel;
+  confidence: number;
+}
+
 export interface IntentEnvelope {
   id: string;
   eventId?: string;
@@ -220,9 +318,21 @@ export interface IntentEnvelope {
   summary: string;
   payload: JsonObject;
   status: LifecycleStatus;
-  route: RouteType;
+  route: IntentRoute;
+  routeRuleId: string;
+  entityIds: string[];
+  expectedOutcome?: string;
+  commitments: EvidenceBackedStatement[];
+  claims: EvidenceBackedStatement[];
+  assumptions: EvidenceBackedStatement[];
+  deadlines: IntentDeadline[];
+  affectedPartyIds: string[];
+  requiredEvidence: EvidenceReference[];
+  requiredCapabilities: string[];
+  ambiguityReasons: string[];
+  contradictoryEvidenceEventIds: string[];
   risk: RiskLevel;
-  confidence?: number;
+  confidence: number;
   freshness?: Freshness;
   provenance: Provenance[];
   createdAt: IsoTimestamp;
@@ -230,8 +340,89 @@ export interface IntentEnvelope {
   integrityHash?: string;
 }
 
+export interface MissionDeliverable {
+  id: string;
+  description: string;
+  artifactType: string;
+  required: boolean;
+}
+
+export interface AcceptanceTest {
+  id: string;
+  description: string;
+  verification: 'automatic' | 'manual';
+  requiredEvidence: string[];
+}
+
+export interface ArtifactRequirement {
+  type: string;
+  description: string;
+  schema?: JsonObject;
+  verification: string[];
+}
+
+export interface MissionTaskDefinition {
+  id: string;
+  kind: MissionTaskKind;
+  title: string;
+  description?: string;
+  sequence: number;
+  lane: AgentLane;
+  selectedAgentId: string;
+  capabilityIds: string[];
+  requiredActions: string[];
+  dependsOn: string[];
+  evidenceEventIds: string[];
+  expectedArtifact: ArtifactRequirement;
+  externalAction?: ExternalActionSpec;
+  input: JsonObject;
+  estimatedCostMicroUsd: number;
+  route: RouteType;
+  risk: RiskLevel;
+}
+
+export interface AgentSelection {
+  taskId: string;
+  agentId: string;
+  lane: AgentLane;
+  capabilityIds: string[];
+}
+
+export interface MissionBudget {
+  maxCostMicroUsd: number;
+  maxRuntimeMs: number;
+  maxConcurrency: number;
+  maxRetriesPerAssignment: number;
+}
+
+export interface RepositoryGrant {
+  repository: string;
+  writablePaths: string[];
+  mutationClasses: MutationClass[];
+}
+
+export interface MissionPermissions {
+  allowedTools: string[];
+  allowedSystems: string[];
+  allowedRepositories: RepositoryGrant[];
+  allowedChannels: string[];
+  allowedRecipients: string[];
+  allowedCredentialRefs: string[];
+  allowedDataScopes: string[];
+  allowedMutationClasses: MutationClass[];
+}
+
+export interface RollbackPlan {
+  strategy: string;
+  steps: string[];
+  verification: string;
+}
+
 export interface MissionPlan {
   id: string;
+  seriesId: string;
+  version: number;
+  supersedesPlanId?: string;
   intentId: string;
   title: string;
   objective: string;
@@ -239,8 +430,22 @@ export interface MissionPlan {
   route: RouteType;
   risk: RiskLevel;
   confidence?: number;
-  taskIds: string[];
-  constraints: JsonObject;
+  deliverables: MissionDeliverable[];
+  acceptanceTests: AcceptanceTest[];
+  evidenceEventIds: string[];
+  contextSnapshotHash: string;
+  taskGraph: MissionTaskDefinition[];
+  selectedAgents: AgentSelection[];
+  budget: MissionBudget;
+  permissions: MissionPermissions;
+  rollback: RollbackPlan;
+  escalationConditions: EscalationReason[];
+  planHash: string;
+  approvalDecisionId?: string;
+  approvedAt?: IsoTimestamp;
+  startedAt?: IsoTimestamp;
+  completedAt?: IsoTimestamp;
+  cancelRequestedAt?: IsoTimestamp;
   freshness?: Freshness;
   provenance: Provenance[];
   createdAt: IsoTimestamp;
@@ -258,8 +463,16 @@ export interface MissionTask {
   route: RouteType;
   risk: RiskLevel;
   sequence: number;
+  lane: AgentLane;
+  selectedAgentId: string;
+  capabilityIds: string[];
+  requiredActions: string[];
   requiredCapabilities: string[];
   dependsOn: string[];
+  evidenceEventIds: string[];
+  expectedArtifact: ArtifactRequirement;
+  externalAction?: ExternalActionSpec;
+  estimatedCostMicroUsd: number;
   input: JsonObject;
   output?: JsonValue;
   confidence?: number;
@@ -275,10 +488,17 @@ export interface MissionTask {
 export interface AgentCapability {
   id: string;
   agentId: string;
+  lane: AgentLane;
   name: string;
   description?: string;
   status: LifecycleStatus;
   routes: RouteType[];
+  supportedActions: string[];
+  tools: string[];
+  modelPolicy: ModelPolicy;
+  writableScope: MissionPermissions;
+  costClass: CostClass;
+  mayCreateAssignments: boolean;
   maximumRisk: RiskLevel;
   confidence?: number;
   metadata: JsonObject;
@@ -289,8 +509,32 @@ export interface AgentCapability {
   integrityHash?: string;
 }
 
+export interface ModelPolicy {
+  allowedModels: string[];
+  preferredModel?: string;
+  preferLocal: boolean;
+  maxTokensPerAssignment: number;
+}
+
+export interface ExternalActionSpec {
+  connectorId: string;
+  action: string;
+  destination: string;
+  idempotencyKey: string;
+  system?: string;
+  channel?: string;
+  recipient?: string;
+  repository?: string;
+  repositoryPath?: string;
+  credentialRef?: string;
+  dataScope?: string;
+  tool?: string;
+  mutationClass: MutationClass;
+}
+
 export interface Assignment {
   id: string;
+  missionId: string;
   missionTaskId: string;
   agentId: string;
   capabilityIds: string[];
@@ -299,6 +543,20 @@ export interface Assignment {
   risk: RiskLevel;
   confidence?: number;
   instructions: JsonObject;
+  evidenceEventIds: string[];
+  expectedArtifact: ArtifactRequirement;
+  externalAction?: ExternalActionSpec;
+  idempotencyKey: string;
+  attempt: number;
+  maxAttempts: number;
+  availableAt: IsoTimestamp;
+  estimatedCostMicroUsd: number;
+  artifact?: JsonValue;
+  leaseOwner?: string;
+  leaseToken?: string;
+  leaseExpiresAt?: IsoTimestamp;
+  cancelRequestedAt?: IsoTimestamp;
+  cancelReason?: string;
   assignedAt: IsoTimestamp;
   acceptedAt?: IsoTimestamp;
   completedAt?: IsoTimestamp;
@@ -331,13 +589,19 @@ export interface ActionReceipt {
   missionTaskId?: string;
   connectorId?: string;
   action: string;
+  idempotencyKey: string;
+  destination: string;
   status: ReceiptStatus;
   route: RouteType;
   risk: RiskLevel;
   requestedAt: IsoTimestamp;
   startedAt?: IsoTimestamp;
   completedAt?: IsoTimestamp;
-  externalReference?: string;
+  externalId?: string;
+  verified: boolean;
+  verifiedAt?: IsoTimestamp;
+  evidenceEventIds: string[];
+  attempt: number;
   result?: JsonValue;
   error?: JsonObject;
   provenance: Provenance[];
@@ -352,7 +616,9 @@ export interface DecisionRecord {
   proposalId?: string;
   decidedBy: string;
   outcome: DecisionOutcome;
+  planHash?: string;
   rationale: string;
+  assumptions: string[];
   evidenceEventIds: string[];
   route: RouteType;
   risk: RiskLevel;
@@ -390,6 +656,22 @@ export interface PreferenceChange {
   sourceType: SourceType;
   changedAt: IsoTimestamp;
   reason?: string;
+  provenance: Provenance[];
+  integrityHash?: string;
+}
+
+export interface CostRecord {
+  id: string;
+  missionId: string;
+  assignmentId?: string;
+  category: CostCategory;
+  provider?: string;
+  model?: string;
+  tool?: string;
+  estimatedMicroUsd: number;
+  actualMicroUsd: number;
+  idempotencyKey: string;
+  incurredAt: IsoTimestamp;
   provenance: Provenance[];
   integrityHash?: string;
 }
@@ -502,6 +784,419 @@ export function assertConnectorHealth(
   assertOptionalIntegrityHash(value, 'Connector health integrityHash');
   if (!isJsonValue(value)) {
     throw new TypeError('Connector health must contain only JSON values');
+  }
+}
+
+export function assertIntentEnvelope(value: unknown): asserts value is IntentEnvelope {
+  assertRecord(value, 'Intent');
+  for (const field of ['id', 'source', 'summary', 'routeRuleId']) {
+    assertNonEmptyString(value[field], `Intent ${field}`);
+  }
+  if ('eventId' in value) assertNonEmptyString(value.eventId, 'Intent eventId');
+  if ('actorEntityId' in value) assertNonEmptyString(value.actorEntityId, 'Intent actorEntityId');
+  assertEnum(value.sourceType, SourceType, 'Intent sourceType');
+  assertEnum(value.kind, IntentKind, 'Intent kind');
+  assertJsonObject(value.payload, 'Intent payload');
+  assertEnum(value.status, LifecycleStatus, 'Intent status');
+  assertEnum(value.route, IntentRoute, 'Intent route');
+  assertEnum(value.risk, RiskLevel, 'Intent risk');
+  assertRequiredConfidence(value.confidence, 'Intent confidence');
+  for (const field of ['entityIds', 'affectedPartyIds', 'requiredCapabilities', 'ambiguityReasons', 'contradictoryEvidenceEventIds']) {
+    assertDenseStringArray(value[field], `Intent ${field}`);
+  }
+  if ('expectedOutcome' in value) assertNonEmptyString(value.expectedOutcome, 'Intent expectedOutcome');
+  assertStatementList(value.commitments, 'Intent commitments');
+  assertStatementList(value.claims, 'Intent claims');
+  assertStatementList(value.assumptions, 'Intent assumptions');
+  assertDeadlineList(value.deadlines, 'Intent deadlines');
+  assertEvidenceList(value.requiredEvidence, 'Intent requiredEvidence');
+  if ('freshness' in value) assertFreshness(value.freshness, 'Intent freshness');
+  assertProvenanceList(value.provenance, 'Intent provenance');
+  assertTimestamp(value.createdAt, 'Intent createdAt');
+  assertTimestamp(value.updatedAt, 'Intent updatedAt');
+  assertOptionalIntegrityHash(value, 'Intent integrityHash');
+  assertJsonOnly(value, 'Intent');
+}
+
+export function assertMissionPlan(value: unknown): asserts value is MissionPlan {
+  assertRecord(value, 'Mission');
+  for (const field of ['id', 'seriesId', 'intentId', 'title', 'objective', 'contextSnapshotHash', 'planHash']) {
+    assertNonEmptyString(value[field], `Mission ${field}`);
+  }
+  assertDigest(value.contextSnapshotHash, 'Mission contextSnapshotHash');
+  assertDigest(value.planHash, 'Mission planHash');
+  assertPositiveInteger(value.version, 'Mission version');
+  if ('supersedesPlanId' in value) assertNonEmptyString(value.supersedesPlanId, 'Mission supersedesPlanId');
+  assertEnum(value.status, LifecycleStatus, 'Mission status');
+  assertEnum(value.route, RouteType, 'Mission route');
+  assertEnum(value.risk, RiskLevel, 'Mission risk');
+  assertOptionalConfidence(value, 'confidence', 'Mission confidence');
+  assertDeliverableList(value.deliverables, 'Mission deliverables');
+  assertAcceptanceTestList(value.acceptanceTests, 'Mission acceptanceTests');
+  assertDenseStringArray(value.evidenceEventIds, 'Mission evidenceEventIds');
+  assertMissionTaskDefinitionList(value.taskGraph, 'Mission taskGraph');
+  assertAgentSelectionList(value.selectedAgents, 'Mission selectedAgents');
+  assertJsonObject(value.budget, 'Mission budget');
+  assertNonNegativeInteger(value.budget.maxCostMicroUsd, 'Mission maxCostMicroUsd');
+  assertPositiveInteger(value.budget.maxRuntimeMs, 'Mission maxRuntimeMs');
+  assertPositiveInteger(value.budget.maxConcurrency, 'Mission maxConcurrency');
+  assertNonNegativeInteger(value.budget.maxRetriesPerAssignment, 'Mission maxRetriesPerAssignment');
+  assertPermissions(value.permissions, 'Mission permissions');
+  assertJsonObject(value.rollback, 'Mission rollback');
+  assertNonEmptyString(value.rollback.strategy, 'Mission rollback strategy');
+  assertDenseStringArray(value.rollback.steps, 'Mission rollback steps');
+  assertNonEmptyString(value.rollback.verification, 'Mission rollback verification');
+  assertDenseEnumArray(value.escalationConditions, EscalationReason, 'Mission escalationConditions');
+  for (const field of ['approvalDecisionId']) {
+    if (field in value) assertNonEmptyString(value[field], `Mission ${field}`);
+  }
+  for (const field of ['approvedAt', 'startedAt', 'completedAt', 'cancelRequestedAt']) {
+    if (field in value) assertTimestamp(value[field], `Mission ${field}`);
+  }
+  if ('freshness' in value) assertFreshness(value.freshness, 'Mission freshness');
+  assertProvenanceList(value.provenance, 'Mission provenance');
+  assertTimestamp(value.createdAt, 'Mission createdAt');
+  assertTimestamp(value.updatedAt, 'Mission updatedAt');
+  assertOptionalIntegrityHash(value, 'Mission integrityHash');
+  assertJsonOnly(value, 'Mission');
+}
+
+export function assertMissionTask(value: unknown): asserts value is MissionTask {
+  assertRecord(value, 'Mission task');
+  for (const field of ['id', 'missionId', 'title', 'selectedAgentId']) {
+    assertNonEmptyString(value[field], `Mission task ${field}`);
+  }
+  assertEnum(value.kind, MissionTaskKind, 'Mission task kind');
+  assertEnum(value.status, LifecycleStatus, 'Mission task status');
+  assertEnum(value.route, RouteType, 'Mission task route');
+  assertEnum(value.risk, RiskLevel, 'Mission task risk');
+  assertEnum(value.lane, AgentLane, 'Mission task lane');
+  assertNonNegativeInteger(value.sequence, 'Mission task sequence');
+  assertNonNegativeInteger(value.estimatedCostMicroUsd, 'Mission task estimatedCostMicroUsd');
+  for (const field of ['capabilityIds', 'requiredActions', 'requiredCapabilities', 'dependsOn', 'evidenceEventIds']) {
+    assertDenseStringArray(value[field], `Mission task ${field}`);
+  }
+  assertArtifactRequirement(value.expectedArtifact, 'Mission task expectedArtifact');
+  if ('externalAction' in value) assertExternalAction(value.externalAction, 'Mission task externalAction');
+  assertJsonObject(value.input, 'Mission task input');
+  if ('output' in value && !isJsonValue(value.output)) throw new TypeError('Mission task output must be JSON');
+  assertOptionalConfidence(value, 'confidence', 'Mission task confidence');
+  if ('freshness' in value) assertFreshness(value.freshness, 'Mission task freshness');
+  assertProvenanceList(value.provenance, 'Mission task provenance');
+  for (const field of ['createdAt', 'updatedAt', 'startedAt', 'completedAt']) {
+    if (field in value) assertTimestamp(value[field], `Mission task ${field}`);
+  }
+  assertOptionalIntegrityHash(value, 'Mission task integrityHash');
+  assertJsonOnly(value, 'Mission task');
+}
+
+export function assertAgentCapability(value: unknown): asserts value is AgentCapability {
+  assertRecord(value, 'Agent capability');
+  for (const field of ['id', 'agentId', 'name']) assertNonEmptyString(value[field], `Agent capability ${field}`);
+  assertEnum(value.lane, AgentLane, 'Agent capability lane');
+  assertEnum(value.status, LifecycleStatus, 'Agent capability status');
+  assertDenseEnumArray(value.routes, RouteType, 'Agent capability routes');
+  assertDenseStringArray(value.supportedActions, 'Agent capability supportedActions');
+  assertDenseStringArray(value.tools, 'Agent capability tools');
+  assertModelPolicy(value.modelPolicy, 'Agent capability modelPolicy');
+  assertPermissions(value.writableScope, 'Agent capability writableScope');
+  assertEnum(value.costClass, CostClass, 'Agent capability costClass');
+  if (typeof value.mayCreateAssignments !== 'boolean') throw new TypeError('Agent capability mayCreateAssignments must be boolean');
+  assertEnum(value.maximumRisk, RiskLevel, 'Agent capability maximumRisk');
+  assertOptionalConfidence(value, 'confidence', 'Agent capability confidence');
+  assertJsonObject(value.metadata, 'Agent capability metadata');
+  if ('lastVerifiedAt' in value) assertTimestamp(value.lastVerifiedAt, 'Agent capability lastVerifiedAt');
+  assertProvenanceList(value.provenance, 'Agent capability provenance');
+  assertTimestamp(value.createdAt, 'Agent capability createdAt');
+  assertTimestamp(value.updatedAt, 'Agent capability updatedAt');
+  assertOptionalIntegrityHash(value, 'Agent capability integrityHash');
+  assertJsonOnly(value, 'Agent capability');
+}
+
+export function assertAssignment(value: unknown): asserts value is Assignment {
+  assertRecord(value, 'Assignment');
+  for (const field of ['id', 'missionId', 'missionTaskId', 'agentId', 'idempotencyKey']) {
+    assertNonEmptyString(value[field], `Assignment ${field}`);
+  }
+  assertDenseStringArray(value.capabilityIds, 'Assignment capabilityIds');
+  assertEnum(value.status, LifecycleStatus, 'Assignment status');
+  assertEnum(value.route, RouteType, 'Assignment route');
+  assertEnum(value.risk, RiskLevel, 'Assignment risk');
+  assertOptionalConfidence(value, 'confidence', 'Assignment confidence');
+  assertJsonObject(value.instructions, 'Assignment instructions');
+  assertDenseStringArray(value.evidenceEventIds, 'Assignment evidenceEventIds');
+  assertArtifactRequirement(value.expectedArtifact, 'Assignment expectedArtifact');
+  if ('externalAction' in value) assertExternalAction(value.externalAction, 'Assignment externalAction');
+  assertNonNegativeInteger(value.attempt, 'Assignment attempt');
+  assertPositiveInteger(value.maxAttempts, 'Assignment maxAttempts');
+  assertNonNegativeInteger(value.estimatedCostMicroUsd, 'Assignment estimatedCostMicroUsd');
+  if ('artifact' in value && !isJsonValue(value.artifact)) throw new TypeError('Assignment artifact must be JSON');
+  for (const field of ['leaseOwner', 'leaseToken', 'cancelReason']) {
+    if (field in value) assertNonEmptyString(value[field], `Assignment ${field}`);
+  }
+  for (const field of ['availableAt', 'leaseExpiresAt', 'cancelRequestedAt', 'assignedAt', 'acceptedAt', 'completedAt']) {
+    if (field in value) assertTimestamp(value[field], `Assignment ${field}`);
+  }
+  assertProvenanceList(value.provenance, 'Assignment provenance');
+  assertOptionalIntegrityHash(value, 'Assignment integrityHash');
+  assertJsonOnly(value, 'Assignment');
+}
+
+export function assertProposal(value: unknown): asserts value is Proposal {
+  assertRecord(value, 'Proposal');
+  for (const field of ['id', 'proposedByAgentId', 'summary']) assertNonEmptyString(value[field], `Proposal ${field}`);
+  for (const field of ['assignmentId', 'missionTaskId']) if (field in value) assertNonEmptyString(value[field], `Proposal ${field}`);
+  assertEnum(value.kind, ProposalKind, 'Proposal kind');
+  assertJsonObject(value.body, 'Proposal body');
+  assertEnum(value.status, LifecycleStatus, 'Proposal status');
+  assertEnum(value.route, RouteType, 'Proposal route');
+  assertEnum(value.risk, RiskLevel, 'Proposal risk');
+  assertOptionalConfidence(value, 'confidence', 'Proposal confidence');
+  assertTimestamp(value.createdAt, 'Proposal createdAt');
+  if ('expiresAt' in value) assertTimestamp(value.expiresAt, 'Proposal expiresAt');
+  assertProvenanceList(value.provenance, 'Proposal provenance');
+  assertOptionalIntegrityHash(value, 'Proposal integrityHash');
+  assertJsonOnly(value, 'Proposal');
+}
+
+export function assertActionReceipt(value: unknown): asserts value is ActionReceipt {
+  assertRecord(value, 'Receipt');
+  for (const field of ['id', 'action', 'idempotencyKey', 'destination']) assertNonEmptyString(value[field], `Receipt ${field}`);
+  for (const field of ['proposalId', 'assignmentId', 'missionTaskId', 'connectorId', 'externalId']) {
+    if (field in value) assertNonEmptyString(value[field], `Receipt ${field}`);
+  }
+  assertEnum(value.status, ReceiptStatus, 'Receipt status');
+  assertEnum(value.route, RouteType, 'Receipt route');
+  assertEnum(value.risk, RiskLevel, 'Receipt risk');
+  if (typeof value.verified !== 'boolean') throw new TypeError('Receipt verified must be boolean');
+  assertDenseStringArray(value.evidenceEventIds, 'Receipt evidenceEventIds');
+  assertPositiveInteger(value.attempt, 'Receipt attempt');
+  for (const field of ['requestedAt', 'startedAt', 'completedAt', 'verifiedAt']) if (field in value) assertTimestamp(value[field], `Receipt ${field}`);
+  if ('result' in value && !isJsonValue(value.result)) throw new TypeError('Receipt result must be JSON');
+  if ('error' in value) assertJsonObject(value.error, 'Receipt error');
+  assertProvenanceList(value.provenance, 'Receipt provenance');
+  assertOptionalIntegrityHash(value, 'Receipt integrityHash');
+  assertJsonOnly(value, 'Receipt');
+}
+
+export function assertDecisionRecord(value: unknown): asserts value is DecisionRecord {
+  assertRecord(value, 'Decision');
+  for (const field of ['id', 'decidedBy', 'rationale']) assertNonEmptyString(value[field], `Decision ${field}`);
+  for (const field of ['intentId', 'missionId', 'missionTaskId', 'proposalId']) if (field in value) assertNonEmptyString(value[field], `Decision ${field}`);
+  if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
+  assertEnum(value.outcome, DecisionOutcome, 'Decision outcome');
+  assertDenseStringArray(value.assumptions, 'Decision assumptions');
+  assertDenseStringArray(value.evidenceEventIds, 'Decision evidenceEventIds');
+  assertEnum(value.route, RouteType, 'Decision route');
+  assertEnum(value.risk, RiskLevel, 'Decision risk');
+  assertOptionalConfidence(value, 'confidence', 'Decision confidence');
+  assertTimestamp(value.decidedAt, 'Decision decidedAt');
+  assertProvenanceList(value.provenance, 'Decision provenance');
+  assertOptionalIntegrityHash(value, 'Decision integrityHash');
+  assertJsonOnly(value, 'Decision');
+}
+
+export function assertPreferenceChange(value: unknown): asserts value is PreferenceChange {
+  assertRecord(value, 'Preference change');
+  for (const field of ['id', 'key', 'source']) assertNonEmptyString(value[field], `Preference change ${field}`);
+  if ('entityId' in value) assertNonEmptyString(value.entityId, 'Preference change entityId');
+  assertEnum(value.scope, PreferenceScope, 'Preference change scope');
+  if ('previousValue' in value && !isJsonValue(value.previousValue)) throw new TypeError('Preference previousValue must be JSON');
+  if (!isJsonValue(value.nextValue)) throw new TypeError('Preference nextValue must be JSON');
+  assertEnum(value.status, LifecycleStatus, 'Preference change status');
+  assertEnum(value.route, RouteType, 'Preference change route');
+  assertEnum(value.risk, RiskLevel, 'Preference change risk');
+  assertEnum(value.sourceType, SourceType, 'Preference change sourceType');
+  assertTimestamp(value.changedAt, 'Preference change changedAt');
+  if ('reason' in value) assertNonEmptyString(value.reason, 'Preference change reason');
+  assertProvenanceList(value.provenance, 'Preference change provenance');
+  assertOptionalIntegrityHash(value, 'Preference change integrityHash');
+  assertJsonOnly(value, 'Preference change');
+}
+
+export function assertCostRecord(value: unknown): asserts value is CostRecord {
+  assertRecord(value, 'Cost');
+  for (const field of ['id', 'missionId', 'idempotencyKey']) assertNonEmptyString(value[field], `Cost ${field}`);
+  for (const field of ['assignmentId', 'provider', 'model', 'tool']) if (field in value) assertNonEmptyString(value[field], `Cost ${field}`);
+  assertEnum(value.category, CostCategory, 'Cost category');
+  assertNonNegativeInteger(value.estimatedMicroUsd, 'Cost estimatedMicroUsd');
+  assertNonNegativeInteger(value.actualMicroUsd, 'Cost actualMicroUsd');
+  assertTimestamp(value.incurredAt, 'Cost incurredAt');
+  assertProvenanceList(value.provenance, 'Cost provenance');
+  assertOptionalIntegrityHash(value, 'Cost integrityHash');
+  assertJsonOnly(value, 'Cost');
+}
+
+function assertRecord(
+  value: unknown,
+  field: string,
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) throw new TypeError(`${field} must be an object`);
+}
+
+function assertJsonOnly(value: unknown, field: string): void {
+  if (!isJsonValue(value)) throw new TypeError(`${field} must contain only JSON values`);
+}
+
+function assertDigest(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string' || !/^[a-f0-9]{64}$/.test(value)) {
+    throw new TypeError(`${field} must be a lowercase SHA-256 digest`);
+  }
+}
+
+function assertNonNegativeInteger(value: unknown, field: string): asserts value is number {
+  if (!Number.isInteger(value) || Number(value) < 0) {
+    throw new TypeError(`${field} must be a non-negative integer`);
+  }
+}
+
+function assertPositiveInteger(value: unknown, field: string): asserts value is number {
+  if (!Number.isInteger(value) || Number(value) < 1) {
+    throw new TypeError(`${field} must be a positive integer`);
+  }
+}
+
+function assertRequiredConfidence(value: unknown, field: string): asserts value is number {
+  const wrapper: Record<string, unknown> = { value };
+  assertOptionalConfidence(wrapper, 'value', field);
+}
+
+function assertDenseEnumArray<T extends Record<string, string>>(
+  value: unknown,
+  enumeration: T,
+  field: string,
+): void {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  value.forEach((item) => assertEnum(item, enumeration, field));
+}
+
+function assertObjectList(value: unknown, field: string): void {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  value.forEach((item, index) => assertJsonObject(item, `${field}[${index}]`));
+}
+
+function assertDeliverableList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    for (const key of ['id', 'description', 'artifactType']) {
+      assertNonEmptyString(item[key], `${field}[${index}].${key}`);
+    }
+    if (typeof item.required !== 'boolean') throw new TypeError(`${field}[${index}].required must be boolean`);
+  }
+}
+
+function assertAcceptanceTestList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    assertNonEmptyString(item.id, `${field}[${index}].id`);
+    assertNonEmptyString(item.description, `${field}[${index}].description`);
+    if (item.verification !== 'automatic' && item.verification !== 'manual') {
+      throw new TypeError(`${field}[${index}].verification is invalid`);
+    }
+    assertDenseStringArray(item.requiredEvidence, `${field}[${index}].requiredEvidence`);
+  }
+}
+
+function assertArtifactRequirement(value: unknown, field: string): void {
+  assertJsonObject(value, field);
+  assertNonEmptyString(value.type, `${field}.type`);
+  assertNonEmptyString(value.description, `${field}.description`);
+  if ('schema' in value) assertJsonObject(value.schema, `${field}.schema`);
+  assertDenseStringArray(value.verification, `${field}.verification`);
+}
+
+function assertMissionTaskDefinitionList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    for (const key of ['id', 'title', 'selectedAgentId']) {
+      assertNonEmptyString(item[key], `${field}[${index}].${key}`);
+    }
+    assertEnum(item.kind, MissionTaskKind, `${field}[${index}].kind`);
+    assertNonNegativeInteger(item.sequence, `${field}[${index}].sequence`);
+    assertEnum(item.lane, AgentLane, `${field}[${index}].lane`);
+    for (const key of ['capabilityIds', 'requiredActions', 'dependsOn', 'evidenceEventIds']) {
+      assertDenseStringArray(item[key], `${field}[${index}].${key}`);
+    }
+    assertArtifactRequirement(item.expectedArtifact, `${field}[${index}].expectedArtifact`);
+    if ('externalAction' in item) assertExternalAction(item.externalAction, `${field}[${index}].externalAction`);
+    assertJsonObject(item.input, `${field}[${index}].input`);
+    assertNonNegativeInteger(item.estimatedCostMicroUsd, `${field}[${index}].estimatedCostMicroUsd`);
+    assertEnum(item.route, RouteType, `${field}[${index}].route`);
+    assertEnum(item.risk, RiskLevel, `${field}[${index}].risk`);
+  }
+}
+
+function assertAgentSelectionList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    assertNonEmptyString(item.taskId, `${field}[${index}].taskId`);
+    assertNonEmptyString(item.agentId, `${field}[${index}].agentId`);
+    assertEnum(item.lane, AgentLane, `${field}[${index}].lane`);
+    assertDenseStringArray(item.capabilityIds, `${field}[${index}].capabilityIds`);
+  }
+}
+
+function assertPermissions(value: unknown, field: string): void {
+  assertJsonObject(value, field);
+  for (const key of ['allowedTools', 'allowedSystems', 'allowedChannels', 'allowedRecipients', 'allowedCredentialRefs', 'allowedDataScopes']) {
+    assertDenseStringArray(value[key], `${field}.${key}`);
+  }
+  assertDenseEnumArray(value.allowedMutationClasses, MutationClass, `${field}.allowedMutationClasses`);
+  assertObjectList(value.allowedRepositories, `${field}.allowedRepositories`);
+  for (const [index, grant] of (value.allowedRepositories as JsonObject[]).entries()) {
+    assertNonEmptyString(grant.repository, `${field}.allowedRepositories[${index}].repository`);
+    assertDenseStringArray(grant.writablePaths, `${field}.allowedRepositories[${index}].writablePaths`);
+    assertDenseEnumArray(grant.mutationClasses, MutationClass, `${field}.allowedRepositories[${index}].mutationClasses`);
+  }
+}
+
+function assertModelPolicy(value: unknown, field: string): void {
+  assertJsonObject(value, field);
+  assertDenseStringArray(value.allowedModels, `${field}.allowedModels`);
+  if ('preferredModel' in value) assertNonEmptyString(value.preferredModel, `${field}.preferredModel`);
+  if (typeof value.preferLocal !== 'boolean') throw new TypeError(`${field}.preferLocal must be boolean`);
+  assertPositiveInteger(value.maxTokensPerAssignment, `${field}.maxTokensPerAssignment`);
+}
+
+function assertExternalAction(value: unknown, field: string): void {
+  assertJsonObject(value, field);
+  for (const key of ['connectorId', 'action', 'destination', 'idempotencyKey']) {
+    assertNonEmptyString(value[key], `${field}.${key}`);
+  }
+  for (const key of ['system', 'channel', 'recipient', 'repository', 'repositoryPath', 'credentialRef', 'dataScope', 'tool']) {
+    if (key in value) assertNonEmptyString(value[key], `${field}.${key}`);
+  }
+  assertEnum(value.mutationClass, MutationClass, `${field}.mutationClass`);
+}
+
+function assertEvidenceList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    assertNonEmptyString(item.eventId, `${field}[${index}].eventId`);
+    if ('integrityHash' in item) assertDigest(item.integrityHash, `${field}[${index}].integrityHash`);
+    if ('selector' in item) assertNonEmptyString(item.selector, `${field}[${index}].selector`);
+  }
+}
+
+function assertStatementList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    assertNonEmptyString(item.text, `${field}[${index}].text`);
+    assertEvidenceList(item.evidence, `${field}[${index}].evidence`);
+    assertRequiredConfidence(item.confidence, `${field}[${index}].confidence`);
+  }
+}
+
+function assertDeadlineList(value: unknown, field: string): void {
+  assertObjectList(value, field);
+  for (const [index, item] of (value as JsonObject[]).entries()) {
+    assertNonEmptyString(item.description, `${field}[${index}].description`);
+    assertTimestamp(item.at, `${field}[${index}].at`);
+    assertRequiredConfidence(item.confidence, `${field}[${index}].confidence`);
   }
 }
 

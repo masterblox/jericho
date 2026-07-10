@@ -5,23 +5,55 @@ import { dirname, join } from 'node:path';
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 
 import {
+  assertActionReceipt,
+  assertAgentCapability,
+  assertAssignment,
   assertConnectorHealth,
+  assertCostRecord,
+  assertDecisionRecord,
   assertEntity,
   assertEventEnvelope,
+  assertIntentEnvelope,
+  assertMissionPlan,
+  assertMissionTask,
+  assertPreferenceChange,
+  assertProposal,
   assertRelation,
+  DecisionOutcome,
+  LifecycleStatus,
+  ReceiptStatus,
+  RouteType,
+  type ActionReceipt,
+  type AgentCapability,
+  type AgentLane,
+  type Assignment,
   type ConnectorHealth,
   type ConnectorHealthStatus,
+  type CostRecord,
+  type DecisionRecord,
   type Entity,
   type EntityType,
   type EventEnvelope,
   type Freshness,
+  type IntentEnvelope,
+  type IntentRoute,
   type JsonValue,
-  type LifecycleStatus,
+  type MissionPlan,
+  type MissionTask,
+  type PreferenceChange,
+  type Proposal,
   type Provenance,
+  type ReceiptStatus as ReceiptStatusType,
   type Relation,
   type RelationType,
 } from '@jericho/shared';
 
+import { CapabilityRegistry } from '../orchestration/capability-registry.js';
+import { computeMissionPlanHash } from '../orchestration/mission-hash.js';
+import {
+  validateMissionPlanInput,
+  type MissionPlanInput,
+} from '../orchestration/planner.js';
 import { CoreCrypto, loadMasterKey } from './crypto.js';
 
 export interface JerichoStoreOptions {
@@ -51,6 +83,73 @@ export interface ConnectorHealthListOptions {
   status?: ConnectorHealthStatus;
 }
 
+export interface IntentListOptions {
+  status?: LifecycleStatus;
+  route?: IntentRoute;
+}
+
+export interface MissionListOptions {
+  status?: LifecycleStatus;
+  seriesId?: string;
+}
+
+export interface CapabilityListOptions {
+  agentId?: string;
+  lane?: AgentLane;
+  status?: LifecycleStatus;
+}
+
+export interface AssignmentListOptions {
+  missionId?: string;
+  missionTaskId?: string;
+  agentId?: string;
+  status?: LifecycleStatus;
+}
+
+export interface LeaseReadyOptions {
+  workerId: string;
+  now: string;
+  leaseMs: number;
+  limit: number;
+}
+
+export interface MissionCostSummary {
+  estimatedMicroUsd: number;
+  actualMicroUsd: number;
+}
+
+export interface CompleteReceiptInput {
+  status: ReceiptStatusType;
+  externalId?: string;
+  result?: JsonValue;
+  error?: Record<string, JsonValue>;
+  verified: boolean;
+  verifiedAt?: string;
+  completedAt: string;
+  evidenceEventIds: string[];
+}
+
+export class MissionPlanConflictError extends Error {
+  constructor(id: string) {
+    super(`Mission plan ${id} is immutable or conflicts with the stored version`);
+    this.name = 'MissionPlanConflictError';
+  }
+}
+
+export class AssignmentLeaseError extends Error {
+  constructor(id: string) {
+    super(`Assignment ${id} lease fencing token is invalid`);
+    this.name = 'AssignmentLeaseError';
+  }
+}
+
+export class IdempotencyConflictError extends Error {
+  constructor(key: string) {
+    super(`Idempotency key ${key} conflicts with an existing action`);
+    this.name = 'IdempotencyConflictError';
+  }
+}
+
 export class EventConflictError extends Error {
   constructor(source: string, sourceEventId: string) {
     super(`Conflicting event for ${source}/${sourceEventId}`);
@@ -67,7 +166,17 @@ type EncryptedRecordTable =
   | 'events'
   | 'entities'
   | 'relations'
-  | 'connector_health';
+  | 'intents'
+  | 'missions'
+  | 'mission_tasks'
+  | 'agent_capabilities'
+  | 'assignments'
+  | 'proposals'
+  | 'receipts'
+  | 'decisions'
+  | 'connector_health'
+  | 'preference_changes'
+  | 'cost_records';
 
 type DatabaseRow = Record<string, SQLInputValue>;
 type RecordProjection = Record<string, string | number | null>;
@@ -89,6 +198,18 @@ const LEGACY_RECORD_TABLES = [
   'receipts',
   'decisions',
   'connector_health',
+  'preference_changes',
+  'cost_records',
+] as const;
+const PRE_V4_ORCHESTRATION_TABLES = [
+  'intents',
+  'missions',
+  'mission_tasks',
+  'agent_capabilities',
+  'assignments',
+  'proposals',
+  'receipts',
+  'decisions',
   'preference_changes',
 ] as const;
 
@@ -321,6 +442,72 @@ const MIGRATIONS: readonly Migration[] = [
         name TEXT PRIMARY KEY,
         value BLOB NOT NULL
       );
+    `,
+  },
+  {
+    version: 4,
+    sql: `
+      ALTER TABLE missions ADD COLUMN series_id TEXT;
+      ALTER TABLE missions ADD COLUMN plan_version INTEGER;
+      ALTER TABLE missions ADD COLUMN plan_hash TEXT;
+      ALTER TABLE missions ADD COLUMN approval_decision_id TEXT;
+      ALTER TABLE missions ADD COLUMN approved_at TEXT;
+      ALTER TABLE missions ADD COLUMN started_at TEXT;
+      ALTER TABLE missions ADD COLUMN completed_at TEXT;
+      ALTER TABLE missions ADD COLUMN cancel_requested_at TEXT;
+      CREATE UNIQUE INDEX missions_series_version_idx ON missions (series_id, plan_version);
+      CREATE INDEX missions_plan_hash_idx ON missions (plan_hash);
+
+      ALTER TABLE mission_tasks ADD COLUMN lane TEXT;
+      ALTER TABLE mission_tasks ADD COLUMN selected_agent_id TEXT;
+
+      ALTER TABLE agent_capabilities ADD COLUMN lane TEXT;
+
+      ALTER TABLE assignments ADD COLUMN mission_id TEXT REFERENCES missions(id) ON DELETE CASCADE;
+      ALTER TABLE assignments ADD COLUMN idempotency_key TEXT;
+      ALTER TABLE assignments ADD COLUMN attempt INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE assignments ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 1;
+      ALTER TABLE assignments ADD COLUMN available_at TEXT;
+      ALTER TABLE assignments ADD COLUMN estimated_cost_microusd INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE assignments ADD COLUMN lease_owner TEXT;
+      ALTER TABLE assignments ADD COLUMN lease_token TEXT;
+      ALTER TABLE assignments ADD COLUMN lease_expires_at TEXT;
+      ALTER TABLE assignments ADD COLUMN cancel_requested_at TEXT;
+      CREATE UNIQUE INDEX assignments_idempotency_idx ON assignments (idempotency_key);
+      CREATE INDEX assignments_ready_idx ON assignments (status, available_at, lease_expires_at);
+      CREATE INDEX assignments_mission_status_idx ON assignments (mission_id, status);
+
+      ALTER TABLE receipts ADD COLUMN idempotency_key TEXT;
+      ALTER TABLE receipts ADD COLUMN destination TEXT;
+      ALTER TABLE receipts ADD COLUMN external_id TEXT;
+      ALTER TABLE receipts ADD COLUMN verified INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE receipts ADD COLUMN verified_at TEXT;
+      ALTER TABLE receipts ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1;
+      CREATE UNIQUE INDEX receipts_idempotency_idx ON receipts (idempotency_key);
+
+      ALTER TABLE decisions ADD COLUMN plan_hash TEXT;
+
+      CREATE TABLE mission_task_dependencies (
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        task_id TEXT NOT NULL REFERENCES mission_tasks(id) ON DELETE CASCADE,
+        depends_on_task_id TEXT NOT NULL REFERENCES mission_tasks(id) ON DELETE CASCADE,
+        PRIMARY KEY (task_id, depends_on_task_id)
+      );
+      CREATE INDEX mission_task_dependencies_mission_idx ON mission_task_dependencies (mission_id, task_id);
+
+      CREATE TABLE cost_records (
+        id TEXT PRIMARY KEY,
+        mission_id TEXT NOT NULL REFERENCES missions(id) ON DELETE CASCADE,
+        assignment_id TEXT REFERENCES assignments(id) ON DELETE SET NULL,
+        category TEXT NOT NULL,
+        estimated_microusd INTEGER NOT NULL,
+        actual_microusd INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL UNIQUE,
+        incurred_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL
+      );
+      CREATE INDEX cost_records_mission_idx ON cost_records (mission_id, incurred_at);
     `,
   },
 ];
@@ -668,6 +855,819 @@ export class JerichoStore {
       );
   }
 
+  saveIntent(intent: IntentEnvelope): IntentEnvelope {
+    assertIntentEnvelope(intent);
+    const normalized = normalizeIntent(intent);
+    assertIntentEnvelope(normalized);
+    return this.#writeTransaction(() => {
+      const existing = this.getIntent(normalized.id);
+      if (existing) {
+        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+        throw new Error(`Intent ${normalized.id} conflicts with the stored record`);
+      }
+      const sealed = this.#sealRecord('intents', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO intents (
+          id, event_id, actor_entity_id, intent_type, status, route, risk,
+          confidence, freshness_at, created_at, updated_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.eventId ?? null, stored.actorEntityId ?? null,
+        stored.kind, stored.status, stored.route, stored.risk, stored.confidence,
+        stored.freshness?.observedAt ?? null, stored.createdAt, stored.updatedAt,
+        sealed.integrityHash, sealed.body,
+      );
+      return stored;
+    });
+  }
+
+  getIntent(id: string): IntentEnvelope | undefined {
+    const row = this.#database.prepare('SELECT * FROM intents WHERE id = ?').get(id);
+    return row ? this.#readRecord<IntentEnvelope>(
+      'intents', String(row.id), row, (value) => assertIntentEnvelope(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listIntents(options: IntentListOptions = {}): IntentEnvelope[] {
+    const clauses: string[] = [];
+    const parameters: SQLInputValue[] = [];
+    if (options.status) { clauses.push('status = ?'); parameters.push(options.status); }
+    if (options.route) { clauses.push('route = ?'); parameters.push(options.route); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.#database.prepare(`SELECT * FROM intents${where} ORDER BY created_at DESC, id ASC`)
+      .all(...parameters)
+      .map((row) => this.#readRecord<IntentEnvelope>(
+        'intents', String(row.id), row, (value) => assertIntentEnvelope(value), (value) => value.id,
+      ));
+  }
+
+  registerAgentCapability(capability: AgentCapability): AgentCapability {
+    assertAgentCapability(capability);
+    const normalized = normalizeCapability(capability);
+    return this.#writeTransaction(() => {
+      const existing = this.getAgentCapability(normalized.id);
+      if (existing) {
+        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+        throw new Error(`Capability ${normalized.id} conflicts with the registered version`);
+      }
+      const sealed = this.#sealRecord('agent_capabilities', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO agent_capabilities (
+          id, agent_id, status, route, risk, confidence, freshness_at,
+          created_at, updated_at, integrity_hash, body, lane
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.agentId, stored.status, canonicalJson(stored.routes),
+        stored.maximumRisk, stored.confidence ?? null, stored.lastVerifiedAt ?? null,
+        stored.createdAt, stored.updatedAt, sealed.integrityHash, sealed.body, stored.lane,
+      );
+      return stored;
+    });
+  }
+
+  getAgentCapability(id: string): AgentCapability | undefined {
+    const row = this.#database.prepare('SELECT * FROM agent_capabilities WHERE id = ?').get(id);
+    return row ? this.#readRecord<AgentCapability>(
+      'agent_capabilities', String(row.id), row, (value) => assertAgentCapability(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listAgentCapabilities(options: CapabilityListOptions = {}): AgentCapability[] {
+    const clauses: string[] = [];
+    const parameters: SQLInputValue[] = [];
+    if (options.agentId) { clauses.push('agent_id = ?'); parameters.push(options.agentId); }
+    if (options.lane) { clauses.push('lane = ?'); parameters.push(options.lane); }
+    if (options.status) { clauses.push('status = ?'); parameters.push(options.status); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.#database.prepare(`SELECT * FROM agent_capabilities${where} ORDER BY updated_at DESC, id ASC`)
+      .all(...parameters)
+      .map((row) => this.#readRecord<AgentCapability>(
+        'agent_capabilities', String(row.id), row, (value) => assertAgentCapability(value), (value) => value.id,
+      ));
+  }
+
+  createMissionPlan(plan: MissionPlan): MissionPlan {
+    assertMissionPlan(plan);
+    const normalized = normalizeMission(plan);
+    assertMissionPlan(normalized);
+    if (computeMissionPlanHash(normalized) !== normalized.planHash) {
+      throw new MissionPlanConflictError(normalized.id);
+    }
+    return this.#writeTransaction(() => {
+      const existing = this.getMission(normalized.id);
+      if (existing) {
+        if (existing.planHash === normalized.planHash) return existing;
+        throw new MissionPlanConflictError(normalized.id);
+      }
+      if (!this.getIntent(normalized.intentId)) {
+        throw new Error(`Mission intent ${normalized.intentId} does not exist`);
+      }
+      validateMissionPlanInput(
+        normalized as MissionPlan & MissionPlanInput,
+        new CapabilityRegistry(this.listAgentCapabilities()),
+      );
+      if (normalized.version === 1 && normalized.supersedesPlanId) {
+        throw new MissionPlanConflictError(normalized.id);
+      }
+      if (normalized.version > 1) {
+        const previous = normalized.supersedesPlanId
+          ? this.getMission(normalized.supersedesPlanId)
+          : undefined;
+        if (
+          !previous ||
+          previous.seriesId !== normalized.seriesId ||
+          previous.version !== normalized.version - 1
+        ) {
+          throw new MissionPlanConflictError(normalized.id);
+        }
+      }
+      const versionRow = this.#database.prepare(
+        'SELECT id FROM missions WHERE series_id = ? AND plan_version = ?',
+      ).get(normalized.seriesId, normalized.version);
+      if (versionRow) throw new MissionPlanConflictError(normalized.id);
+
+      const sealed = this.#sealRecord('missions', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO missions (
+          id, intent_id, status, route, risk, confidence, freshness_at,
+          created_at, updated_at, integrity_hash, body, series_id, plan_version,
+          plan_hash, approval_decision_id, approved_at, started_at, completed_at,
+          cancel_requested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.intentId, stored.status, stored.route, stored.risk,
+        stored.confidence ?? null, stored.freshness?.observedAt ?? null,
+        stored.createdAt, stored.updatedAt, sealed.integrityHash, sealed.body,
+        stored.seriesId, stored.version, stored.planHash,
+        stored.approvalDecisionId ?? null, stored.approvedAt ?? null,
+        stored.startedAt ?? null, stored.completedAt ?? null,
+        stored.cancelRequestedAt ?? null,
+      );
+
+      for (const definition of stored.taskGraph) {
+        const task: MissionTask = {
+          ...structuredClone(definition),
+          missionId: stored.id,
+          status: LifecycleStatus.Queued,
+          requiredCapabilities: [...definition.capabilityIds],
+          provenance: structuredClone(stored.provenance),
+          createdAt: stored.createdAt,
+          updatedAt: stored.createdAt,
+        };
+        this.#insertMissionTask(task);
+      }
+      for (const definition of stored.taskGraph) {
+        for (const dependency of definition.dependsOn) {
+          this.#database.prepare(`
+            INSERT INTO mission_task_dependencies (mission_id, task_id, depends_on_task_id)
+            VALUES (?, ?, ?)
+          `).run(stored.id, definition.id, dependency);
+        }
+      }
+      return stored;
+    });
+  }
+
+  getMission(id: string): MissionPlan | undefined {
+    const row = this.#database.prepare('SELECT * FROM missions WHERE id = ?').get(id);
+    return row ? this.#readRecord<MissionPlan>(
+      'missions', String(row.id), row, (value) => assertMissionPlan(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listMissions(options: MissionListOptions = {}): MissionPlan[] {
+    const clauses: string[] = [];
+    const parameters: SQLInputValue[] = [];
+    if (options.status) { clauses.push('status = ?'); parameters.push(options.status); }
+    if (options.seriesId) { clauses.push('series_id = ?'); parameters.push(options.seriesId); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.#database.prepare(`SELECT * FROM missions${where} ORDER BY plan_version DESC, created_at DESC, id ASC`)
+      .all(...parameters)
+      .map((row) => this.#readRecord<MissionPlan>(
+        'missions', String(row.id), row, (value) => assertMissionPlan(value), (value) => value.id,
+      ));
+  }
+
+  getMissionTask(id: string): MissionTask | undefined {
+    const row = this.#database.prepare('SELECT * FROM mission_tasks WHERE id = ?').get(id);
+    return row ? this.#readRecord<MissionTask>(
+      'mission_tasks', String(row.id), row, (value) => assertMissionTask(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listMissionTasks(missionId: string): MissionTask[] {
+    return this.#database.prepare(
+      'SELECT * FROM mission_tasks WHERE mission_id = ? ORDER BY sequence ASC, id ASC',
+    ).all(missionId).map((row) => this.#readRecord<MissionTask>(
+      'mission_tasks', String(row.id), row, (value) => assertMissionTask(value), (value) => value.id,
+    ));
+  }
+
+  approveMission(
+    missionId: string,
+    expectedPlanHash: string,
+    decision: DecisionRecord,
+  ): MissionPlan {
+    return this.#writeTransaction(() => {
+      const mission = this.getMission(missionId);
+      if (!mission) throw new Error(`Mission ${missionId} does not exist`);
+      if (mission.planHash !== expectedPlanHash || computeMissionPlanHash(mission) !== expectedPlanHash) {
+        throw new Error(`Mission ${missionId} approval hash does not match`);
+      }
+      if (mission.status !== LifecycleStatus.PendingApproval) {
+        throw new Error(`Mission ${missionId} is not pending approval`);
+      }
+      if (decision.outcome !== DecisionOutcome.Approved) {
+        throw new Error('Mission approval requires an approved decision');
+      }
+      const boundDecision = normalizeDecision({
+        ...decision,
+        missionId,
+        planHash: expectedPlanHash,
+      });
+      this.#insertDecision(boundDecision);
+      const approved: MissionPlan = {
+        ...mission,
+        status: LifecycleStatus.Approved,
+        approvalDecisionId: boundDecision.id,
+        approvedAt: boundDecision.decidedAt,
+        updatedAt: boundDecision.decidedAt,
+      };
+      this.#writeMissionRecord(approved);
+      return this.getMission(missionId)!;
+    });
+  }
+
+  saveProposal(proposal: Proposal): Proposal {
+    assertProposal(proposal);
+    const normalized = normalizeProposal(proposal);
+    return this.#writeTransaction(() => {
+      const existingRow = this.#database.prepare('SELECT * FROM proposals WHERE id = ?').get(normalized.id);
+      if (existingRow) {
+        const existing = this.#readRecord<Proposal>(
+          'proposals', String(existingRow.id), existingRow, (value) => assertProposal(value), (value) => value.id,
+        );
+        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+        throw new Error(`Proposal ${normalized.id} conflicts with the stored record`);
+      }
+      const sealed = this.#sealRecord('proposals', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO proposals (
+          id, assignment_id, mission_task_id, proposal_type, status, route,
+          risk, confidence, created_at, expires_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.assignmentId ?? null, stored.missionTaskId ?? null,
+        stored.kind, stored.status, stored.route, stored.risk,
+        stored.confidence ?? null, stored.createdAt, stored.expiresAt ?? null,
+        sealed.integrityHash, sealed.body,
+      );
+      return stored;
+    });
+  }
+
+  getProposal(id: string): Proposal | undefined {
+    const row = this.#database.prepare('SELECT * FROM proposals WHERE id = ?').get(id);
+    return row ? this.#readRecord<Proposal>(
+      'proposals', String(row.id), row, (value) => assertProposal(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listProposals(status?: LifecycleStatus): Proposal[] {
+    const rows = status
+      ? this.#database.prepare('SELECT * FROM proposals WHERE status = ? ORDER BY created_at DESC, id ASC').all(status)
+      : this.#database.prepare('SELECT * FROM proposals ORDER BY created_at DESC, id ASC').all();
+    return rows.map((row) => this.#readRecord<Proposal>(
+      'proposals', String(row.id), row, (value) => assertProposal(value), (value) => value.id,
+    ));
+  }
+
+  appendDecision(decision: DecisionRecord): DecisionRecord {
+    assertDecisionRecord(decision);
+    return this.#writeTransaction(() => this.#insertDecision(normalizeDecision(decision)));
+  }
+
+  getDecision(id: string): DecisionRecord | undefined {
+    const row = this.#database.prepare('SELECT * FROM decisions WHERE id = ?').get(id);
+    return row ? this.#readRecord<DecisionRecord>(
+      'decisions', String(row.id), row, (value) => assertDecisionRecord(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listDecisions(missionId?: string): DecisionRecord[] {
+    const rows = missionId
+      ? this.#database.prepare('SELECT * FROM decisions WHERE mission_id = ? ORDER BY decided_at DESC, id ASC').all(missionId)
+      : this.#database.prepare('SELECT * FROM decisions ORDER BY decided_at DESC, id ASC').all();
+    return rows.map((row) => this.#readRecord<DecisionRecord>(
+      'decisions', String(row.id), row, (value) => assertDecisionRecord(value), (value) => value.id,
+    ));
+  }
+
+  savePreferenceChange(preference: PreferenceChange): PreferenceChange {
+    assertPreferenceChange(preference);
+    const normalized = normalizePreference(preference);
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM preference_changes WHERE id = ?').get(normalized.id);
+      if (row) {
+        const existing = this.#readRecord<PreferenceChange>(
+          'preference_changes', String(row.id), row, (value) => assertPreferenceChange(value), (value) => value.id,
+        );
+        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+        throw new Error(`Preference change ${normalized.id} conflicts with the stored record`);
+      }
+      const sealed = this.#sealRecord('preference_changes', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO preference_changes (
+          id, entity_id, status, route, risk, changed_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.entityId ?? null, stored.status, stored.route,
+        stored.risk, stored.changedAt, sealed.integrityHash, sealed.body,
+      );
+      return stored;
+    });
+  }
+
+  getPreferenceChange(id: string): PreferenceChange | undefined {
+    const row = this.#database.prepare('SELECT * FROM preference_changes WHERE id = ?').get(id);
+    return row ? this.#readRecord<PreferenceChange>(
+      'preference_changes', String(row.id), row, (value) => assertPreferenceChange(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listPreferenceChanges(status?: LifecycleStatus): PreferenceChange[] {
+    const rows = status
+      ? this.#database.prepare('SELECT * FROM preference_changes WHERE status = ? ORDER BY changed_at DESC, id ASC').all(status)
+      : this.#database.prepare('SELECT * FROM preference_changes ORDER BY changed_at DESC, id ASC').all();
+    return rows.map((row) => this.#readRecord<PreferenceChange>(
+      'preference_changes', String(row.id), row, (value) => assertPreferenceChange(value), (value) => value.id,
+    ));
+  }
+
+  reserveReceipt(receipt: ActionReceipt): ActionReceipt {
+    assertActionReceipt(receipt);
+    const normalized = normalizeReceipt(receipt);
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM receipts WHERE idempotency_key = ?').get(normalized.idempotencyKey);
+      if (row) {
+        const existing = this.#readRecord<ActionReceipt>(
+          'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
+        );
+        if (
+          existing.action === normalized.action &&
+          existing.destination === normalized.destination &&
+          existing.connectorId === normalized.connectorId
+        ) return existing;
+        throw new IdempotencyConflictError(normalized.idempotencyKey);
+      }
+      const sealed = this.#sealRecord('receipts', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO receipts (
+          id, proposal_id, assignment_id, mission_task_id, connector_id,
+          status, route, risk, requested_at, started_at, completed_at,
+          integrity_hash, body, idempotency_key, destination, external_id,
+          verified, verified_at, attempt
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.proposalId ?? null, stored.assignmentId ?? null,
+        stored.missionTaskId ?? null, stored.connectorId ?? null, stored.status,
+        stored.route, stored.risk, stored.requestedAt, stored.startedAt ?? null,
+        stored.completedAt ?? null, sealed.integrityHash, sealed.body,
+        stored.idempotencyKey, stored.destination, stored.externalId ?? null,
+        stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt,
+      );
+      return stored;
+    });
+  }
+
+  getReceiptByIdempotencyKey(key: string): ActionReceipt | undefined {
+    const row = this.#database.prepare('SELECT * FROM receipts WHERE idempotency_key = ?').get(key);
+    return row ? this.#readRecord<ActionReceipt>(
+      'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  getReceipt(id: string): ActionReceipt | undefined {
+    const row = this.#database.prepare('SELECT * FROM receipts WHERE id = ?').get(id);
+    return row ? this.#readRecord<ActionReceipt>(
+      'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listReceipts(status?: ReceiptStatusType): ActionReceipt[] {
+    const rows = status
+      ? this.#database.prepare('SELECT * FROM receipts WHERE status = ? ORDER BY requested_at DESC, id ASC').all(status)
+      : this.#database.prepare('SELECT * FROM receipts ORDER BY requested_at DESC, id ASC').all();
+    return rows.map((row) => this.#readRecord<ActionReceipt>(
+      'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
+    ));
+  }
+
+  completeReceipt(id: string, input: CompleteReceiptInput): ActionReceipt {
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM receipts WHERE id = ?').get(id);
+      if (!row) throw new Error(`Receipt ${id} does not exist`);
+      const current = this.#readRecord<ActionReceipt>(
+        'receipts', String(row.id), row, (value) => assertActionReceipt(value), (value) => value.id,
+      );
+      const completed: ActionReceipt = normalizeReceipt({
+        ...current,
+        status: input.status,
+        ...(input.externalId ? { externalId: input.externalId } : {}),
+        ...(input.result !== undefined ? { result: input.result } : {}),
+        ...(input.error ? { error: input.error } : {}),
+        verified: input.verified,
+        ...(input.verifiedAt ? { verifiedAt: input.verifiedAt } : {}),
+        completedAt: input.completedAt,
+        evidenceEventIds: [...input.evidenceEventIds],
+      });
+      this.#writeReceiptRecord(completed);
+      return this.getReceiptByIdempotencyKey(completed.idempotencyKey)!;
+    });
+  }
+
+  recordCost(cost: CostRecord): CostRecord {
+    assertCostRecord(cost);
+    const normalized = normalizeCost(cost);
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM cost_records WHERE idempotency_key = ?').get(normalized.idempotencyKey);
+      if (row) {
+        const existing = this.#readRecord<CostRecord>(
+          'cost_records', String(row.id), row, (value) => assertCostRecord(value), (value) => value.id,
+        );
+        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+        throw new IdempotencyConflictError(normalized.idempotencyKey);
+      }
+      const sealed = this.#sealRecord('cost_records', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO cost_records (
+          id, mission_id, assignment_id, category, estimated_microusd,
+          actual_microusd, idempotency_key, incurred_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.missionId, stored.assignmentId ?? null, stored.category,
+        stored.estimatedMicroUsd, stored.actualMicroUsd, stored.idempotencyKey,
+        stored.incurredAt, sealed.integrityHash, sealed.body,
+      );
+      return stored;
+    });
+  }
+
+  getCost(id: string): CostRecord | undefined {
+    const row = this.#database.prepare('SELECT * FROM cost_records WHERE id = ?').get(id);
+    return row ? this.#readRecord<CostRecord>(
+      'cost_records', String(row.id), row, (value) => assertCostRecord(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listCosts(missionId: string): CostRecord[] {
+    return this.#database.prepare('SELECT * FROM cost_records WHERE mission_id = ? ORDER BY incurred_at ASC, id ASC')
+      .all(missionId)
+      .map((row) => this.#readRecord<CostRecord>(
+        'cost_records', String(row.id), row, (value) => assertCostRecord(value), (value) => value.id,
+      ));
+  }
+
+  summarizeMissionCost(missionId: string): MissionCostSummary {
+    return this.listCosts(missionId).reduce(
+      (summary, cost) => ({
+        estimatedMicroUsd: summary.estimatedMicroUsd + cost.estimatedMicroUsd,
+        actualMicroUsd: summary.actualMicroUsd + cost.actualMicroUsd,
+      }),
+      { estimatedMicroUsd: 0, actualMicroUsd: 0 },
+    );
+  }
+
+  enqueueAssignment(assignment: Assignment): Assignment {
+    assertAssignment(assignment);
+    const normalized = normalizeAssignment(assignment);
+    return this.#writeTransaction(() => {
+      const byId = this.getAssignment(normalized.id);
+      if (byId) {
+        if (this.#integrityHashFor(byId) === this.#integrityHashFor(normalized)) return byId;
+        throw new Error(`Assignment ${normalized.id} conflicts with queued work`);
+      }
+      const byKey = this.#database.prepare('SELECT id FROM assignments WHERE idempotency_key = ?')
+        .get(normalized.idempotencyKey);
+      if (byKey) throw new IdempotencyConflictError(normalized.idempotencyKey);
+      const mission = this.getMission(normalized.missionId);
+      if (!mission || (mission.status !== LifecycleStatus.Approved && mission.status !== LifecycleStatus.Active)) {
+        throw new Error(`Assignment mission ${normalized.missionId} is not approved`);
+      }
+      const task = this.getMissionTask(normalized.missionTaskId);
+      if (!task || task.missionId !== mission.id) {
+        throw new Error(`Assignment task ${normalized.missionTaskId} is outside mission ${mission.id}`);
+      }
+      const definition = mission.taskGraph.find((item) => item.id === task.id);
+      if (!definition) throw new Error(`Assignment task ${task.id} is not in the approved graph`);
+      new CapabilityRegistry(this.listAgentCapabilities()).assertTaskSupported(definition);
+      if (
+        normalized.agentId !== definition.selectedAgentId ||
+        !sameStrings(normalized.capabilityIds, definition.capabilityIds)
+      ) {
+        throw new Error(`Assignment ${normalized.id} expands the approved agent capabilities`);
+      }
+      if (
+        normalized.route !== definition.route ||
+        normalized.risk !== definition.risk ||
+        canonicalJson(normalized.expectedArtifact) !== canonicalJson(definition.expectedArtifact) ||
+        canonicalJson(normalized.externalAction ?? null) !==
+          canonicalJson(definition.externalAction ?? null)
+      ) {
+        throw new Error(`Assignment ${normalized.id} expands the approved task definition`);
+      }
+      if (normalized.maxAttempts !== mission.budget.maxRetriesPerAssignment + 1) {
+        throw new Error(`Assignment ${normalized.id} max attempts exceed the approved retry budget`);
+      }
+      if (normalized.estimatedCostMicroUsd > definition.estimatedCostMicroUsd) {
+        throw new Error(`Assignment ${normalized.id} expands the approved cost estimate`);
+      }
+      const sealed = this.#sealRecord('assignments', normalized.id, normalized);
+      const stored = sealed.record;
+      this.#database.prepare(`
+        INSERT INTO assignments (
+          id, mission_task_id, agent_id, primary_capability_id, status, route,
+          risk, confidence, assigned_at, accepted_at, completed_at,
+          integrity_hash, body, mission_id, idempotency_key, attempt,
+          max_attempts, available_at, estimated_cost_microusd, lease_owner,
+          lease_token, lease_expires_at, cancel_requested_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        stored.id, stored.missionTaskId, stored.agentId,
+        stored.capabilityIds[0] ?? null, stored.status, stored.route, stored.risk,
+        stored.confidence ?? null, stored.assignedAt, stored.acceptedAt ?? null,
+        stored.completedAt ?? null, sealed.integrityHash, sealed.body,
+        stored.missionId, stored.idempotencyKey, stored.attempt,
+        stored.maxAttempts, stored.availableAt, stored.estimatedCostMicroUsd,
+        stored.leaseOwner ?? null, stored.leaseToken ?? null,
+        stored.leaseExpiresAt ?? null, stored.cancelRequestedAt ?? null,
+      );
+      return stored;
+    });
+  }
+
+  getAssignment(id: string): Assignment | undefined {
+    const row = this.#database.prepare('SELECT * FROM assignments WHERE id = ?').get(id);
+    return row ? this.#readRecord<Assignment>(
+      'assignments', String(row.id), row, (value) => assertAssignment(value), (value) => value.id,
+    ) : undefined;
+  }
+
+  listAssignments(options: AssignmentListOptions = {}): Assignment[] {
+    const clauses: string[] = [];
+    const parameters: SQLInputValue[] = [];
+    if (options.missionId) { clauses.push('mission_id = ?'); parameters.push(options.missionId); }
+    if (options.missionTaskId) { clauses.push('mission_task_id = ?'); parameters.push(options.missionTaskId); }
+    if (options.agentId) { clauses.push('agent_id = ?'); parameters.push(options.agentId); }
+    if (options.status) { clauses.push('status = ?'); parameters.push(options.status); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.#database.prepare(`SELECT * FROM assignments${where} ORDER BY available_at ASC, assigned_at ASC, id ASC`)
+      .all(...parameters)
+      .map((row) => this.#readRecord<Assignment>(
+        'assignments', String(row.id), row, (value) => assertAssignment(value), (value) => value.id,
+      ));
+  }
+
+  leaseReadyAssignments(options: LeaseReadyOptions): Assignment[] {
+    if (!Number.isInteger(options.leaseMs) || options.leaseMs < 1) throw new Error('Lease duration is invalid');
+    if (!Number.isInteger(options.limit) || options.limit < 1) throw new Error('Lease limit is invalid');
+    const now = normalizeTimestamp(options.now);
+    return this.#writeTransaction(() => {
+      this.#expireAssignmentLeases(now);
+      const candidates = this.#database.prepare(`
+        SELECT * FROM assignments
+        WHERE status = ? AND available_at <= ? AND cancel_requested_at IS NULL
+        ORDER BY available_at ASC, assigned_at ASC, id ASC
+      `).all(LifecycleStatus.Queued, now).map((row) => this.#readRecord<Assignment>(
+        'assignments', String(row.id), row, (value) => assertAssignment(value), (value) => value.id,
+      ));
+      const leased: Assignment[] = [];
+      const activeByMission = new Map<string, number>();
+      for (const candidate of candidates) {
+        if (leased.length >= options.limit) break;
+        const mission = this.getMission(candidate.missionId);
+        if (!mission || (mission.status !== LifecycleStatus.Approved && mission.status !== LifecycleStatus.Active)) continue;
+        this.#assertDependencyProjection(mission, candidate.missionTaskId);
+        if (!this.#dependenciesSucceeded(candidate.missionTaskId)) continue;
+        const active = activeByMission.get(mission.id) ?? this.listAssignments({
+          missionId: mission.id,
+          status: LifecycleStatus.Active,
+        }).length;
+        if (active >= mission.budget.maxConcurrency) continue;
+        if (candidate.attempt >= candidate.maxAttempts) {
+          this.#writeAssignmentRecord({ ...candidate, status: LifecycleStatus.Failed, completedAt: now });
+          continue;
+        }
+        const leaseToken = randomUUID();
+        const leasedAssignment: Assignment = {
+          ...candidate,
+          status: LifecycleStatus.Active,
+          attempt: candidate.attempt + 1,
+          acceptedAt: now,
+          leaseOwner: options.workerId,
+          leaseToken,
+          leaseExpiresAt: new Date(Date.parse(now) + options.leaseMs).toISOString(),
+        };
+        this.#writeAssignmentRecord(leasedAssignment);
+        const task = this.getMissionTask(candidate.missionTaskId)!;
+        this.#writeMissionTaskRecord({
+          ...task,
+          status: LifecycleStatus.Active,
+          startedAt: task.startedAt ?? now,
+          updatedAt: now,
+        });
+        if (mission.status === LifecycleStatus.Approved) {
+          this.#writeMissionRecord({
+            ...mission,
+            status: LifecycleStatus.Active,
+            startedAt: mission.startedAt ?? now,
+            updatedAt: now,
+          });
+        }
+        activeByMission.set(mission.id, active + 1);
+        leased.push(this.getAssignment(candidate.id)!);
+      }
+      return leased;
+    });
+  }
+
+  renewAssignmentLease(id: string, leaseToken: string, now: string, leaseMs: number): Assignment {
+    return this.#writeTransaction(() => {
+      const normalizedNow = normalizeTimestamp(now);
+      if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error('Lease duration is invalid');
+      const assignment = this.#requireAssignmentLease(id, leaseToken, normalizedNow);
+      const renewed: Assignment = {
+        ...assignment,
+        leaseExpiresAt: new Date(Date.parse(normalizedNow) + leaseMs).toISOString(),
+      };
+      this.#writeAssignmentRecord(renewed);
+      return this.getAssignment(id)!;
+    });
+  }
+
+  completeAssignment(
+    id: string,
+    leaseToken: string,
+    artifact: JsonValue,
+    completedAt: string,
+  ): Assignment {
+    return this.#writeTransaction(() => {
+      const at = normalizeTimestamp(completedAt);
+      const assignment = this.#requireAssignmentLease(id, leaseToken, at);
+      const completed: Assignment = withoutLease({
+        ...assignment,
+        status: LifecycleStatus.Succeeded,
+        artifact,
+        completedAt: at,
+      });
+      this.#writeAssignmentRecord(completed);
+      const task = this.getMissionTask(assignment.missionTaskId)!;
+      this.#writeMissionTaskRecord({
+        ...task,
+        status: LifecycleStatus.Succeeded,
+        output: artifact,
+        completedAt: at,
+        updatedAt: at,
+      });
+      const mission = this.getMission(assignment.missionId)!;
+      const allTasksSucceeded = this.listMissionTasks(mission.id).every(
+        (item) => item.status === LifecycleStatus.Succeeded,
+      );
+      const hasPendingAssignments = this.listAssignments({ missionId: mission.id }).some(
+        (item) =>
+          item.status === LifecycleStatus.Queued ||
+          item.status === LifecycleStatus.Active ||
+          item.status === LifecycleStatus.Paused,
+      );
+      if (allTasksSucceeded && !hasPendingAssignments) {
+        this.#writeMissionRecord({
+          ...mission,
+          status: LifecycleStatus.Succeeded,
+          completedAt: at,
+          updatedAt: at,
+        });
+      }
+      return this.getAssignment(id)!;
+    });
+  }
+
+  pauseAssignmentForCheckpoint(
+    id: string,
+    leaseToken: string,
+    reasons: readonly string[],
+    pausedAt: string,
+  ): Assignment {
+    return this.#writeTransaction(() => {
+      const at = normalizeTimestamp(pausedAt);
+      const assignment = this.#requireAssignmentLease(id, leaseToken, at);
+      const paused = withoutLease({
+        ...assignment,
+        status: LifecycleStatus.Paused,
+        instructions: {
+          ...assignment.instructions,
+          checkpointReasons: [...reasons],
+        },
+      });
+      this.#writeAssignmentRecord(paused);
+      const task = this.getMissionTask(assignment.missionTaskId)!;
+      this.#writeMissionTaskRecord({ ...task, status: LifecycleStatus.Paused, updatedAt: at });
+      const mission = this.getMission(assignment.missionId)!;
+      this.#writeMissionRecord({ ...mission, status: LifecycleStatus.Paused, updatedAt: at });
+      return this.getAssignment(id)!;
+    });
+  }
+
+  failAssignment(
+    id: string,
+    leaseToken: string,
+    error: Record<string, JsonValue>,
+    failedAt: string,
+    retryAt: string,
+  ): Assignment {
+    return this.#writeTransaction(() => {
+      const at = normalizeTimestamp(failedAt);
+      const assignment = this.#requireAssignmentLease(id, leaseToken, at);
+      const retry = assignment.attempt < assignment.maxAttempts;
+      const failed: Assignment = withoutLease({
+        ...assignment,
+        status: retry ? LifecycleStatus.Queued : LifecycleStatus.Failed,
+        instructions: { ...assignment.instructions, lastError: error },
+        availableAt: retry ? normalizeTimestamp(retryAt) : assignment.availableAt,
+        ...(retry ? {} : { completedAt: at }),
+      });
+      this.#writeAssignmentRecord(failed);
+      const task = this.getMissionTask(assignment.missionTaskId)!;
+      this.#writeMissionTaskRecord({
+        ...task,
+        status: retry ? LifecycleStatus.Queued : LifecycleStatus.Failed,
+        updatedAt: at,
+        ...(retry ? {} : { completedAt: at }),
+      });
+      return this.getAssignment(id)!;
+    });
+  }
+
+  requestMissionCancellation(missionId: string, reason: string, requestedAt: string): MissionPlan {
+    return this.#writeTransaction(() => {
+      const mission = this.getMission(missionId);
+      if (!mission) throw new Error(`Mission ${missionId} does not exist`);
+      const at = normalizeTimestamp(requestedAt);
+      for (const assignment of this.listAssignments({ missionId })) {
+        if (assignment.status === LifecycleStatus.Queued) {
+          this.#writeAssignmentRecord({
+            ...assignment,
+            status: LifecycleStatus.Cancelled,
+            cancelRequestedAt: at,
+            cancelReason: reason,
+            completedAt: at,
+          });
+        } else if (assignment.status === LifecycleStatus.Active) {
+          this.#writeAssignmentRecord({
+            ...assignment,
+            cancelRequestedAt: at,
+            cancelReason: reason,
+          });
+        }
+      }
+      this.#writeMissionRecord({
+        ...mission,
+        status: LifecycleStatus.Cancelled,
+        cancelRequestedAt: at,
+        updatedAt: at,
+      });
+      return this.getMission(missionId)!;
+    });
+  }
+
+  acknowledgeAssignmentCancellation(id: string, leaseToken: string, completedAt: string): Assignment {
+    return this.#writeTransaction(() => {
+      const at = normalizeTimestamp(completedAt);
+      const assignment = this.#requireAssignmentLease(id, leaseToken, at);
+      if (!assignment.cancelRequestedAt) throw new Error(`Assignment ${id} has no cancellation request`);
+      const cancelled = withoutLease({
+        ...assignment,
+        status: LifecycleStatus.Cancelled,
+        completedAt: at,
+      });
+      this.#writeAssignmentRecord(cancelled);
+      const task = this.getMissionTask(assignment.missionTaskId)!;
+      this.#writeMissionTaskRecord({
+        ...task,
+        status: LifecycleStatus.Cancelled,
+        completedAt: at,
+        updatedAt: at,
+      });
+      return this.getAssignment(id)!;
+    });
+  }
+
   upsertConnectorHealth(health: ConnectorHealth): ConnectorHealth {
     assertConnectorHealth(health);
     const normalized = normalizeConnectorHealth(health);
@@ -757,6 +1757,215 @@ export class JerichoStore {
         (value) => assertConnectorHealth(value),
         (value) => value.connectorId,
       ),
+    );
+  }
+
+  #writeAssignmentRecord(assignment: Assignment): void {
+    assertAssignment(assignment);
+    const normalized = normalizeAssignment(assignment);
+    const sealed = this.#sealRecord('assignments', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE assignments SET
+        mission_task_id = ?, agent_id = ?, primary_capability_id = ?, status = ?,
+        route = ?, risk = ?, confidence = ?, assigned_at = ?, accepted_at = ?,
+        completed_at = ?, integrity_hash = ?, body = ?, mission_id = ?,
+        idempotency_key = ?, attempt = ?, max_attempts = ?, available_at = ?,
+        estimated_cost_microusd = ?, lease_owner = ?, lease_token = ?,
+        lease_expires_at = ?, cancel_requested_at = ?
+      WHERE id = ?
+    `).run(
+      stored.missionTaskId, stored.agentId, stored.capabilityIds[0] ?? null,
+      stored.status, stored.route, stored.risk, stored.confidence ?? null,
+      stored.assignedAt, stored.acceptedAt ?? null, stored.completedAt ?? null,
+      sealed.integrityHash, sealed.body, stored.missionId, stored.idempotencyKey,
+      stored.attempt, stored.maxAttempts, stored.availableAt,
+      stored.estimatedCostMicroUsd, stored.leaseOwner ?? null,
+      stored.leaseToken ?? null, stored.leaseExpiresAt ?? null,
+      stored.cancelRequestedAt ?? null, stored.id,
+    );
+  }
+
+  #requireAssignmentLease(id: string, leaseToken: string, at?: string): Assignment {
+    const assignment = this.getAssignment(id);
+    if (
+      !assignment ||
+      assignment.status !== LifecycleStatus.Active ||
+      !assignment.leaseToken ||
+      assignment.leaseToken !== leaseToken
+    ) {
+      throw new AssignmentLeaseError(id);
+    }
+    if (
+      at &&
+      assignment.leaseExpiresAt &&
+      Date.parse(assignment.leaseExpiresAt) <= Date.parse(at)
+    ) {
+      throw new AssignmentLeaseError(id);
+    }
+    return assignment;
+  }
+
+  #expireAssignmentLeases(now: string): void {
+    const rows = this.#database.prepare(`
+      SELECT * FROM assignments
+      WHERE status = ? AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+    `).all(LifecycleStatus.Active, now);
+    for (const row of rows) {
+      const assignment = this.#readRecord<Assignment>(
+        'assignments', String(row.id), row, (value) => assertAssignment(value), (value) => value.id,
+      );
+      this.#writeAssignmentRecord(withoutLease({
+        ...assignment,
+        status: LifecycleStatus.Queued,
+      }));
+      const task = this.getMissionTask(assignment.missionTaskId);
+      if (task && task.status === LifecycleStatus.Active) {
+        this.#writeMissionTaskRecord({ ...task, status: LifecycleStatus.Queued, updatedAt: now });
+      }
+    }
+  }
+
+  #dependenciesSucceeded(taskId: string): boolean {
+    const dependencies = this.#database.prepare(`
+      SELECT dependency.*
+      FROM mission_task_dependencies edge
+      JOIN mission_tasks dependency ON dependency.id = edge.depends_on_task_id
+      WHERE edge.task_id = ?
+    `).all(taskId);
+    return dependencies.every((row) => {
+      const task = this.#readRecord<MissionTask>(
+        'mission_tasks', String(row.id), row, (value) => assertMissionTask(value), (value) => value.id,
+      );
+      return task.status === LifecycleStatus.Succeeded;
+    });
+  }
+
+  #assertDependencyProjection(mission: MissionPlan, taskId: string): void {
+    const expected = mission.taskGraph.find((task) => task.id === taskId)?.dependsOn;
+    if (!expected) throw new Error(`Mission ${mission.id} does not contain task ${taskId}`);
+    const actual = this.#database.prepare(`
+      SELECT depends_on_task_id FROM mission_task_dependencies
+      WHERE mission_id = ? AND task_id = ? ORDER BY depends_on_task_id ASC
+    `).all(mission.id, taskId).map((row) => String(row.depends_on_task_id));
+    if (!sameStrings(actual, expected)) {
+      throw new Error(`Mission ${mission.id} dependency projection mismatch for ${taskId}`);
+    }
+  }
+
+  #insertMissionTask(task: MissionTask): MissionTask {
+    assertMissionTask(task);
+    const normalized = normalizeMissionTask(task);
+    const sealed = this.#sealRecord('mission_tasks', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO mission_tasks (
+        id, mission_id, task_type, status, route, risk, confidence, sequence,
+        freshness_at, created_at, updated_at, started_at, completed_at,
+        integrity_hash, body, lane, selected_agent_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.missionId, stored.kind, stored.status, stored.route,
+      stored.risk, stored.confidence ?? null, stored.sequence,
+      stored.freshness?.observedAt ?? null, stored.createdAt, stored.updatedAt,
+      stored.startedAt ?? null, stored.completedAt ?? null,
+      sealed.integrityHash, sealed.body, stored.lane, stored.selectedAgentId,
+    );
+    return stored;
+  }
+
+  #writeMissionTaskRecord(task: MissionTask): void {
+    assertMissionTask(task);
+    const normalized = normalizeMissionTask(task);
+    const sealed = this.#sealRecord('mission_tasks', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE mission_tasks SET
+        mission_id = ?, task_type = ?, status = ?, route = ?, risk = ?,
+        confidence = ?, sequence = ?, freshness_at = ?, created_at = ?,
+        updated_at = ?, started_at = ?, completed_at = ?, integrity_hash = ?,
+        body = ?, lane = ?, selected_agent_id = ?
+      WHERE id = ?
+    `).run(
+      stored.missionId, stored.kind, stored.status, stored.route, stored.risk,
+      stored.confidence ?? null, stored.sequence, stored.freshness?.observedAt ?? null,
+      stored.createdAt, stored.updatedAt, stored.startedAt ?? null,
+      stored.completedAt ?? null, sealed.integrityHash, sealed.body, stored.lane,
+      stored.selectedAgentId, stored.id,
+    );
+  }
+
+  #writeMissionRecord(mission: MissionPlan): void {
+    assertMissionPlan(mission);
+    if (computeMissionPlanHash(mission) !== mission.planHash) {
+      throw new MissionPlanConflictError(mission.id);
+    }
+    const normalized = normalizeMission(mission);
+    const sealed = this.#sealRecord('missions', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE missions SET
+        intent_id = ?, status = ?, route = ?, risk = ?, confidence = ?,
+        freshness_at = ?, created_at = ?, updated_at = ?, integrity_hash = ?,
+        body = ?, series_id = ?, plan_version = ?, plan_hash = ?,
+        approval_decision_id = ?, approved_at = ?, started_at = ?,
+        completed_at = ?, cancel_requested_at = ?
+      WHERE id = ?
+    `).run(
+      stored.intentId, stored.status, stored.route, stored.risk,
+      stored.confidence ?? null, stored.freshness?.observedAt ?? null,
+      stored.createdAt, stored.updatedAt, sealed.integrityHash, sealed.body,
+      stored.seriesId, stored.version, stored.planHash,
+      stored.approvalDecisionId ?? null, stored.approvedAt ?? null,
+      stored.startedAt ?? null, stored.completedAt ?? null,
+      stored.cancelRequestedAt ?? null, stored.id,
+    );
+  }
+
+  #insertDecision(decision: DecisionRecord): DecisionRecord {
+    assertDecisionRecord(decision);
+    const existing = this.#database.prepare('SELECT * FROM decisions WHERE id = ?').get(decision.id);
+    if (existing) {
+      const stored = this.#readRecord<DecisionRecord>(
+        'decisions', String(existing.id), existing, (value) => assertDecisionRecord(value), (value) => value.id,
+      );
+      if (this.#integrityHashFor(stored) === this.#integrityHashFor(decision)) return stored;
+      throw new Error(`Decision ${decision.id} conflicts with the immutable record`);
+    }
+    const sealed = this.#sealRecord('decisions', decision.id, decision);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO decisions (
+        id, intent_id, mission_id, mission_task_id, proposal_id, status,
+        route, risk, confidence, decided_at, integrity_hash, body, plan_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.intentId ?? null, stored.missionId ?? null,
+      stored.missionTaskId ?? null, stored.proposalId ?? null, stored.outcome,
+      stored.route, stored.risk, stored.confidence ?? null, stored.decidedAt,
+      sealed.integrityHash, sealed.body, stored.planHash ?? null,
+    );
+    return stored;
+  }
+
+  #writeReceiptRecord(receipt: ActionReceipt): void {
+    assertActionReceipt(receipt);
+    const sealed = this.#sealRecord('receipts', receipt.id, receipt);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE receipts SET
+        proposal_id = ?, assignment_id = ?, mission_task_id = ?, connector_id = ?,
+        status = ?, route = ?, risk = ?, requested_at = ?, started_at = ?,
+        completed_at = ?, integrity_hash = ?, body = ?, idempotency_key = ?,
+        destination = ?, external_id = ?, verified = ?, verified_at = ?, attempt = ?
+      WHERE id = ?
+    `).run(
+      stored.proposalId ?? null, stored.assignmentId ?? null,
+      stored.missionTaskId ?? null, stored.connectorId ?? null, stored.status,
+      stored.route, stored.risk, stored.requestedAt, stored.startedAt ?? null,
+      stored.completedAt ?? null, sealed.integrityHash, sealed.body,
+      stored.idempotencyKey, stored.destination, stored.externalId ?? null,
+      stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt, stored.id,
     );
   }
 
@@ -867,6 +2076,11 @@ export class JerichoStore {
         }
         storeUuid = this.#readStoreUuid();
         this.#verifyMasterKey(storeUuid);
+        if (!applied.has(4) && this.#preV4OrchestrationStoreHasRows()) {
+          throw new Error(
+            'Refusing to migrate nonempty pre-v4 Jericho orchestration records',
+          );
+        }
       } else {
         if (this.#legacyStoreHasRows()) {
           throw new Error('Refusing to migrate nonempty pre-v3 Jericho store');
@@ -914,6 +2128,18 @@ export class JerichoStore {
 
   #legacyStoreHasRows(): boolean {
     for (const table of LEGACY_RECORD_TABLES) {
+      if (
+        this.#tableExists(table) &&
+        this.#database.prepare(`SELECT 1 AS present FROM ${table} LIMIT 1`).get()
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  #preV4OrchestrationStoreHasRows(): boolean {
+    for (const table of PRE_V4_ORCHESTRATION_TABLES) {
       if (
         this.#tableExists(table) &&
         this.#database.prepare(`SELECT 1 AS present FROM ${table} LIMIT 1`).get()
@@ -1067,6 +2293,158 @@ function recordProjection(
         updated_at: relation.updatedAt,
       };
     }
+    case 'intents': {
+      const intent = value as IntentEnvelope;
+      return {
+        id: intent.id,
+        event_id: intent.eventId ?? null,
+        actor_entity_id: intent.actorEntityId ?? null,
+        intent_type: intent.kind,
+        status: intent.status,
+        route: intent.route,
+        risk: intent.risk,
+        confidence: intent.confidence,
+        freshness_at: intent.freshness?.observedAt ?? null,
+        created_at: intent.createdAt,
+        updated_at: intent.updatedAt,
+      };
+    }
+    case 'missions': {
+      const mission = value as MissionPlan;
+      return {
+        id: mission.id,
+        intent_id: mission.intentId,
+        status: mission.status,
+        route: mission.route,
+        risk: mission.risk,
+        confidence: mission.confidence ?? null,
+        freshness_at: mission.freshness?.observedAt ?? null,
+        created_at: mission.createdAt,
+        updated_at: mission.updatedAt,
+        series_id: mission.seriesId,
+        plan_version: mission.version,
+        plan_hash: mission.planHash,
+        approval_decision_id: mission.approvalDecisionId ?? null,
+        approved_at: mission.approvedAt ?? null,
+        started_at: mission.startedAt ?? null,
+        completed_at: mission.completedAt ?? null,
+        cancel_requested_at: mission.cancelRequestedAt ?? null,
+      };
+    }
+    case 'mission_tasks': {
+      const task = value as MissionTask;
+      return {
+        id: task.id,
+        mission_id: task.missionId,
+        task_type: task.kind,
+        status: task.status,
+        route: task.route,
+        risk: task.risk,
+        confidence: task.confidence ?? null,
+        sequence: task.sequence,
+        freshness_at: task.freshness?.observedAt ?? null,
+        created_at: task.createdAt,
+        updated_at: task.updatedAt,
+        started_at: task.startedAt ?? null,
+        completed_at: task.completedAt ?? null,
+        lane: task.lane,
+        selected_agent_id: task.selectedAgentId,
+      };
+    }
+    case 'agent_capabilities': {
+      const capability = value as AgentCapability;
+      return {
+        id: capability.id,
+        agent_id: capability.agentId,
+        status: capability.status,
+        route: canonicalJson(capability.routes),
+        risk: capability.maximumRisk,
+        confidence: capability.confidence ?? null,
+        freshness_at: capability.lastVerifiedAt ?? null,
+        created_at: capability.createdAt,
+        updated_at: capability.updatedAt,
+        lane: capability.lane,
+      };
+    }
+    case 'assignments': {
+      const assignment = value as Assignment;
+      return {
+        id: assignment.id,
+        mission_task_id: assignment.missionTaskId,
+        agent_id: assignment.agentId,
+        primary_capability_id: assignment.capabilityIds[0] ?? null,
+        status: assignment.status,
+        route: assignment.route,
+        risk: assignment.risk,
+        confidence: assignment.confidence ?? null,
+        assigned_at: assignment.assignedAt,
+        accepted_at: assignment.acceptedAt ?? null,
+        completed_at: assignment.completedAt ?? null,
+        mission_id: assignment.missionId,
+        idempotency_key: assignment.idempotencyKey,
+        attempt: assignment.attempt,
+        max_attempts: assignment.maxAttempts,
+        available_at: assignment.availableAt,
+        estimated_cost_microusd: assignment.estimatedCostMicroUsd,
+        lease_owner: assignment.leaseOwner ?? null,
+        lease_token: assignment.leaseToken ?? null,
+        lease_expires_at: assignment.leaseExpiresAt ?? null,
+        cancel_requested_at: assignment.cancelRequestedAt ?? null,
+      };
+    }
+    case 'proposals': {
+      const proposal = value as Proposal;
+      return {
+        id: proposal.id,
+        assignment_id: proposal.assignmentId ?? null,
+        mission_task_id: proposal.missionTaskId ?? null,
+        proposal_type: proposal.kind,
+        status: proposal.status,
+        route: proposal.route,
+        risk: proposal.risk,
+        confidence: proposal.confidence ?? null,
+        created_at: proposal.createdAt,
+        expires_at: proposal.expiresAt ?? null,
+      };
+    }
+    case 'receipts': {
+      const receipt = value as ActionReceipt;
+      return {
+        id: receipt.id,
+        proposal_id: receipt.proposalId ?? null,
+        assignment_id: receipt.assignmentId ?? null,
+        mission_task_id: receipt.missionTaskId ?? null,
+        connector_id: receipt.connectorId ?? null,
+        status: receipt.status,
+        route: receipt.route,
+        risk: receipt.risk,
+        requested_at: receipt.requestedAt,
+        started_at: receipt.startedAt ?? null,
+        completed_at: receipt.completedAt ?? null,
+        idempotency_key: receipt.idempotencyKey,
+        destination: receipt.destination,
+        external_id: receipt.externalId ?? null,
+        verified: receipt.verified ? 1 : 0,
+        verified_at: receipt.verifiedAt ?? null,
+        attempt: receipt.attempt,
+      };
+    }
+    case 'decisions': {
+      const decision = value as DecisionRecord;
+      return {
+        id: decision.id,
+        intent_id: decision.intentId ?? null,
+        mission_id: decision.missionId ?? null,
+        mission_task_id: decision.missionTaskId ?? null,
+        proposal_id: decision.proposalId ?? null,
+        status: decision.outcome,
+        route: decision.route,
+        risk: decision.risk,
+        confidence: decision.confidence ?? null,
+        decided_at: decision.decidedAt,
+        plan_hash: decision.planHash ?? null,
+      };
+    }
     case 'connector_health': {
       const health = value as ConnectorHealth;
       return {
@@ -1078,6 +2456,30 @@ function recordProjection(
         latency_ms: health.latencyMs ?? null,
         consecutive_failures: health.consecutiveFailures,
         freshness_at: health.freshness.observedAt,
+      };
+    }
+    case 'preference_changes': {
+      const preference = value as PreferenceChange;
+      return {
+        id: preference.id,
+        entity_id: preference.entityId ?? null,
+        status: preference.status,
+        route: preference.route,
+        risk: preference.risk,
+        changed_at: preference.changedAt,
+      };
+    }
+    case 'cost_records': {
+      const cost = value as CostRecord;
+      return {
+        id: cost.id,
+        mission_id: cost.missionId,
+        assignment_id: cost.assignmentId ?? null,
+        category: cost.category,
+        estimated_microusd: cost.estimatedMicroUsd,
+        actual_microusd: cost.actualMicroUsd,
+        idempotency_key: cost.idempotencyKey,
+        incurred_at: cost.incurredAt,
       };
     }
   }
@@ -1137,6 +2539,22 @@ function projectionColumns(table: EncryptedRecordTable): readonly string[] {
         'created_at',
         'updated_at',
       ];
+    case 'intents':
+      return ['id', 'event_id', 'actor_entity_id', 'intent_type', 'status', 'route', 'risk', 'confidence', 'freshness_at', 'created_at', 'updated_at'];
+    case 'missions':
+      return ['id', 'intent_id', 'status', 'route', 'risk', 'confidence', 'freshness_at', 'created_at', 'updated_at', 'series_id', 'plan_version', 'plan_hash', 'approval_decision_id', 'approved_at', 'started_at', 'completed_at', 'cancel_requested_at'];
+    case 'mission_tasks':
+      return ['id', 'mission_id', 'task_type', 'status', 'route', 'risk', 'confidence', 'sequence', 'freshness_at', 'created_at', 'updated_at', 'started_at', 'completed_at', 'lane', 'selected_agent_id'];
+    case 'agent_capabilities':
+      return ['id', 'agent_id', 'status', 'route', 'risk', 'confidence', 'freshness_at', 'created_at', 'updated_at', 'lane'];
+    case 'assignments':
+      return ['id', 'mission_task_id', 'agent_id', 'primary_capability_id', 'status', 'route', 'risk', 'confidence', 'assigned_at', 'accepted_at', 'completed_at', 'mission_id', 'idempotency_key', 'attempt', 'max_attempts', 'available_at', 'estimated_cost_microusd', 'lease_owner', 'lease_token', 'lease_expires_at', 'cancel_requested_at'];
+    case 'proposals':
+      return ['id', 'assignment_id', 'mission_task_id', 'proposal_type', 'status', 'route', 'risk', 'confidence', 'created_at', 'expires_at'];
+    case 'receipts':
+      return ['id', 'proposal_id', 'assignment_id', 'mission_task_id', 'connector_id', 'status', 'route', 'risk', 'requested_at', 'started_at', 'completed_at', 'idempotency_key', 'destination', 'external_id', 'verified', 'verified_at', 'attempt'];
+    case 'decisions':
+      return ['id', 'intent_id', 'mission_id', 'mission_task_id', 'proposal_id', 'status', 'route', 'risk', 'confidence', 'decided_at', 'plan_hash'];
     case 'connector_health':
       return [
         'connector_id',
@@ -1148,6 +2566,10 @@ function projectionColumns(table: EncryptedRecordTable): readonly string[] {
         'consecutive_failures',
         'freshness_at',
       ];
+    case 'preference_changes':
+      return ['id', 'entity_id', 'status', 'route', 'risk', 'changed_at'];
+    case 'cost_records':
+      return ['id', 'mission_id', 'assignment_id', 'category', 'estimated_microusd', 'actual_microusd', 'idempotency_key', 'incurred_at'];
   }
 }
 
@@ -1203,6 +2625,23 @@ function asBuffer(value: SQLInputValue | undefined): Buffer {
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function sameStrings(first: readonly string[], second: readonly string[]): boolean {
+  if (first.length !== second.length) return false;
+  const left = [...first].sort();
+  const right = [...second].sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+function withoutLease(assignment: Assignment): Assignment {
+  const {
+    leaseOwner: _leaseOwner,
+    leaseToken: _leaseToken,
+    leaseExpiresAt: _leaseExpiresAt,
+    ...remaining
+  } = assignment;
+  return remaining;
 }
 
 function maximumDefined(
@@ -1269,6 +2708,113 @@ function normalizeConnectorHealth(health: ConnectorHealth): ConnectorHealth {
       : {}),
     freshness: normalizeFreshness(health.freshness),
     provenance: health.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizeIntent(intent: IntentEnvelope): IntentEnvelope {
+  return {
+    ...intent,
+    deadlines: intent.deadlines.map((deadline) => ({
+      ...deadline,
+      at: normalizeTimestamp(deadline.at),
+    })),
+    ...(intent.freshness ? { freshness: normalizeFreshness(intent.freshness) } : {}),
+    provenance: intent.provenance.map(normalizeProvenance),
+    createdAt: normalizeTimestamp(intent.createdAt),
+    updatedAt: normalizeTimestamp(intent.updatedAt),
+  };
+}
+
+function normalizeMission(mission: MissionPlan): MissionPlan {
+  return {
+    ...mission,
+    ...(mission.approvedAt ? { approvedAt: normalizeTimestamp(mission.approvedAt) } : {}),
+    ...(mission.startedAt ? { startedAt: normalizeTimestamp(mission.startedAt) } : {}),
+    ...(mission.completedAt ? { completedAt: normalizeTimestamp(mission.completedAt) } : {}),
+    ...(mission.cancelRequestedAt ? { cancelRequestedAt: normalizeTimestamp(mission.cancelRequestedAt) } : {}),
+    ...(mission.freshness ? { freshness: normalizeFreshness(mission.freshness) } : {}),
+    provenance: mission.provenance.map(normalizeProvenance),
+    createdAt: normalizeTimestamp(mission.createdAt),
+    updatedAt: normalizeTimestamp(mission.updatedAt),
+  };
+}
+
+function normalizeMissionTask(task: MissionTask): MissionTask {
+  return {
+    ...task,
+    ...(task.freshness ? { freshness: normalizeFreshness(task.freshness) } : {}),
+    provenance: task.provenance.map(normalizeProvenance),
+    createdAt: normalizeTimestamp(task.createdAt),
+    updatedAt: normalizeTimestamp(task.updatedAt),
+    ...(task.startedAt ? { startedAt: normalizeTimestamp(task.startedAt) } : {}),
+    ...(task.completedAt ? { completedAt: normalizeTimestamp(task.completedAt) } : {}),
+  };
+}
+
+function normalizeCapability(capability: AgentCapability): AgentCapability {
+  return {
+    ...capability,
+    ...(capability.lastVerifiedAt ? { lastVerifiedAt: normalizeTimestamp(capability.lastVerifiedAt) } : {}),
+    provenance: capability.provenance.map(normalizeProvenance),
+    createdAt: normalizeTimestamp(capability.createdAt),
+    updatedAt: normalizeTimestamp(capability.updatedAt),
+  };
+}
+
+function normalizeAssignment(assignment: Assignment): Assignment {
+  return {
+    ...assignment,
+    availableAt: normalizeTimestamp(assignment.availableAt),
+    assignedAt: normalizeTimestamp(assignment.assignedAt),
+    ...(assignment.acceptedAt ? { acceptedAt: normalizeTimestamp(assignment.acceptedAt) } : {}),
+    ...(assignment.completedAt ? { completedAt: normalizeTimestamp(assignment.completedAt) } : {}),
+    ...(assignment.leaseExpiresAt ? { leaseExpiresAt: normalizeTimestamp(assignment.leaseExpiresAt) } : {}),
+    ...(assignment.cancelRequestedAt ? { cancelRequestedAt: normalizeTimestamp(assignment.cancelRequestedAt) } : {}),
+    provenance: assignment.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizeProposal(proposal: Proposal): Proposal {
+  return {
+    ...proposal,
+    createdAt: normalizeTimestamp(proposal.createdAt),
+    ...(proposal.expiresAt ? { expiresAt: normalizeTimestamp(proposal.expiresAt) } : {}),
+    provenance: proposal.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizeDecision(decision: DecisionRecord): DecisionRecord {
+  return {
+    ...decision,
+    decidedAt: normalizeTimestamp(decision.decidedAt),
+    provenance: decision.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizePreference(preference: PreferenceChange): PreferenceChange {
+  return {
+    ...preference,
+    changedAt: normalizeTimestamp(preference.changedAt),
+    provenance: preference.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizeReceipt(receipt: ActionReceipt): ActionReceipt {
+  return {
+    ...receipt,
+    requestedAt: normalizeTimestamp(receipt.requestedAt),
+    ...(receipt.startedAt ? { startedAt: normalizeTimestamp(receipt.startedAt) } : {}),
+    ...(receipt.completedAt ? { completedAt: normalizeTimestamp(receipt.completedAt) } : {}),
+    ...(receipt.verifiedAt ? { verifiedAt: normalizeTimestamp(receipt.verifiedAt) } : {}),
+    provenance: receipt.provenance.map(normalizeProvenance),
+  };
+}
+
+function normalizeCost(cost: CostRecord): CostRecord {
+  return {
+    ...cost,
+    incurredAt: normalizeTimestamp(cost.incurredAt),
+    provenance: cost.provenance.map(normalizeProvenance),
   };
 }
 
