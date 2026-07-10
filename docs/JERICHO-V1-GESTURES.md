@@ -1,4 +1,4 @@
-# Jericho v1.0.3 Gesture System
+# Jericho v1.0.4 Gesture System
 
 The v1 interaction surface deliberately recognizes only a stable palm pointer
 and a thumb/index pinch action.

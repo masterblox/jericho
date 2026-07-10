@@ -14,7 +14,7 @@ import { mapHandToScreen } from './coords';
 import { DiagnosticRecorder } from './diagnostics';
 import { captureDragLayout, finishDragLayout, type DragLayoutOrigin } from './drag-layout';
 import { GestureCoordinator, type CoordinatorAction } from './gesture-coordinator';
-import { nearestCardHit } from './hit-testing';
+import { pointInsideTarget, StickyCardTarget } from './hit-testing';
 import type { GestureFrame, Handedness, Landmark, TrackedHandFrame } from './gestures';
 import type { PointerAction, PointerTarget } from './pointer-controller';
 import type { Point } from './tracking';
@@ -54,6 +54,7 @@ export class HUD {
   private readonly context: CanvasRenderingContext2D;
   private readonly coordinator = new GestureCoordinator();
   private readonly recorder = new DiagnosticRecorder();
+  private readonly rightCardTarget = new StickyCardTarget<PointerTarget>();
   private readonly cards: HTMLElement[] = [];
   private selected = -1;
   private selectionBeforeGrab: number | null = null;
@@ -206,13 +207,15 @@ export class HUD {
 
     const leftPoint = frame.left ? this.screenPoint(frame.left) : undefined;
     const rightPoint = frame.right ? this.screenPoint(frame.right) : undefined;
-    this.updateCursor(this.leftCursor, frame.left, leftPoint, 'Left');
-    this.updateCursor(this.rightCursor, frame.right, rightPoint, 'Right');
-
     const leftSuppressed = this.consumeSuppression(frame.left);
     const rightSuppressed = this.consumeSuppression(frame.right);
     const leftTarget = leftPoint ? this.leftTargetAt(leftPoint) : null;
     const rightTarget = rightPoint ? this.rightTargetAt(rightPoint) : null;
+    const rightCursorPoint = rightPoint && rightTarget?.draggable && frame.right?.state !== 'pinch'
+      ? pointInsideTarget(rightPoint, rightTarget)
+      : rightPoint;
+    this.updateCursor(this.leftCursor, frame.left, leftPoint, 'Left');
+    this.updateCursor(this.rightCursor, frame.right, rightCursorPoint, 'Right');
     const actions = this.coordinator.update(
       {
         hand: leftSuppressed ? undefined : frame.left,
@@ -398,7 +401,7 @@ export class HUD {
         boundaryDistance: 0,
       };
     });
-    const cardHit = nearestCardHit(point, cardTargets);
+    const cardHit = this.rightCardTarget.update(point, cardTargets);
     if (cardHit) return { ...cardHit.target, boundaryDistance: cardHit.boundaryDistance };
 
     const elements = [...this.root.querySelectorAll<HTMLElement>('[data-right-target]')].reverse();

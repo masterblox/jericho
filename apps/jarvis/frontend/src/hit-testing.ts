@@ -1,6 +1,7 @@
 import type { Point } from './tracking';
 
 export const CARD_HIT_SLOP_PX = 18;
+export const CARD_RELEASE_SLOP_PX = 64;
 export const GRAB_INSET_PX = 14;
 
 export interface RectTarget {
@@ -49,4 +50,38 @@ export function boundedGrabOffset(point: Point, target: RectTarget): Point {
     x: clamp(point.x - target.left, minX, maxX),
     y: clamp(point.y - target.top, minY, maxY),
   };
+}
+
+export function pointInsideTarget(point: Point, target: RectTarget, inset = GRAB_INSET_PX): Point {
+  const halfWidth = (target.right - target.left) / 2;
+  const halfHeight = (target.bottom - target.top) / 2;
+  const xInset = Math.min(inset, halfWidth);
+  const yInset = Math.min(inset, halfHeight);
+  return {
+    x: clamp(point.x, target.left + xInset, target.right - xInset),
+    y: clamp(point.y, target.top + yInset, target.bottom - yInset),
+  };
+}
+
+export class StickyCardTarget<T extends RectTarget & { id: string }> {
+  private lockedId: string | null = null;
+
+  update(point: Point, cards: T[]): CardHit<T> | null {
+    if (this.lockedId) {
+      const locked = cards.find((card) => card.id === this.lockedId);
+      if (locked) {
+        const boundaryDistance = distanceToRect(point, locked);
+        if (boundaryDistance <= CARD_RELEASE_SLOP_PX) return { target: locked, boundaryDistance };
+      }
+      this.lockedId = null;
+    }
+
+    const acquired = nearestCardHit(point, cards);
+    this.lockedId = acquired?.target.id ?? null;
+    return acquired;
+  }
+
+  clear(): void {
+    this.lockedId = null;
+  }
 }

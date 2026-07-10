@@ -1,9 +1,9 @@
-# Jericho Interface v1.0.3
+# Jericho Interface v1.0.4
 
 Jericho's browser control room combines Gemini Live voice with webcam-driven,
 hands-free interaction. Jericho owns this interface; the bridge currently keeps
 the existing local mock tools. Real Paperclip/Hermes fleet execution is the next
-adapter and is intentionally outside the v1.0.3 gesture pass.
+adapter and is intentionally outside the v1.0.4 gesture pass.
 
 ## Gesture contract
 
@@ -59,8 +59,8 @@ live dogfooding because CI has no webcam.
 
 | Capability | Status |
 |---|---|
-| Dual-hand palm + pinch interface | v1.0.3 |
-| Fresh-pinch edge grab + grab preview | v1.0.3 |
+| Dual-hand palm + pinch interface | v1.0.4 |
+| Sticky card acquisition + fresh-pinch grab preview | v1.0.4 |
 | Immediate pinch attachment | v1.0.2 |
 | Per-hand five-point calibration | v1.0.1 |
 | Gemini Live voice loop | Preserved |

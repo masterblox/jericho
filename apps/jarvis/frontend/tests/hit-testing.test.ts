@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   CARD_HIT_SLOP_PX,
+  CARD_RELEASE_SLOP_PX,
   GRAB_INSET_PX,
   boundedGrabOffset,
   distanceToRect,
   nearestCardHit,
+  pointInsideTarget,
+  StickyCardTarget,
 } from '../src/hit-testing';
 
 const card = { id: 'card:0', left: 100, top: 80, right: 370, bottom: 240 };
@@ -36,5 +39,28 @@ describe('fresh-pinch card footprint geometry', () => {
     expect(distanceToRect({ x: 90, y: 70 }, card)).toBeCloseTo(Math.hypot(10, 10));
     expect(boundedGrabOffset({ x: 90, y: 70 }, card)).toEqual({ x: 14, y: 14 });
     expect(boundedGrabOffset({ x: 400, y: 260 }, card)).toEqual({ x: 256, y: 146 });
+  });
+});
+
+describe('sticky headset-style card acquisition', () => {
+  it('keeps an acquired card through jitter beyond the acquisition edge', () => {
+    const lock = new StickyCardTarget<typeof card>();
+    expect(lock.update({ x: card.right + 10, y: 150 }, [card])?.target.id).toBe('card:0');
+    expect(lock.update({ x: card.right + CARD_RELEASE_SLOP_PX, y: 150 }, [card])?.target.id).toBe('card:0');
+    expect(lock.update({ x: card.right + CARD_RELEASE_SLOP_PX + 1, y: 150 }, [card])).toBeNull();
+  });
+
+  it('anchors the visible circle fully inside the acquired card', () => {
+    expect(pointInsideTarget({ x: card.right + 12, y: card.top - 8 }, card)).toEqual({
+      x: card.right - GRAB_INSET_PX,
+      y: card.top + GRAB_INSET_PX,
+    });
+  });
+
+  it('can explicitly release a stale target lock', () => {
+    const lock = new StickyCardTarget<typeof card>();
+    lock.update({ x: 200, y: 150 }, [card]);
+    lock.clear();
+    expect(lock.update({ x: card.right + CARD_HIT_SLOP_PX + 1, y: 150 }, [card])).toBeNull();
   });
 });
