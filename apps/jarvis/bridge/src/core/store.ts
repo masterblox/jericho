@@ -98,6 +98,12 @@ export interface EventListOptions {
   limit?: number;
 }
 
+export interface MissionCancellationBinding {
+  planHash: string;
+  planVersion: number;
+  decision: DecisionRecord;
+}
+
 export interface CommitCaptureBatchInput {
   connectorId: string;
   capability: ConnectorCapability;
@@ -2322,11 +2328,49 @@ export class JerichoStore {
     });
   }
 
-  requestMissionCancellation(missionId: string, reason: string, requestedAt: string): MissionPlan {
+  requestMissionCancellation(
+    missionId: string,
+    reason: string,
+    requestedAt: string,
+    binding?: MissionCancellationBinding,
+  ): MissionPlan {
     return this.#writeTransaction(() => {
       const mission = this.getMission(missionId);
       if (!mission) throw new Error(`Mission ${missionId} does not exist`);
       const at = normalizeTimestamp(requestedAt);
+      if ([
+        LifecycleStatus.Succeeded,
+        LifecycleStatus.Failed,
+        LifecycleStatus.Cancelled,
+        LifecycleStatus.Rejected,
+        LifecycleStatus.Archived,
+      ].includes(mission.status)) {
+        throw new MissionDecisionConflictError(missionId, 'is already terminal');
+      }
+      if (binding) {
+        if (
+          binding.planVersion !== mission.version ||
+          binding.planHash !== mission.planHash ||
+          computeMissionPlanHash(mission) !== binding.planHash
+        ) {
+          throw new MissionDecisionConflictError(missionId, 'cancellation binding does not match');
+        }
+        if (
+          binding.decision.missionId !== undefined && binding.decision.missionId !== missionId ||
+          binding.decision.planHash !== undefined && binding.decision.planHash !== binding.planHash ||
+          binding.decision.planVersion !== undefined && binding.decision.planVersion !== binding.planVersion
+        ) {
+          throw new MissionDecisionConflictError(missionId, 'cancellation decision binding does not match');
+        }
+        const decision = normalizeDecision({
+          ...binding.decision,
+          missionId,
+          planHash: binding.planHash,
+          planVersion: binding.planVersion,
+          decidedAt: at,
+        });
+        this.#insertDecision(decision);
+      }
       for (const assignment of this.listAssignments({ missionId })) {
         if (assignment.status === LifecycleStatus.Queued) {
           this.#writeAssignmentRecord({

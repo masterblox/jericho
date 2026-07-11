@@ -9,6 +9,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   DecisionOutcome,
+  LifecycleStatus,
+  ProposalKind,
+  RelationType,
+  RiskLevel,
   SourceType,
   RouteType,
   type DecisionRecord,
@@ -16,6 +20,7 @@ import {
   type JsonValue,
   type MissionDecisionRequest,
   type MissionDecisionResponse,
+  type Proposal,
 } from '@jericho/shared';
 
 import { buildCommandCenterSnapshot } from './command-center.js';
@@ -234,6 +239,94 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       }
       // Absolute vault paths never leave the local service boundary.
       sendJson(response, 200, { relativePath: result.relativePath, status: result.status });
+      return;
+    }
+    const missionCancellationMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/cancel$/);
+    if (request.method === 'POST' && missionCancellationMatch) {
+      const missionId = decodedPathSegment(missionCancellationMatch[1], 'invalid_mission_id');
+      const mission = options.store.getMission(missionId);
+      if (!mission) throw new HttpError(404, 'mission_not_found');
+      const input = missionCancellationRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      const decisionId = decisionIdFactory();
+      if (!decisionId.trim() || decisionId.length > 512) {
+        throw new Error('Mission decision ID factory returned an invalid ID');
+      }
+      const cancelled = options.store.requestMissionCancellation(
+        mission.id,
+        input.reason,
+        decidedAt,
+        {
+          planHash: input.planHash,
+          planVersion: input.version,
+          decision: {
+            id: decisionId,
+            missionId: mission.id,
+            decidedBy: 'carlos',
+            outcome: DecisionOutcome.Superseded,
+            planHash: input.planHash,
+            planVersion: input.version,
+            rationale: input.reason,
+            assumptions: [],
+            evidenceEventIds: [...mission.evidenceEventIds],
+            route: RouteType.HumanApproval,
+            risk: mission.risk,
+            decidedAt,
+            provenance: [{
+              source: 'local:command-center',
+              sourceType: SourceType.User,
+              sourceEventId: decisionId,
+              observedAt: decidedAt,
+            }],
+          },
+        },
+      );
+      sendJson(response, 200, {
+        mission: cancelled,
+        decision: options.store.getDecision(decisionId),
+        snapshot: buildCommandCenterSnapshot(options.store, now()),
+      });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/relationship-proposals') {
+      const input = relationshipProposalRequest(await readJsonBody(request, 64 * 1024));
+      const snapshot = buildCommandCenterSnapshot(options.store, now());
+      const from = snapshot.nucleus.nodes.find((node) => node.id === input.fromNodeId);
+      const to = snapshot.nucleus.nodes.find((node) => node.id === input.toNodeId);
+      if (!from || !to) throw new HttpError(404, 'nucleus_node_not_found');
+      const createdAt = now();
+      const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex').slice(0, 32);
+      const proposal: Proposal = {
+        id: `relationship-${digest}`,
+        proposedByAgentId: 'carlos',
+        kind: ProposalKind.DataChange,
+        summary: `Relate ${from.label} to ${to.label} as ${input.relation}`,
+        body: {
+          fromNodeId: input.fromNodeId,
+          toNodeId: input.toNodeId,
+          relation: input.relation,
+          evidenceEventIds: [...new Set([
+            ...from.evidenceEventIds,
+            ...to.evidenceEventIds,
+          ])],
+          verified: false,
+        },
+        status: LifecycleStatus.PendingApproval,
+        route: RouteType.HumanApproval,
+        risk: RiskLevel.Low,
+        createdAt,
+        provenance: [{
+          source: 'local:nucleus',
+          sourceType: SourceType.User,
+          sourceEventId: `relationship-${digest}`,
+          observedAt: createdAt,
+        }],
+      };
+      const stored = options.store.saveProposal(proposal);
+      sendJson(response, 201, {
+        proposal: stored,
+        snapshot: buildCommandCenterSnapshot(options.store, now()),
+      });
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/v1/reflection/run') {
@@ -956,6 +1049,56 @@ function missionDecisionRequest(body: Record<string, unknown>): MissionDecisionR
     planHash: body.planHash,
     version: body.version as number,
     ...(typeof body.reason === 'string' ? { reason: body.reason.trim() } : {}),
+  };
+}
+
+function missionCancellationRequest(body: Record<string, unknown>): {
+  planHash: string;
+  version: number;
+  reason: string;
+} {
+  const allowedFields = new Set(['planHash', 'version', 'reason']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'mission_cancellation_field_not_allowed');
+  }
+  if (typeof body.planHash !== 'string' || !/^[a-f0-9]{64}$/u.test(body.planHash)) {
+    throw new HttpError(400, 'invalid_mission_plan_hash');
+  }
+  if (!Number.isInteger(body.version) || (body.version as number) < 1) {
+    throw new HttpError(400, 'invalid_mission_plan_version');
+  }
+  if (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 2_000) {
+    throw new HttpError(400, 'invalid_mission_cancellation_reason');
+  }
+  return {
+    planHash: body.planHash,
+    version: body.version as number,
+    reason: body.reason.trim(),
+  };
+}
+
+function relationshipProposalRequest(body: Record<string, unknown>): {
+  fromNodeId: string;
+  toNodeId: string;
+  relation: RelationType;
+} {
+  const allowedFields = new Set(['fromNodeId', 'toNodeId', 'relation']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'relationship_field_not_allowed');
+  }
+  for (const field of ['fromNodeId', 'toNodeId'] as const) {
+    if (typeof body[field] !== 'string' || !body[field].trim() || body[field].length > 512) {
+      throw new HttpError(400, `invalid_${field}`);
+    }
+  }
+  if (body.fromNodeId === body.toNodeId) throw new HttpError(400, 'relationship_self_reference');
+  if (!Object.values(RelationType).includes(body.relation as RelationType)) {
+    throw new HttpError(400, 'invalid_relationship_type');
+  }
+  return {
+    fromNodeId: (body.fromNodeId as string).trim(),
+    toNodeId: (body.toNodeId as string).trim(),
+    relation: body.relation as RelationType,
   };
 }
 

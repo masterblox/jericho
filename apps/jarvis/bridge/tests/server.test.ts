@@ -325,6 +325,56 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(reflection.runOnce).toHaveBeenCalledWith(T0);
   });
 
+  it('binds mission cancellation and relationship proposals to current verified truth', async () => {
+    const runtime = await startServer({ clock: () => T0 });
+    const capture = await api(runtime.url, '/api/v1/captures', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'spoken', sourceEventId: 'bounded-controls', occurredAt: T0,
+        payload: { transcript: 'Build a multi-step project for Jericho' },
+      }),
+    });
+    const planned = (await capture.json() as any).processing.mission;
+    const before = await apiJson(runtime.url, '/api/v1/command-center');
+    const [from, to] = before.nucleus.nodes;
+    expect(from).toBeTruthy();
+    expect(to).toBeTruthy();
+
+    const relation = await api(runtime.url, '/api/v1/relationship-proposals', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        fromNodeId: from.id, toNodeId: to.id, relation: 'related_to',
+      }),
+    });
+    expect(relation.status).toBe(201);
+    const relationBody = await relation.json() as any;
+    expect(relationBody.proposal).toMatchObject({
+      kind: 'data_change', status: 'pending_approval',
+      body: { fromNodeId: from.id, toNodeId: to.id, relation: 'related_to', verified: false },
+    });
+    expect(relationBody.snapshot.nucleus.edges).toEqual(before.nucleus.edges);
+
+    const staleCancel = await api(runtime.url, `/api/v1/missions/${planned.id}/cancel`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planHash: 'f'.repeat(64), version: planned.version, reason: 'Stop this mission' }),
+    });
+    expect(staleCancel.status).toBe(409);
+
+    const cancelled = await api(runtime.url, `/api/v1/missions/${planned.id}/cancel`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ planHash: planned.planHash, version: planned.version, reason: 'Stop this mission' }),
+    });
+    expect(cancelled.status).toBe(200);
+    expect(await cancelled.json()).toMatchObject({
+      mission: { id: planned.id, status: 'cancelled', cancelRequestedAt: T0 },
+      decision: {
+        missionId: planned.id, planHash: planned.planHash, planVersion: planned.version,
+        outcome: 'superseded', rationale: 'Stop this mission', decidedBy: 'carlos',
+      },
+    });
+    expect(runtime.store.listDecisions(planned.id)).toHaveLength(1);
+  });
+
   it('returns typed client errors instead of 500 for malformed, oversized, bounded, and unknown requests', async () => {
     const sync = vi.fn().mockResolvedValue({ status: 'completed' });
     const runtime = await startServer({
