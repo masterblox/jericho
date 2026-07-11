@@ -14,6 +14,17 @@ import {
 import { ContextHoldController, type ContextHoldAction } from './context-hold-controller';
 import { mapHandToScreen } from './coords';
 import { DiagnosticRecorder, type DiagnosticActionInput } from './diagnostics';
+import {
+  JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CANCEL_PENDING_EVENT,
+  JERICHO_NUCLEUS_CAMERA_EVENT,
+  JERICHO_NUCLEUS_DEPTH_EVENT,
+} from './gesture-events';
+import {
+  HeldGestureInterpreter,
+  NucleusGestureInterpreter,
+  type NucleusGestureAction,
+} from './gesture-grammar';
 import { GestureCoordinator } from './gesture-coordinator';
 import {
   GestureSurfaceRenderer,
@@ -104,6 +115,8 @@ export class JarvisRuntime {
   private readonly diagnosticsExporter: (contents: string) => void;
   private readonly coordinator = new GestureCoordinator();
   private readonly context = new ContextHoldController();
+  private readonly heldGestures = new HeldGestureInterpreter();
+  private readonly nucleusGestures = new NucleusGestureInterpreter();
   private readonly recorder = new DiagnosticRecorder();
 
   private engagePromise: Promise<void> | null = null;
@@ -169,6 +182,7 @@ export class JarvisRuntime {
     this.engine?.stop();
     this.dispatchContextActions(this.context.cancel());
     this.coordinator.cancelAll();
+    this.resetSemanticGestures();
     this.registry.releaseSticky();
     this.renderer.hideActionRing();
     this.root.classList.add('gestures-frozen');
@@ -204,6 +218,7 @@ export class JarvisRuntime {
     this.stopObserving = null;
     this.context.cancel();
     this.coordinator.cancelAll();
+    this.resetSemanticGestures();
     this.registry.releaseSticky();
     this.root.classList.remove('gestures-frozen');
 
@@ -301,13 +316,74 @@ export class JarvisRuntime {
       ? pointInsideTarget(rightPoint, rightTarget)
       : rightPoint;
 
+    const nucleus = this.root.querySelector<HTMLElement>('[data-jericho-nucleus-space="true"]');
+    const leftInsideNucleus = Boolean(leftPoint && nucleus && pointInRect(leftPoint, nucleus.getBoundingClientRect()));
+    const rightInsideNucleus = Boolean(rightPoint && nucleus && pointInRect(rightPoint, nucleus.getBoundingClientRect()));
+    const bothOpenPalmsInsideNucleus = leftInsideNucleus
+      && rightInsideNucleus
+      && frame.left?.fresh === true
+      && frame.right?.fresh === true
+      && frame.left.recognizedGesture === 'Open_Palm'
+      && frame.right.recognizedGesture === 'Open_Palm';
+    const nucleusActions = this.nucleusGestures.update({
+      left: frame.left,
+      right: frame.right,
+      leftPoint,
+      rightPoint,
+      rightOnEmptyNucleus: rightInsideNucleus && !rightTarget,
+      bothHandsInsideNucleus: bothOpenPalmsInsideNucleus,
+      now: frame.timestamp,
+    });
+    this.dispatchNucleusActions(nucleusActions);
+    const nucleusConsumesRight = this.nucleusGestures.isCameraActive();
+    const nucleusConsumesBoth = this.nucleusGestures.isDepthActive();
+    if (nucleusConsumesRight || nucleusConsumesBoth) this.registry.releaseSticky();
+
+    const heldActions = this.heldGestures.update({
+      left: leftSuppressed ? undefined : frame.left,
+      right: rightSuppressed ? undefined : frame.right,
+      now: frame.timestamp,
+      activeApproval: this.root.ownerDocument.querySelector('[data-jericho-active-approval="true"]') !== null,
+      cancelEnabled: !bothOpenPalmsInsideNucleus,
+    });
+    if (heldActions.length) {
+      this.dispatchContextActions(this.context.cancel());
+      this.coordinator.cancelAll();
+      this.registry.releaseSticky();
+      this.renderer.hideActionRing();
+      for (const action of heldActions) {
+        if (action.type === 'approval-decision') {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
+            detail: { outcome: action.outcome },
+          }));
+        } else {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CANCEL_PENDING_EVENT, {
+            detail: { source: 'both-open-palms' },
+          }));
+        }
+      }
+      this.recordDiagnostics(
+        frame,
+        heldActions.map((action) => ({ channel: 'right', action })),
+        leftTarget?.id ?? null,
+        rightTarget?.id ?? null,
+      );
+      this.updateDiagnosticsPanel();
+      this.renderer.render({
+        right: cursorView(frame.right, rightCursorPoint),
+        left: cursorView(frame.left, leftPoint),
+        status: this.status,
+      });
+      return;
+    }
+
     const coordinated = this.coordinator.update(
       {
-        hand: leftSuppressed ? undefined : frame.left,
+        hand: leftSuppressed || nucleusConsumesBoth ? undefined : frame.left,
         point: leftPoint ? { x: leftPoint.x, y: leftPoint.y / viewport.height } : undefined,
         targetId: leftTarget?.id,
       },
-      { hand: frame.right, point: rightPoint, target: null },
+      { hand: nucleusConsumesRight || nucleusConsumesBoth ? undefined : frame.right, point: rightPoint, target: null },
       frame.timestamp,
     );
     for (const event of coordinated) {
@@ -320,7 +396,7 @@ export class JarvisRuntime {
     }
 
     const contextActions = frame.right?.fresh && rightPoint
-      && !rightSuppressed
+      && !rightSuppressed && !nucleusConsumesRight && !nucleusConsumesBoth
       ? this.context.update({
         point: rightPoint,
         pinching: frame.right.state === 'pinch',
@@ -383,6 +459,29 @@ export class JarvisRuntime {
           break;
       }
     }
+  }
+
+  private dispatchNucleusActions(actions: NucleusGestureAction[]): void {
+    for (const action of actions) {
+      if (action.type === 'depth') {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_NUCLEUS_DEPTH_EVENT, {
+          detail: { delta: action.delta },
+        }));
+        continue;
+      }
+      this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_NUCLEUS_CAMERA_EVENT, {
+        detail: action.phase === 'start'
+          ? { phase: action.phase, point: action.point }
+          : action.phase === 'move'
+            ? { phase: action.phase, point: action.point, delta: action.delta }
+            : { phase: action.phase, cancelled: action.cancelled },
+      }));
+    }
+  }
+
+  private resetSemanticGestures(): void {
+    this.heldGestures.reset();
+    this.dispatchNucleusActions(this.nucleusGestures.reset());
   }
 
   private readonly onKeyDown: EventListener = (event) => {
@@ -457,6 +556,7 @@ export class JarvisRuntime {
     if (this.disposed) return;
     this.dispatchContextActions(this.context.cancel());
     this.coordinator.cancelAll();
+    this.resetSemanticGestures();
     this.registry.releaseSticky();
     this.calibrationHand = handedness;
     this.calibrationIndex = 0;
@@ -539,6 +639,7 @@ export class JarvisRuntime {
   private toggleSwap(): void {
     this.dispatchContextActions(this.context.cancel());
     this.coordinator.cancelAll();
+    this.resetSemanticGestures();
     this.registry.releaseSticky();
     this.suppressUntilPalm.add('Left');
     this.suppressUntilPalm.add('Right');
@@ -603,6 +704,13 @@ function fallbackScreenPoint(hand: TrackedHandFrame, viewport: { width: number; 
     viewport.height,
   );
   return { x: mapped.px, y: mapped.py };
+}
+
+function pointInRect(point: Point, rect: DOMRect): boolean {
+  return point.x >= rect.left
+    && point.x <= rect.right
+    && point.y >= rect.top
+    && point.y <= rect.bottom;
 }
 
 function cursorView(hand?: TrackedHandFrame, point?: Point) {

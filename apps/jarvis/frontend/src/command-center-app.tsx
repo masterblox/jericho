@@ -1,6 +1,8 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type ReactNode,
@@ -19,6 +21,15 @@ import {
 
 import type { CommandCenterStore } from './command-center-store';
 import type { MissionDecisionInput } from './core-client';
+import {
+  JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CANCEL_PENDING_EVENT,
+  JERICHO_NUCLEUS_CAMERA_EVENT,
+  JERICHO_NUCLEUS_DEPTH_EVENT,
+  type ApprovalGestureDetail,
+  type NucleusCameraDetail,
+  type NucleusDepthDetail,
+} from './gesture-events';
 
 export interface CommandCenterClientPort {
   start(): Promise<void>;
@@ -38,6 +49,14 @@ const PIPELINE = [
 ] as const;
 
 type MobileTab = 'today' | 'communications' | 'nucleus' | 'approvals';
+const RELATIONSHIP_TYPES = ['related_to', 'depends_on', 'assigned_to', 'informed_by'] as const;
+type RelationshipType = typeof RELATIONSHIP_TYPES[number];
+
+interface RelationshipDraft {
+  fromNodeId: string;
+  toNodeId: string;
+  relation: RelationshipType;
+}
 
 export function CommandCenterApp({
   store,
@@ -50,6 +69,8 @@ export function CommandCenterApp({
   const [mobileTab, setMobileTab] = useState<MobileTab>('today');
   const [decisionError, setDecisionError] = useState<string>();
   const [decidingAction, setDecidingAction] = useState<string>();
+  const decisionInFlight = useRef(false);
+  const submittedGestureDecisions = useRef(new Set<string>());
 
   useEffect(() => {
     if (!autoStart) return;
@@ -67,6 +88,52 @@ export function CommandCenterApp({
     }
   }, [selectedMissionId, snapshot]);
 
+  const decide = useCallback(async (
+    approval: CommandCenterApproval,
+    action: ActionDescriptor,
+    source: 'button' | 'gesture' = 'button',
+  ) => {
+    if (!action.enabled || decisionInFlight.current) return;
+    if (source === 'button' && action.requiresConfirmation && !window.confirm(`${action.label}: ${approval.title}?`)) return;
+    const gestureKey = `${approval.missionId}:${action.payload.planHash}:${action.payload.version}:${action.payload.outcome}`;
+    if (source === 'gesture' && submittedGestureDecisions.current.has(gestureKey)) return;
+    if (source === 'gesture') submittedGestureDecisions.current.add(gestureKey);
+    decisionInFlight.current = true;
+    setDecisionError(undefined);
+    setDecidingAction(action.id);
+    try {
+      await client.decideMission({
+        missionId: approval.missionId,
+        outcome: action.payload.outcome,
+        planHash: action.payload.planHash,
+        version: action.payload.version,
+        reason: source === 'gesture'
+          ? `${action.payload.outcome === DecisionOutcome.Approved ? 'Approved' : 'Rejected'} by held gesture in Jericho command center`
+          : action.payload.outcome === DecisionOutcome.Approved
+            ? 'Approved from Jericho command center'
+            : 'Rejected from Jericho command center',
+      });
+    } catch (error) {
+      if (source === 'gesture') submittedGestureDecisions.current.delete(gestureKey);
+      setDecisionError(error instanceof Error ? error.message : 'Decision failed');
+    } finally {
+      decisionInFlight.current = false;
+      setDecidingAction(undefined);
+    }
+  }, [client]);
+
+  useEffect(() => {
+    const onApprovalGesture = (event: Event) => {
+      const outcome = (event as CustomEvent<ApprovalGestureDetail>).detail?.outcome;
+      if (outcome !== DecisionOutcome.Approved && outcome !== DecisionOutcome.Rejected) return;
+      const approval = snapshot?.approvals[0];
+      const action = approval?.actions.find((candidate) => candidate.payload.outcome === outcome);
+      if (approval && action) void decide(approval, action, 'gesture');
+    };
+    document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, onApprovalGesture);
+    return () => document.removeEventListener(JERICHO_APPROVAL_GESTURE_EVENT, onApprovalGesture);
+  }, [decide, snapshot]);
+
   if (!snapshot) {
     return (
       <main className="jericho-shell jericho-shell--waiting" id="main">
@@ -82,28 +149,6 @@ export function CommandCenterApp({
   const selectedMission = snapshot.missions.find((mission) => mission.id === selectedMissionId)
     ?? snapshot.missions[0];
 
-  const decide = async (approval: CommandCenterApproval, action: ActionDescriptor) => {
-    if (!action.enabled) return;
-    if (action.requiresConfirmation && !window.confirm(`${action.label}: ${approval.title}?`)) return;
-    setDecisionError(undefined);
-    setDecidingAction(action.id);
-    try {
-      await client.decideMission({
-        missionId: approval.missionId,
-        outcome: action.payload.outcome,
-        planHash: action.payload.planHash,
-        version: action.payload.version,
-        reason: action.payload.outcome === DecisionOutcome.Approved
-          ? 'Approved from Jericho command center'
-          : 'Rejected from Jericho command center',
-      });
-    } catch (error) {
-      setDecisionError(error instanceof Error ? error.message : 'Decision failed');
-    } finally {
-      setDecidingAction(undefined);
-    }
-  };
-
   return (
     <main className="jericho-shell" id="main">
       <a className="jericho-skip-link" href="#jericho-nucleus">Skip to Nucleus</a>
@@ -117,6 +162,15 @@ export function CommandCenterApp({
           <span>{state.status}</span>
           <span>REV {snapshot.lastChangeSequence.toString().padStart(4, '0')}</span>
           <time dateTime={snapshot.generatedAt}>{compactTime(snapshot.generatedAt)}</time>
+          <button
+            type="button"
+            className="jericho-cancel-pending"
+            onClick={() => document.dispatchEvent(new CustomEvent(JERICHO_CANCEL_PENDING_EVENT, {
+              detail: { source: 'keyboard' },
+            }))}
+          >
+            Cancel pending
+          </button>
         </div>
       </header>
 
@@ -183,10 +237,11 @@ export function CommandCenterApp({
           </Section>
 
           <Section title="Approvals" count={snapshot.approvals.length} priority>
-            {snapshot.approvals.length ? snapshot.approvals.map((approval) => (
+            {snapshot.approvals.length ? snapshot.approvals.map((approval, index) => (
               <ApprovalCard
                 key={approval.id}
                 approval={approval}
+                active={index === 0}
                 decidingAction={decidingAction}
                 onDecision={(action) => void decide(approval, action)}
               />
@@ -313,31 +368,160 @@ function Nucleus({
   selectedMission?: CommandCenterMission;
   onSelectMission: (id: string) => void;
 }) {
-  const nodes = useMemo(
+  const sectionRef = useRef<HTMLElement>(null);
+  const allNodes = useMemo(
     () => snapshot.nucleus.nodes.filter((node) => node.verified === true),
     [snapshot.nucleus.nodes],
+  );
+  const verifiedEdges = useMemo(() => {
+    const nodeIds = new Set(allNodes.map((node) => node.id));
+    return snapshot.nucleus.edges.filter((edge) =>
+      edge.verified === true && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
+  }, [allNodes, snapshot.nucleus.edges]);
+  const [semanticDepth, setSemanticDepth] = useState(2);
+  const [cameraOffset, setCameraOffset] = useState({ x: 0, y: 0 });
+  const [cameraClutched, setCameraClutched] = useState(false);
+  const [relationshipFrom, setRelationshipFrom] = useState<string>();
+  const [relationshipTo, setRelationshipTo] = useState<string>();
+  const [relationshipType, setRelationshipType] = useState<RelationshipType>('related_to');
+  const [relationshipDraft, setRelationshipDraft] = useState<RelationshipDraft>();
+  const dragSource = useRef<string | undefined>(undefined);
+  const rootNodeId = allNodes.find((node) =>
+    node.recordType === 'mission' && node.recordId === selectedMission?.id)?.id ?? allNodes[0]?.id;
+  const visibleIds = useMemo(
+    () => semanticNeighborhood(rootNodeId, semanticDepth, allNodes.map((node) => node.id), verifiedEdges),
+    [allNodes, rootNodeId, semanticDepth, verifiedEdges],
+  );
+  const nodes = useMemo(
+    () => allNodes.filter((node) => visibleIds.has(node.id)),
+    [allNodes, visibleIds],
   );
   const positions = useMemo(() => new Map(nodes.map((node, index) => [
     node.id,
     nodePosition(index, nodes.length),
   ])), [nodes]);
   const nodeIds = new Set(nodes.map((node) => node.id));
-  const edges = snapshot.nucleus.edges.filter((edge) =>
-    edge.verified === true && nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId),
-  );
+  const edges = verifiedEdges.filter((edge) =>
+    nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
+  const selectedFrom = relationshipFrom ?? allNodes[0]?.id ?? '';
+  const selectedTo = relationshipTo
+    ?? allNodes.find((node) => node.id !== selectedFrom)?.id
+    ?? '';
+
+  const previewRelationship = useCallback((fromNodeId: string, toNodeId: string) => {
+    if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+    setRelationshipFrom(fromNodeId);
+    setRelationshipTo(toNodeId);
+    setRelationshipDraft({ fromNodeId, toNodeId, relation: relationshipType });
+  }, [relationshipType]);
+
+  useEffect(() => {
+    const onDepth = (event: Event) => {
+      const delta = (event as CustomEvent<NucleusDepthDetail>).detail?.delta;
+      if (delta !== -1 && delta !== 1) return;
+      setSemanticDepth((current) => clamp(current + delta, 0, 4));
+    };
+    const onCamera = (event: Event) => {
+      const detail = (event as CustomEvent<NucleusCameraDetail>).detail;
+      if (!detail) return;
+      if (detail.phase === 'start') setCameraClutched(true);
+      if (detail.phase === 'move') {
+        setCameraOffset((current) => ({
+          x: clamp(current.x + detail.delta.x, -240, 240),
+          y: clamp(current.y + detail.delta.y, -160, 160),
+        }));
+      }
+      if (detail.phase === 'end') setCameraClutched(false);
+    };
+    const onCancel = () => {
+      dragSource.current = undefined;
+      setRelationshipDraft(undefined);
+      setCameraClutched(false);
+    };
+    document.addEventListener(JERICHO_NUCLEUS_DEPTH_EVENT, onDepth);
+    document.addEventListener(JERICHO_NUCLEUS_CAMERA_EVENT, onCamera);
+    document.addEventListener(JERICHO_CANCEL_PENDING_EVENT, onCancel);
+    return () => {
+      document.removeEventListener(JERICHO_NUCLEUS_DEPTH_EVENT, onDepth);
+      document.removeEventListener(JERICHO_NUCLEUS_CAMERA_EVENT, onCamera);
+      document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, onCancel);
+    };
+  }, []);
+
+  useEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    const onDragStart = (event: Event) => {
+      const source = nucleusNodeId((event as CustomEvent).detail?.targetId);
+      if (source) dragSource.current = source;
+    };
+    const onDragEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail as {
+        point?: { x: number; y: number };
+        cancelled?: boolean;
+      } | undefined;
+      const source = dragSource.current;
+      dragSource.current = undefined;
+      if (!source || detail?.cancelled || !detail?.point) return;
+      const destination = nucleusNodeAtPoint(document, detail.point);
+      if (destination) previewRelationship(source, destination);
+    };
+    section.addEventListener('jericho:drag-start', onDragStart);
+    section.addEventListener('jericho:drag-end', onDragEnd);
+    return () => {
+      section.removeEventListener('jericho:drag-start', onDragStart);
+      section.removeEventListener('jericho:drag-end', onDragEnd);
+    };
+  }, [previewRelationship]);
+
+  useEffect(() => {
+    if (!relationshipDraft) return;
+    setRelationshipDraft((current) => current ? { ...current, relation: relationshipType } : current);
+  }, [relationshipType]);
+
+  const draftFrom = relationshipDraft ? positions.get(relationshipDraft.fromNodeId) : undefined;
+  const draftTo = relationshipDraft ? positions.get(relationshipDraft.toNodeId) : undefined;
   return (
-    <section className="jericho-nucleus" id="jericho-nucleus">
-      <div className="jericho-section-heading"><h2>Nucleus</h2><span>VERIFIED GRAPH</span></div>
+    <section className="jericho-nucleus" id="jericho-nucleus" ref={sectionRef}>
+      <div className="jericho-section-heading"><h2>Nucleus</h2><span>VERIFIED GRAPH · D{semanticDepth}</span></div>
+      <div className="jericho-nucleus-toolbar" aria-label="Nucleus keyboard controls">
+        <div role="group" aria-label="Semantic graph depth">
+          <button type="button" aria-label="Decrease semantic depth" disabled={semanticDepth === 0} onClick={() => setSemanticDepth((depth) => Math.max(0, depth - 1))}>Depth −</button>
+          <output aria-live="polite">Semantic depth {semanticDepth}</output>
+          <button type="button" aria-label="Increase semantic depth" disabled={semanticDepth === 4} onClick={() => setSemanticDepth((depth) => Math.min(4, depth + 1))}>Depth +</button>
+        </div>
+        <div role="group" aria-label="Graph camera">
+          <button type="button" aria-label="Pan graph left" onClick={() => setCameraOffset((point) => ({ ...point, x: point.x - 24 }))}>←</button>
+          <button type="button" aria-label="Pan graph up" onClick={() => setCameraOffset((point) => ({ ...point, y: point.y - 24 }))}>↑</button>
+          <button type="button" aria-label="Reset graph camera" onClick={() => setCameraOffset({ x: 0, y: 0 })}>Center</button>
+          <button type="button" aria-label="Pan graph down" onClick={() => setCameraOffset((point) => ({ ...point, y: point.y + 24 }))}>↓</button>
+          <button type="button" aria-label="Pan graph right" onClick={() => setCameraOffset((point) => ({ ...point, x: point.x + 24 }))}>→</button>
+        </div>
+      </div>
+      <div
+        className={`jericho-nucleus-viewport${cameraClutched ? ' is-clutched' : ''}`}
+        data-jericho-nucleus-space="true"
+      >
       {!nodes.length ? <EmptyState /> : (
-        <svg viewBox="0 0 720 390" role="img" aria-label="Verified semantic and activity graph">
+        <svg viewBox="0 0 720 390" role="group" aria-label="Verified semantic and activity graph">
           <defs>
             <radialGradient id="jericho-node-glow"><stop offset="0" stopColor="#c7fbff" /><stop offset="1" stopColor="#4fd6de" /></radialGradient>
           </defs>
+          <g transform={`translate(${cameraOffset.x} ${cameraOffset.y})`}>
           {edges.map((edge) => {
             const from = positions.get(edge.fromNodeId)!;
             const to = positions.get(edge.toNodeId)!;
             return <line key={edge.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} className="jericho-nucleus-edge" />;
           })}
+          {draftFrom && draftTo && (
+            <line
+              x1={draftFrom.x}
+              y1={draftFrom.y}
+              x2={draftTo.x}
+              y2={draftTo.y}
+              className="jericho-nucleus-edge jericho-nucleus-edge--draft"
+            />
+          )}
           {snapshot.nucleus.activityPulses.filter((pulse) => pulse.verified && pulse.nodeId && nodeIds.has(pulse.nodeId)).map((pulse) => {
             const point = positions.get(pulse.nodeId!)!;
             return <circle key={pulse.id} cx={point.x} cy={point.y} r="28" className="jericho-activity-pulse"><title>{pulse.label}</title></circle>;
@@ -352,6 +536,9 @@ function Nucleus({
                 role="button"
                 tabIndex={0}
                 data-gesture-target={`nucleus:${node.id}`}
+                data-gesture-draggable="true"
+                data-jericho-nucleus-node={node.id}
+                aria-label={`${node.label}, ${node.kind}`}
                 onClick={() => node.recordType === 'mission' && onSelectMission(node.recordId)}
                 onKeyDown={(event) => {
                   if ((event.key === 'Enter' || event.key === ' ') && node.recordType === 'mission') {
@@ -365,7 +552,32 @@ function Nucleus({
               </g>
             );
           })}
+          </g>
         </svg>
+      )}
+      </div>
+      <form className="jericho-relationship-draft" onSubmit={(event) => {
+        event.preventDefault();
+        previewRelationship(selectedFrom, selectedTo);
+      }}>
+        <span>LOCAL RELATIONSHIP WORKBENCH</span>
+        <label>From<select aria-label="Relationship source" value={selectedFrom} onChange={(event) => setRelationshipFrom(event.target.value)}>
+          {allNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
+        </select></label>
+        <label>Type<select aria-label="Relationship type" value={relationshipType} onChange={(event) => setRelationshipType(event.target.value as RelationshipType)}>
+          {RELATIONSHIP_TYPES.map((relation) => <option key={relation} value={relation}>{relation.replaceAll('_', ' ')}</option>)}
+        </select></label>
+        <label>To<select aria-label="Relationship destination" value={selectedTo} onChange={(event) => setRelationshipTo(event.target.value)}>
+          {allNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
+        </select></label>
+        <button type="submit" disabled={!selectedFrom || !selectedTo || selectedFrom === selectedTo}>Preview relationship</button>
+      </form>
+      {relationshipDraft && (
+        <aside className="jericho-relationship-preview" aria-live="polite">
+          <strong>LOCAL PREVIEW · NOT SAVED</strong>
+          <span>{nodeLabel(allNodes, relationshipDraft.fromNodeId)} —[{relationshipDraft.relation}]→ {nodeLabel(allNodes, relationshipDraft.toNodeId)}</span>
+          <button type="button" onClick={() => setRelationshipDraft(undefined)}>Discard preview</button>
+        </aside>
       )}
     </section>
   );
@@ -398,15 +610,21 @@ function MissionTimeline({ mission }: { mission?: CommandCenterMission }) {
 
 function ApprovalCard({
   approval,
+  active,
   decidingAction,
   onDecision,
 }: {
   approval: CommandCenterApproval;
+  active: boolean;
   decidingAction?: string;
   onDecision: (action: ActionDescriptor) => void;
 }) {
   return (
-    <article className="jericho-approval-card" data-gesture-target={`approval:${approval.id}`}>
+    <article
+      className="jericho-approval-card"
+      data-gesture-target={`approval:${approval.id}`}
+      data-jericho-active-approval={active ? 'true' : undefined}
+    >
       <div className="jericho-approval-title"><div><span>{approval.risk} RISK</span><h3>{approval.title}</h3></div><strong>V{approval.version}</strong></div>
       <p>{approval.objective}</p>
       <dl>
@@ -487,6 +705,64 @@ function nodePosition(index: number, count: number) {
   const radiusX = 230 + (index % 2) * 34;
   const radiusY = 118 + ((index + 1) % 2) * 18;
   return { x: 360 + Math.cos(angle) * radiusX, y: 190 + Math.sin(angle) * radiusY };
+}
+
+function semanticNeighborhood(
+  rootNodeId: string | undefined,
+  depth: number,
+  nodeIds: string[],
+  edges: CommandCenterSnapshot['nucleus']['edges'],
+): Set<string> {
+  if (!rootNodeId) return new Set();
+  const known = new Set(nodeIds);
+  if (!known.has(rootNodeId)) return new Set();
+  const adjacency = new Map<string, Set<string>>();
+  for (const nodeId of known) adjacency.set(nodeId, new Set());
+  for (const edge of edges) {
+    adjacency.get(edge.fromNodeId)?.add(edge.toNodeId);
+    adjacency.get(edge.toNodeId)?.add(edge.fromNodeId);
+  }
+  const visible = new Set([rootNodeId]);
+  let frontier = [rootNodeId];
+  for (let level = 0; level < depth && frontier.length; level += 1) {
+    const next: string[] = [];
+    for (const nodeId of frontier) {
+      for (const adjacent of adjacency.get(nodeId) ?? []) {
+        if (visible.has(adjacent)) continue;
+        visible.add(adjacent);
+        next.push(adjacent);
+      }
+    }
+    frontier = next;
+  }
+  return visible;
+}
+
+function nucleusNodeId(targetId: unknown): string | undefined {
+  if (typeof targetId !== 'string' || !targetId.startsWith('nucleus:')) return undefined;
+  const nodeId = targetId.slice('nucleus:'.length);
+  return nodeId || undefined;
+}
+
+function nucleusNodeAtPoint(ownerDocument: Document, point: { x: number; y: number }): string | undefined {
+  if (typeof ownerDocument.elementsFromPoint !== 'function') return undefined;
+  for (const element of ownerDocument.elementsFromPoint(point.x, point.y)) {
+    const node = element.closest<SVGElement>('[data-jericho-nucleus-node]');
+    const nodeId = node?.dataset.jerichoNucleusNode;
+    if (nodeId) return nodeId;
+  }
+  return undefined;
+}
+
+function nodeLabel(
+  nodes: CommandCenterSnapshot['nucleus']['nodes'],
+  nodeId: string,
+): string {
+  return nodes.find((node) => node.id === nodeId)?.label ?? nodeId;
+}
+
+function clamp(value: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, value));
 }
 
 function compactTime(value: string) {

@@ -1,0 +1,208 @@
+import type { TrackedHandFrame } from './hand-tracks';
+import type { Point } from './tracking';
+
+export const GESTURE_HOLD_MS = 700;
+export const GESTURE_DEBOUNCE_MS = 900;
+export const NUCLEUS_DEPTH_HOLD_MS = 700;
+export const NUCLEUS_DEPTH_STEP_PX = 72;
+export const NUCLEUS_DEPTH_DEBOUNCE_MS = 240;
+
+export type HeldGestureAction =
+  | { type: 'approval-decision'; outcome: 'approved' | 'rejected' }
+  | { type: 'cancel-pending' };
+
+export interface HeldGestureInput {
+  left?: TrackedHandFrame;
+  right?: TrackedHandFrame;
+  now: number;
+  activeApproval: boolean;
+  cancelEnabled: boolean;
+}
+
+type Candidate = 'approve' | 'reject' | 'cancel';
+
+/** Deterministic recognition only: callers own every resulting side effect. */
+export class HeldGestureInterpreter {
+  private candidate: Candidate | null = null;
+  private candidateSince = 0;
+  private latched = false;
+  private lastFiredAt = Number.NEGATIVE_INFINITY;
+
+  update(input: HeldGestureInput): HeldGestureAction[] {
+    const candidate = classify(input);
+    if (!candidate) {
+      this.candidate = null;
+      this.latched = false;
+      return [];
+    }
+    if (candidate !== this.candidate) {
+      this.candidate = candidate;
+      this.candidateSince = input.now;
+      this.latched = false;
+      return [];
+    }
+    if (
+      this.latched
+      || input.now - this.candidateSince < GESTURE_HOLD_MS
+      || input.now - this.lastFiredAt < GESTURE_DEBOUNCE_MS
+    ) return [];
+
+    this.latched = true;
+    this.lastFiredAt = input.now;
+    if (candidate === 'cancel') return [{ type: 'cancel-pending' }];
+    return [{
+      type: 'approval-decision',
+      outcome: candidate === 'approve' ? 'approved' : 'rejected',
+    }];
+  }
+
+  reset(): void {
+    this.candidate = null;
+    this.candidateSince = 0;
+    this.latched = false;
+    this.lastFiredAt = Number.NEGATIVE_INFINITY;
+  }
+}
+
+function classify(input: HeldGestureInput): Candidate | null {
+  if (
+    input.cancelEnabled
+    && isFreshGesture(input.left, 'Open_Palm')
+    && isFreshGesture(input.right, 'Open_Palm')
+  ) return 'cancel';
+
+  if (!input.activeApproval) return null;
+  const thumbs = [input.left, input.right]
+    .filter((hand): hand is TrackedHandFrame => hand?.fresh === true)
+    .map((hand) => hand.recognizedGesture)
+    .filter((gesture): gesture is 'Thumb_Up' | 'Thumb_Down' =>
+      gesture === 'Thumb_Up' || gesture === 'Thumb_Down');
+  if (!thumbs.length || new Set(thumbs).size !== 1) return null;
+  return thumbs[0] === 'Thumb_Up' ? 'approve' : 'reject';
+}
+
+function isFreshGesture(hand: TrackedHandFrame | undefined, gesture: string): boolean {
+  return hand?.fresh === true && hand.recognizedGesture === gesture;
+}
+
+export type NucleusGestureAction =
+  | { type: 'camera'; phase: 'start'; point: Point }
+  | { type: 'camera'; phase: 'move'; point: Point; delta: Point }
+  | { type: 'camera'; phase: 'end'; cancelled: boolean }
+  | { type: 'depth'; delta: -1 | 1 };
+
+export interface NucleusGestureInput {
+  left?: TrackedHandFrame;
+  right?: TrackedHandFrame;
+  leftPoint?: Point;
+  rightPoint?: Point;
+  rightOnEmptyNucleus: boolean;
+  bothHandsInsideNucleus: boolean;
+  now: number;
+}
+
+/**
+ * Pure, context-gated Nucleus grammar. A right pinch can clutch the camera
+ * only when its edge starts over empty graph space. Two open palms must stay
+ * inside Nucleus for a hold period before span changes become depth steps.
+ */
+export class NucleusGestureInterpreter {
+  private previousRightPinching = false;
+  private cameraPoint: Point | null = null;
+  private depthCandidateSince: number | null = null;
+  private depthAnchorSpan: number | null = null;
+  private lastDepthAt = Number.NEGATIVE_INFINITY;
+
+  update(input: NucleusGestureInput): NucleusGestureAction[] {
+    const actions: NucleusGestureAction[] = [];
+    const rightPinching = input.right?.fresh === true
+      && input.right.state === 'pinch'
+      && Boolean(input.rightPoint);
+    const pinchStarted = rightPinching && !this.previousRightPinching;
+
+    if (this.cameraPoint) {
+      if (rightPinching && input.rightPoint) {
+        const point = { ...input.rightPoint };
+        const delta = subtract(point, this.cameraPoint);
+        this.cameraPoint = point;
+        if (delta.x !== 0 || delta.y !== 0) {
+          actions.push({ type: 'camera', phase: 'move', point, delta });
+        }
+      } else {
+        const cancelled = input.right?.fresh !== true;
+        this.cameraPoint = null;
+        actions.push({ type: 'camera', phase: 'end', cancelled });
+      }
+    } else if (pinchStarted && input.rightOnEmptyNucleus && input.rightPoint) {
+      this.cameraPoint = { ...input.rightPoint };
+      actions.push({ type: 'camera', phase: 'start', point: { ...input.rightPoint } });
+    }
+    this.previousRightPinching = rightPinching;
+
+    const depthActive = !this.cameraPoint
+      && input.bothHandsInsideNucleus
+      && isFreshGesture(input.left, 'Open_Palm')
+      && isFreshGesture(input.right, 'Open_Palm')
+      && Boolean(input.leftPoint)
+      && Boolean(input.rightPoint);
+    if (!depthActive || !input.leftPoint || !input.rightPoint) {
+      this.resetDepth();
+      return actions;
+    }
+
+    const span = distance(input.leftPoint, input.rightPoint);
+    if (this.depthCandidateSince === null) {
+      this.depthCandidateSince = input.now;
+      this.depthAnchorSpan = span;
+      return actions;
+    }
+    if (input.now - this.depthCandidateSince < NUCLEUS_DEPTH_HOLD_MS) return actions;
+    if (this.depthAnchorSpan === null) {
+      this.depthAnchorSpan = span;
+      return actions;
+    }
+
+    const spanDelta = span - this.depthAnchorSpan;
+    if (
+      Math.abs(spanDelta) >= NUCLEUS_DEPTH_STEP_PX
+      && input.now - this.lastDepthAt >= NUCLEUS_DEPTH_DEBOUNCE_MS
+    ) {
+      const delta = Math.sign(spanDelta) as -1 | 1;
+      this.depthAnchorSpan = span;
+      this.lastDepthAt = input.now;
+      actions.push({ type: 'depth', delta });
+    }
+    return actions;
+  }
+
+  isCameraActive(): boolean {
+    return this.cameraPoint !== null;
+  }
+
+  isDepthActive(): boolean {
+    return this.depthCandidateSince !== null;
+  }
+
+  reset(): NucleusGestureAction[] {
+    const actions: NucleusGestureAction[] = this.cameraPoint
+      ? [{ type: 'camera', phase: 'end', cancelled: true }]
+      : [];
+    this.previousRightPinching = false;
+    this.cameraPoint = null;
+    this.resetDepth();
+    return actions;
+  }
+
+  private resetDepth(): void {
+    this.depthCandidateSince = null;
+    this.depthAnchorSpan = null;
+  }
+}
+
+function subtract(point: Point, origin: Point): Point {
+  return { x: point.x - origin.x, y: point.y - origin.y };
+}
+
+function distance(left: Point, right: Point): number {
+  return Math.hypot(right.x - left.x, right.y - left.y);
+}

@@ -5,6 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { GestureTargetRegistry } from '../src/gesture-target-registry';
 import { mapHandToScreen } from '../src/coords';
 import {
+  JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CANCEL_PENDING_EVENT,
+  JERICHO_NUCLEUS_CAMERA_EVENT,
+  JERICHO_NUCLEUS_DEPTH_EVENT,
+} from '../src/gesture-events';
+import {
+  GESTURE_HOLD_MS,
+  NUCLEUS_DEPTH_HOLD_MS,
+} from '../src/gesture-grammar';
+import {
   createCalibrationProfile,
   loadCalibration,
   saveCalibration,
@@ -260,6 +270,109 @@ describe('JarvisRuntime lifecycle', () => {
     expect(JSON.parse(contents)).toMatchObject({ version: 2, snapshots: [{ hands: [{ state: 'pinch' }] }] });
     expect(contents).not.toMatch(/landmarks|palmAnchor|smoothedAnchor|transcript|payload/);
   });
+
+  it('dispatches one semantic held-thumb decision only when React exposes an active approval', async () => {
+    const harness = createHarness();
+    const approval = document.createElement('article');
+    approval.dataset.jerichoActiveApproval = 'true';
+    harness.root.append(approval);
+    const decisions: unknown[] = [];
+    const listener = (event: Event) => decisions.push((event as CustomEvent).detail);
+    document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, listener);
+    await harness.runtime.engage();
+
+    const thumbUp = tracked('Right', 'idle', 0.5, 0.5, 'Thumb_Up');
+    harness.emit(frame(0, undefined, thumbUp));
+    harness.emit(frame(GESTURE_HOLD_MS, undefined, thumbUp));
+    harness.emit(frame(GESTURE_HOLD_MS + 300, undefined, thumbUp));
+    expect(decisions).toEqual([{ outcome: 'approved' }]);
+
+    approval.remove();
+    harness.emit(frame(GESTURE_HOLD_MS + 400, undefined, tracked('Right', 'idle', 0.5, 0.5, 'None')));
+    const thumbDown = tracked('Right', 'idle', 0.5, 0.5, 'Thumb_Down');
+    harness.emit(frame(GESTURE_HOLD_MS + 500, undefined, thumbDown));
+    harness.emit(frame(GESTURE_HOLD_MS * 2 + 500, undefined, thumbDown));
+    expect(decisions).toHaveLength(1);
+    document.removeEventListener(JERICHO_APPROVAL_GESTURE_EVENT, listener);
+  });
+
+  it('dispatches one semantic cancellation after both fresh open palms are held', async () => {
+    const harness = createHarness();
+    const cancellations: unknown[] = [];
+    const listener = (event: Event) => cancellations.push((event as CustomEvent).detail);
+    document.addEventListener(JERICHO_CANCEL_PENDING_EVENT, listener);
+    await harness.runtime.engage();
+    const left = tracked('Left', 'palm', 0.35, 0.5, 'Open_Palm');
+    const right = tracked('Right', 'palm', 0.65, 0.5, 'Open_Palm');
+
+    harness.emit(frame(0, left, right));
+    harness.emit(frame(GESTURE_HOLD_MS, left, right));
+    harness.emit(frame(GESTURE_HOLD_MS + 200, left, right));
+
+    expect(cancellations).toEqual([{ source: 'both-open-palms' }]);
+    expect(harness.renderer.hideActionRing).toHaveBeenCalled();
+    document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, listener);
+  });
+
+  it('clutches the camera only from empty Nucleus space and emits local semantic deltas', async () => {
+    const harness = createHarness({ viewport: () => ({ width: 1_000, height: 1_000 }) });
+    const nucleus = nucleusSpace(harness.root);
+    const camera: unknown[] = [];
+    const listener = (event: Event) => camera.push((event as CustomEvent).detail);
+    document.addEventListener(JERICHO_NUCLEUS_CAMERA_EVENT, listener);
+    await harness.runtime.engage();
+
+    harness.emit(frame(0, undefined, tracked('Right', 'pinch', 0.5, 0.5)));
+    harness.emit(frame(20, undefined, tracked('Right', 'pinch', 0.55, 0.48)));
+    harness.emit(frame(40, undefined, tracked('Right', 'idle', 0.55, 0.48, 'None')));
+
+    expect(camera).toEqual([
+      { phase: 'start', point: expect.any(Object) },
+      { phase: 'move', point: expect.any(Object), delta: expect.any(Object) },
+      { phase: 'end', cancelled: false },
+    ]);
+    expect((camera[1] as { delta: { x: number } }).delta.x).not.toBe(0);
+
+    const node = document.createElement('button');
+    nucleus.append(node);
+    vi.spyOn(node, 'getBoundingClientRect').mockReturnValue(nucleus.getBoundingClientRect());
+    harness.registry.register({ id: 'nucleus:node', element: node, draggable: true });
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      value: vi.fn().mockReturnValue([node]),
+    });
+    harness.emit(frame(60, undefined, tracked('Right', 'pinch', 0.5, 0.5)));
+    harness.emit(frame(80, undefined, tracked('Right', 'idle', 0.5, 0.5, 'None')));
+    expect(camera).toHaveLength(3);
+    document.removeEventListener(JERICHO_NUCLEUS_CAMERA_EVENT, listener);
+  });
+
+  it('routes two palms inside Nucleus to semantic depth without firing global cancel', async () => {
+    const harness = createHarness({ viewport: () => ({ width: 1_000, height: 1_000 }) });
+    nucleusSpace(harness.root);
+    const depths: unknown[] = [];
+    const cancellations: unknown[] = [];
+    const depthListener = (event: Event) => depths.push((event as CustomEvent).detail);
+    const cancelListener = (event: Event) => cancellations.push((event as CustomEvent).detail);
+    document.addEventListener(JERICHO_NUCLEUS_DEPTH_EVENT, depthListener);
+    document.addEventListener(JERICHO_CANCEL_PENDING_EVENT, cancelListener);
+    await harness.runtime.engage();
+    const left = tracked('Left', 'palm', 0.42, 0.5, 'Open_Palm');
+    const right = tracked('Right', 'palm', 0.58, 0.5, 'Open_Palm');
+
+    harness.emit(frame(0, left, right));
+    harness.emit(frame(NUCLEUS_DEPTH_HOLD_MS, left, right));
+    harness.emit(frame(
+      NUCLEUS_DEPTH_HOLD_MS + 300,
+      left,
+      tracked('Right', 'palm', 0.72, 0.5, 'Open_Palm'),
+    ));
+
+    expect(depths).toEqual([{ delta: 1 }]);
+    expect(cancellations).toEqual([]);
+    document.removeEventListener(JERICHO_NUCLEUS_DEPTH_EVENT, depthListener);
+    document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, cancelListener);
+  });
 });
 
 function createHarness(options: {
@@ -327,6 +440,17 @@ function appRoot() {
   return root;
 }
 
+function nucleusSpace(root: HTMLElement): HTMLElement {
+  const nucleus = document.createElement('div');
+  nucleus.dataset.jerichoNucleusSpace = 'true';
+  vi.spyOn(nucleus, 'getBoundingClientRect').mockReturnValue({
+    left: 0, top: 0, right: 1_000, bottom: 1_000,
+    width: 1_000, height: 1_000, x: 0, y: 0, toJSON: () => ({}),
+  });
+  root.append(nucleus);
+  return nucleus;
+}
+
 function fakeVideo(): RuntimeVideoPort {
   return {
     srcObject: null,
@@ -384,11 +508,12 @@ function tracked(
   state: 'idle' | 'palm' | 'pinch',
   x: number,
   y: number,
+  recognizedGesture = state === 'palm' ? 'Open_Palm' : 'None',
 ): TrackedHandFrame {
   return {
     trackId: handedness === 'Left' ? 1 : 2,
     handedness, handednessConfidence: 1, rawHandedness: handedness,
-    rawHandednessConfidence: 1, state, recognizedGesture: state === 'palm' ? 'Open_Palm' : 'None',
+    rawHandednessConfidence: 1, state, recognizedGesture,
     gestureConfidence: 1, confidence: 1,
     landmarks: Array.from({ length: 21 }, () => ({ x, y, z: 0 })),
     palmAnchor: { x, y }, smoothedAnchor: { x, y }, velocity: { x: 0, y: 0 },

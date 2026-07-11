@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -25,6 +25,11 @@ import {
 
 import { CommandCenterApp } from '../src/command-center-app';
 import { CommandCenterStore } from '../src/command-center-store';
+import { JERICHO_APPROVAL_GESTURE_EVENT } from '../src/gesture-events';
+import {
+  JERICHO_NUCLEUS_CAMERA_EVENT,
+  JERICHO_NUCLEUS_DEPTH_EVENT,
+} from '../src/gesture-events';
 
 afterEach(() => {
   cleanup();
@@ -79,6 +84,39 @@ describe('CommandCenterApp', () => {
     });
   });
 
+  it('uses a semantic approval gesture once with the displayed plan scope and no second confirmation', async () => {
+    const store = new CommandCenterStore();
+    store.replace(populatedSnapshot());
+    const decideMission = vi.fn().mockResolvedValue({});
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    render(<CommandCenterApp store={store} client={{ start: vi.fn(), stop: vi.fn(), decideMission }} autoStart={false} />);
+    const activeApproval = screen.getByText('a'.repeat(64)).closest('article');
+    expect(activeApproval?.dataset.jerichoActiveApproval).toBe('true');
+
+    act(() => {
+      document.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
+        detail: { outcome: DecisionOutcome.Approved },
+      }));
+    });
+    await waitFor(() => expect(decideMission).toHaveBeenCalledTimes(1));
+    expect(decideMission).toHaveBeenCalledWith({
+      missionId: 'mission-1',
+      outcome: DecisionOutcome.Approved,
+      planHash: 'a'.repeat(64),
+      version: 3,
+      reason: 'Approved by held gesture in Jericho command center',
+    });
+    expect(confirm).not.toHaveBeenCalled();
+
+    act(() => {
+      document.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
+        detail: { outcome: DecisionOutcome.Approved },
+      }));
+    });
+    expect(decideMission).toHaveBeenCalledTimes(1);
+  });
+
   it('renders missing timeline attribution explicitly without inventing an actor', () => {
     const store = new CommandCenterStore();
     store.replace(populatedSnapshot());
@@ -93,6 +131,92 @@ describe('CommandCenterApp', () => {
     expect(screen.getByText('Unknown reason')).toBeTruthy();
     expect(screen.getByText('Unknown provenance')).toBeTruthy();
     expect(screen.queryByText('Jericho')).toBeNull();
+  });
+
+  it('applies semantic BFS depth and camera controls only to the local Nucleus view', () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    const at = snapshot.generatedAt;
+    snapshot.nucleus.nodes.push({
+      id: 'node-research', kind: NucleusNodeKind.Agent, recordType: 'agent', recordId: 'research',
+      label: 'Research', updatedAt: at, evidenceEventIds: ['event-plan-1'], verified: true,
+    });
+    snapshot.nucleus.edges.push({
+      id: 'edge-research', fromNodeId: 'node-research', toNodeId: 'node-dev', relation: 'supports',
+      evidenceEventIds: ['event-plan-1'], verified: true,
+    });
+    store.replace(snapshot);
+
+    const { container } = render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn() }}
+      autoStart={false}
+    />);
+    expect(screen.getByLabelText('Research, agent')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Decrease semantic depth' }));
+    expect(screen.queryByLabelText('Research, agent')).toBeNull();
+    expect(screen.getByText('Semantic depth 1')).toBeTruthy();
+
+    act(() => document.dispatchEvent(new CustomEvent(JERICHO_NUCLEUS_DEPTH_EVENT, {
+      detail: { delta: 1 },
+    })));
+    expect(screen.getByLabelText('Research, agent')).toBeTruthy();
+
+    act(() => document.dispatchEvent(new CustomEvent(JERICHO_NUCLEUS_CAMERA_EVENT, {
+      detail: { phase: 'start', point: { x: 300, y: 200 } },
+    })));
+    expect(container.querySelector('.jericho-nucleus-viewport')?.classList.contains('is-clutched')).toBe(true);
+    act(() => document.dispatchEvent(new CustomEvent(JERICHO_NUCLEUS_CAMERA_EVENT, {
+      detail: { phase: 'end', cancelled: false },
+    })));
+    expect(container.querySelector('.jericho-nucleus-viewport')?.classList.contains('is-clutched')).toBe(false);
+  });
+
+  it('previews typed relationships locally from keyboard or gesture and never mutates verified truth', () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    store.replace(snapshot);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn() }}
+      autoStart={false}
+    />);
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Relationship source' }), {
+      target: { value: 'node-dev' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Relationship destination' }), {
+      target: { value: 'node-mission' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Relationship type' }), {
+      target: { value: 'informed_by' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview relationship' }));
+    expect(screen.getByText('LOCAL PREVIEW · NOT SAVED')).toBeTruthy();
+    expect(screen.getByText('DEV —[informed_by]→ Deploy bounded Core')).toBeTruthy();
+    expect(snapshot.nucleus.edges).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel pending' }));
+    expect(screen.queryByText('LOCAL PREVIEW · NOT SAVED')).toBeNull();
+
+    const source = screen.getByLabelText('Deploy bounded Core, mission');
+    const destination = screen.getByLabelText('DEV, agent');
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true,
+      value: vi.fn().mockReturnValue([destination]),
+    });
+    act(() => source.dispatchEvent(new CustomEvent('jericho:drag-start', {
+      bubbles: true,
+      detail: { targetId: 'nucleus:node-mission', point: { x: 100, y: 100 } },
+    })));
+    act(() => source.dispatchEvent(new CustomEvent('jericho:drag-end', {
+      bubbles: true,
+      detail: { targetId: 'nucleus:node-mission', point: { x: 200, y: 200 }, cancelled: false },
+    })));
+    expect(screen.getByText('Deploy bounded Core —[informed_by]→ DEV')).toBeTruthy();
+    expect(snapshot.nucleus.edges).toHaveLength(1);
   });
 
   it('renders honest loading, unavailable, disconnected, and empty states without fabricated fallback data', () => {

@@ -499,6 +499,74 @@ a:focus-visible {
     rgba(3, 8, 11, 0.92);
 }
 
+.jericho-nucleus-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.jericho-nucleus-toolbar [role="group"] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.jericho-nucleus-toolbar button,
+.jericho-relationship-draft button,
+.jericho-relationship-preview button,
+.jericho-cancel-pending {
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--jericho-rule);
+  background: rgba(119, 215, 220, 0.04);
+  color: var(--jericho-muted);
+  cursor: pointer;
+  font-size: 8px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.jericho-nucleus-toolbar button:hover,
+.jericho-nucleus-toolbar button:focus-visible,
+.jericho-relationship-draft button:hover,
+.jericho-relationship-draft button:focus-visible,
+.jericho-relationship-preview button:hover,
+.jericho-relationship-preview button:focus-visible,
+.jericho-cancel-pending:hover,
+.jericho-cancel-pending:focus-visible {
+  border-color: var(--jericho-cyan-hot);
+  color: var(--jericho-cyan-hot);
+}
+
+.jericho-nucleus-toolbar button:disabled,
+.jericho-relationship-draft button:disabled {
+  cursor: not-allowed;
+  opacity: 0.38;
+}
+
+.jericho-nucleus-toolbar output {
+  min-width: 104px;
+  color: var(--jericho-cyan);
+  font-size: 8px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.jericho-nucleus-viewport {
+  overflow: hidden;
+  border: 1px solid transparent;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+
+.jericho-nucleus-viewport.is-clutched {
+  border-color: var(--jericho-amber);
+  box-shadow: inset 0 0 32px rgba(228, 179, 106, 0.08);
+  cursor: grabbing;
+}
+
 .jericho-nucleus svg {
   display: block;
   width: 100%;
@@ -510,6 +578,13 @@ a:focus-visible {
   stroke: rgba(119, 215, 220, 0.34);
   stroke-width: 1;
   vector-effect: non-scaling-stroke;
+}
+
+.jericho-nucleus-edge--draft {
+  stroke: var(--jericho-amber);
+  stroke-width: 2;
+  stroke-dasharray: 7 5;
+  opacity: 0.92;
 }
 
 .jericho-activity-pulse {
@@ -548,6 +623,67 @@ a:focus-visible {
 
 .jericho-nucleus-node.selected text {
   fill: var(--jericho-cyan-hot);
+}
+
+.jericho-relationship-draft {
+  display: grid;
+  grid-template-columns: auto minmax(90px, 1fr) minmax(100px, 1fr) minmax(90px, 1fr) auto;
+  align-items: end;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--jericho-rule);
+}
+
+.jericho-relationship-draft > span {
+  align-self: center;
+  color: var(--jericho-faint);
+  font-size: 7px;
+  letter-spacing: 0.1em;
+}
+
+.jericho-relationship-draft label {
+  display: grid;
+  gap: 3px;
+  color: var(--jericho-muted);
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.jericho-relationship-draft select {
+  min-width: 0;
+  width: 100%;
+  height: 30px;
+  border: 1px solid var(--jericho-rule);
+  border-radius: 0;
+  background: var(--jericho-ink);
+  color: var(--jericho-text);
+  font-size: 8px;
+}
+
+.jericho-relationship-preview {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-top: 7px;
+  padding: 7px;
+  border: 1px dashed var(--jericho-amber);
+  background: rgba(228, 179, 106, 0.06);
+  color: var(--jericho-amber);
+  font-size: 8px;
+}
+
+.jericho-relationship-preview span {
+  min-width: 0;
+  flex: 1;
+  overflow-wrap: anywhere;
+}
+
+.jericho-cancel-pending {
+  min-height: 26px;
+  border-color: rgba(228, 179, 106, 0.48);
+  color: var(--jericho-amber);
 }
 
 @keyframes jericho-pulse {
@@ -1163,6 +1299,20 @@ a:focus-visible {
   .jericho-nucleus-node {
     min-height: 44px;
   }
+
+  .jericho-relationship-draft {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .jericho-relationship-draft > span,
+  .jericho-relationship-draft > button {
+    grid-column: 1 / -1;
+  }
+
+  .jericho-relationship-preview {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }
 
 @media (max-width: 520px) {
@@ -1177,6 +1327,29 @@ a:focus-visible {
 
   .jericho-context-title {
     display: block;
+  }
+
+  .jericho-nucleus-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .jericho-nucleus-toolbar [role="group"] {
+    justify-content: space-between;
+  }
+
+  .jericho-relationship-draft {
+    grid-template-columns: 1fr;
+  }
+
+  .jericho-relationship-draft > span,
+  .jericho-relationship-draft > button {
+    grid-column: auto;
+  }
+
+  .jericho-cancel-pending {
+    padding-inline: 5px;
+    font-size: 7px;
   }
 
   .jericho-context-title .jericho-status {
