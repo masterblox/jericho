@@ -94,12 +94,27 @@ describe('connector runtime composition', () => {
     const config = loadConfig({
       JERICHO_API_TOKEN: 'runtime-token',
       JERICHO_OBSIDIAN_VAULT: vault,
+      JERICHO_VAULT_GATEWAY_URL: 'https://vault.internal',
+      JERICHO_VAULT_GATEWAY_TOKEN: 'vault-token',
     }, []);
     const processEvent = vi.fn(() => ({ status: 'understood' as const }));
+    const vaultFetch = vi.fn(async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname;
+      if (path.endsWith('/health')) return Response.json({
+        status: 'healthy', lastCommitAt: '2026-07-11T00:00:00.000Z', syncAgeMs: 0,
+        cachedQueries: 0, reason: 'ok',
+      });
+      if (path.endsWith('/search')) return Response.json({
+        cached: false,
+        results: [{ path: 'Today.md', title: 'Today', excerpt: 'Ship Jericho.', score: 1 }],
+      });
+      return Response.json({ lastIndexAt: '2026-07-11T03:00:00.000Z', indexSizeMb: 1 });
+    });
 
     const runtime = createConnectorRuntime(config, store, {
       workerId: 'runtime-test',
       intake: { processEvent },
+      fetch: vaultFetch as typeof fetch,
     });
 
     expect(runtime.descriptors.map((item) => item.id)).toEqual([
@@ -110,6 +125,7 @@ describe('connector runtime composition', () => {
     ]);
     expect(runtime.actionAdapters.telegram.descriptor.id).toBe('telegram');
     expect(runtime.actionAdapters.whatsapp.descriptor.id).toBe('whatsapp');
+    expect(runtime.vaultGateway).toBeDefined();
     await expect(runtime.supervisor.sync('telegram', 'primary')).resolves.toMatchObject({
       status: 'unavailable',
     });
@@ -123,6 +139,10 @@ describe('connector runtime composition', () => {
     expect(await runtime.obsidianSearch?.search('ship', 5)).toContainEqual(expect.objectContaining({
       path: 'Today.md',
     }));
+    expect(vaultFetch).toHaveBeenCalledWith(
+      expect.objectContaining({ pathname: '/v1/jericho/vault/search' }),
+      expect.objectContaining({ method: 'POST' }),
+    );
     expect(store.listEvents({ limit: 10 })).toContainEqual(expect.objectContaining({
       type: 'obsidian.note.snapshot',
     }));

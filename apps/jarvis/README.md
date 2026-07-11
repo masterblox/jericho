@@ -172,6 +172,12 @@ evidence and every external action has a verified destination-bound gateway
 receipt. The writer stores a narrow summary and then appends a retention event for replay;
 absolute vault paths do not leave Core.
 
+Vault search uses the narrow authenticated gateway documented in
+[`../../docs/VAULT-RAG-GATEWAY.md`](../../docs/VAULT-RAG-GATEWAY.md). The bridge
+never falls back to scanning note bodies for search. Gateway health derives
+freshness from the vault Git commit, marks syncs older than one hour degraded,
+and drives one post-sync index rebuild during the 01:00–05:00 UTC window.
+
 The deterministic reflection pass runs on the configured cadence (six hours by
 default) and may also be requested through the authenticated API. Conflicts,
 incompatible assumptions, and abandoned commitments become pending proposals.

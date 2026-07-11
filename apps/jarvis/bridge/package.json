@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
+    "vault-gateway": "tsx src/vault/vault-gateway-main.ts",
     "test": "node tests/run-tests.mjs",
     "typecheck": "tsc --noEmit"
   },

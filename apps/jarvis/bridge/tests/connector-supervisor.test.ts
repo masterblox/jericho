@@ -134,6 +134,29 @@ describe('ConnectorSupervisor', () => {
     });
   });
 
+  it('preserves a degraded probe after a successful capture', async () => {
+    const store = openStore();
+    const connector = fakeConnector('fixture', [
+      { captures: [capture('evt-degraded')], sequence: 1, hasMore: false },
+    ]);
+    connector.probe = vi.fn(async () => ({
+      status: ConnectorHealthStatus.Degraded,
+      details: { reason: 'sync_stale', syncAgeMs: 3_600_001 },
+    }));
+    const supervisor = new ConnectorSupervisor({
+      store, registry: new CaptureConnectorRegistry([connector]),
+      workerId: 'supervisor-a', clock: () => T0, leaseMs: 30_000, maxPages: 10,
+    });
+
+    await expect(supervisor.sync('fixture', 'primary')).resolves.toMatchObject({ status: 'completed' });
+    expect(store.listConnectorHealth()[0]).toMatchObject({
+      status: ConnectorHealthStatus.Degraded,
+      details: { reason: 'sync_stale', syncAgeMs: 3_600_001 },
+      consecutiveFailures: 0,
+      lastSuccessAt: T0,
+    });
+  });
+
   it('accepts a terminal page that lands exactly on the configured page ceiling', async () => {
     const store = openStore();
     const connector = fakeConnector('fixture', [

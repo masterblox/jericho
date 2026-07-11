@@ -58,6 +58,14 @@ describe('runtime config', () => {
       JERICHO_GITHUB_REPOSITORIES: 'masterblox/jericho, masterblox/hermes',
       JERICHO_CONDUCTOR_ROOTS: '[{"id":"workspaces","path":"/workspaces"}]',
       JERICHO_OBSIDIAN_VAULT: '/vault',
+      JERICHO_VAULT_GATEWAY_URL: 'https://vault.internal',
+      JERICHO_VAULT_GATEWAY_TOKEN: 'vault-token',
+      JERICHO_VAULT_GATEWAY_TIMEOUT_MS: '12000',
+      JERICHO_VAULT_CACHE_TTL_MS: '86400000',
+      JERICHO_VAULT_MAINTENANCE_INTERVAL_MS: '600000',
+      JERICHO_VAULT_SYNC_STALE_MS: '3600000',
+      JERICHO_VAULT_REBUILD_WINDOW_START_UTC: '1',
+      JERICHO_VAULT_REBUILD_WINDOW_END_UTC: '5',
       JERICHO_ALLOWED_ORIGINS: 'http://localhost:5173',
       JERICHO_CONNECTOR_POLL_INTERVAL_MS: '15000',
       JERICHO_VOICE_ACTIVE_TURN_MS: '45000',
@@ -84,6 +92,14 @@ describe('runtime config', () => {
       githubRepositories: ['masterblox/jericho', 'masterblox/hermes'],
       conductorRoots: [{ id: 'workspaces', path: '/workspaces' }],
       obsidianVaultPath: '/vault',
+      vaultGatewayUrl: 'https://vault.internal',
+      vaultGatewayToken: 'vault-token',
+      vaultGatewayTimeoutMs: 12_000,
+      vaultCacheTtlMs: 86_400_000,
+      vaultMaintenanceIntervalMs: 600_000,
+      vaultSyncStaleMs: 3_600_000,
+      vaultRebuildWindowStartUtc: 1,
+      vaultRebuildWindowEndUtc: 5,
       allowedOrigins: ['http://localhost:5173'],
       connectorPollIntervalMs: 15_000,
       voiceActiveTurnMs: 45_000,
@@ -98,6 +114,12 @@ describe('runtime config', () => {
       hermesPollIntervalMs: 250,
       hermesMaxWaitMs: 15 * 60_000,
       reflectionIntervalMs: 6 * 60 * 60_000,
+      vaultGatewayTimeoutMs: 45_000,
+      vaultCacheTtlMs: 24 * 60 * 60_000,
+      vaultMaintenanceIntervalMs: 10 * 60_000,
+      vaultSyncStaleMs: 60 * 60_000,
+      vaultRebuildWindowStartUtc: 1,
+      vaultRebuildWindowEndUtc: 5,
     });
     expect(defaults.systemInstruction).toContain('client and server voice gates');
     expect(defaults.systemInstruction).not.toMatch(
@@ -111,6 +133,15 @@ describe('runtime config', () => {
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_MISSION_REPOSITORY_GRANTS: '[{"repository":"jericho","writablePaths":[],"mutationClasses":["root_access"]}]',
     }, [])).toThrow(/JERICHO_MISSION_REPOSITORY_GRANTS/);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_VAULT_GATEWAY_URL: 'https://vault.internal',
+    }, [])).toThrow(/VAULT_GATEWAY_URL.*TOKEN.*together/i);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_VAULT_REBUILD_WINDOW_START_UTC: '5',
+      JERICHO_VAULT_REBUILD_WINDOW_END_UTC: '5',
+    }, [])).toThrow(/window/i);
   });
 
   it('fails closed when only part of the Hermes execution workspace is configured', () => {

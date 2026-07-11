@@ -23,11 +23,14 @@ import type {
   ConnectorProbe,
 } from '../contracts.js';
 import { stableConnectorEvent } from '../normalization.js';
+import type { VaultGatewayPort } from '../../vault/vault-gateway-client.js';
 
 export interface ObsidianConnectorOptions {
   vaultPath: string;
   maxNotes: number;
   maxNoteBytes: number;
+  staleAfterMs?: number;
+  gateway?: VaultGatewayPort;
 }
 
 interface NoteSnapshot {
@@ -64,10 +67,43 @@ export class ObsidianConnector implements CaptureConnector {
   constructor(private readonly options: ObsidianConnectorOptions) {
     if (!Number.isInteger(options.maxNotes) || options.maxNotes < 1) throw new Error('Obsidian note bound is invalid');
     if (!Number.isInteger(options.maxNoteBytes) || options.maxNoteBytes < 1) throw new Error('Obsidian note size bound is invalid');
+    if (options.staleAfterMs !== undefined
+      && (!Number.isInteger(options.staleAfterMs) || options.staleAfterMs < 1)) {
+      throw new Error('Obsidian sync freshness bound is invalid');
+    }
   }
 
-  async probe(_signal: AbortSignal): Promise<ConnectorProbe> {
-    return { status: ConnectorHealthStatus.Healthy, details: { mode: 'markdown_read_only' } };
+  async probe(signal: AbortSignal): Promise<ConnectorProbe> {
+    if (!this.options.gateway) {
+      return {
+        status: ConnectorHealthStatus.Unavailable,
+        details: { mode: 'vault_rag_gateway', reason: 'gateway_not_configured' },
+      };
+    }
+    try {
+      const health = await this.options.gateway.health(signal);
+      const stale = health.syncAgeMs !== undefined
+        && health.syncAgeMs > (this.options.staleAfterMs ?? 60 * 60_000);
+      const status = health.status === 'healthy' && !stale ? ConnectorHealthStatus.Healthy
+        : health.status === 'degraded' ? ConnectorHealthStatus.Degraded
+          : health.status === 'unavailable' ? ConnectorHealthStatus.Unavailable
+            : ConnectorHealthStatus.Degraded;
+      return {
+        status,
+        details: {
+          mode: 'vault_rag_gateway', reason: stale ? 'sync_stale' : health.reason,
+          ...(health.lastCommitAt ? { lastCommitAt: health.lastCommitAt } : {}),
+          ...(health.syncAgeMs !== undefined ? { syncAgeMs: health.syncAgeMs } : {}),
+          ...(health.lastIndexAt ? { lastIndexAt: health.lastIndexAt } : {}),
+          ...(health.indexSizeMb !== undefined ? { indexSizeMb: health.indexSizeMb } : {}),
+        },
+      };
+    } catch {
+      return {
+        status: ConnectorHealthStatus.Unavailable,
+        details: { mode: 'vault_rag_gateway', reason: 'gateway_unavailable' },
+      };
+    }
   }
 
   async capture(request: ConnectorCaptureRequest): Promise<ConnectorCapturePage> {
@@ -97,22 +133,9 @@ export class ObsidianConnector implements CaptureConnector {
     if (!query.trim() || !Number.isInteger(limit) || limit < 1 || limit > 50) {
       throw new Error('Obsidian search bounds are invalid');
     }
-    const needle = query.toLocaleLowerCase();
-    const matches: Array<{ path: string; title: string; excerpt: string }> = [];
-    for (const note of this.scan()) {
-      const index = note.content.toLocaleLowerCase().indexOf(needle);
-      if (index < 0) continue;
-      const parsed = parseMarkdown(note.content);
-      matches.push({
-        path: note.path,
-        title: typeof parsed.frontmatter.title === 'string'
-          ? parsed.frontmatter.title
-          : note.path.replace(/\.md$/i, ''),
-        excerpt: note.content.slice(Math.max(0, index - 40), index + needle.length + 80),
-      });
-      if (matches.length >= limit) break;
-    }
-    return matches;
+    if (!this.options.gateway) throw new Error('Obsidian vault RAG search is unavailable');
+    const response = await this.options.gateway.search(query.trim(), limit, new AbortController().signal);
+    return response.results.map(({ path, title, excerpt }) => ({ path, title, excerpt }));
   }
 
   private scan(): NoteSnapshot[] {

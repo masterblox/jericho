@@ -33,6 +33,14 @@ export interface JerichoConfig {
   githubRepositories: string[];
   conductorRoots: NamedPath[];
   obsidianVaultPath?: string;
+  vaultGatewayUrl?: string;
+  vaultGatewayToken?: string;
+  vaultGatewayTimeoutMs: number;
+  vaultCacheTtlMs: number;
+  vaultMaintenanceIntervalMs: number;
+  vaultSyncStaleMs: number;
+  vaultRebuildWindowStartUtc: number;
+  vaultRebuildWindowEndUtc: number;
   connectorLeaseMs: number;
   connectorMaxPages: number;
   connectorPollIntervalMs: number;
@@ -143,6 +151,22 @@ export function loadConfig(
     throw new Error('JERICHO_HERMES_MAX_WAIT_MS must be at least JERICHO_HERMES_POLL_INTERVAL_MS');
   }
   const defaultPersonaMode = parsePersonaMode(environment.DEFAULT_MODE);
+  const vaultGatewayUrl = optionalString(environment.JERICHO_VAULT_GATEWAY_URL);
+  const vaultGatewayToken = optionalString(environment.JERICHO_VAULT_GATEWAY_TOKEN);
+  if (Boolean(vaultGatewayUrl) !== Boolean(vaultGatewayToken)) {
+    throw new Error('JERICHO_VAULT_GATEWAY_URL and JERICHO_VAULT_GATEWAY_TOKEN must be configured together');
+  }
+  const vaultRebuildWindowStartUtc = parseUtcHour(
+    environment.JERICHO_VAULT_REBUILD_WINDOW_START_UTC ?? '1',
+    'JERICHO_VAULT_REBUILD_WINDOW_START_UTC',
+  );
+  const vaultRebuildWindowEndUtc = parseUtcHour(
+    environment.JERICHO_VAULT_REBUILD_WINDOW_END_UTC ?? '5',
+    'JERICHO_VAULT_REBUILD_WINDOW_END_UTC',
+  );
+  if (vaultRebuildWindowStartUtc === vaultRebuildWindowEndUtc) {
+    throw new Error('Vault rebuild window cannot be empty');
+  }
   return {
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
@@ -173,6 +197,26 @@ export function loadConfig(
       'JERICHO_CONDUCTOR_ROOTS',
     ),
     obsidianVaultPath: optionalString(environment.JERICHO_OBSIDIAN_VAULT),
+    ...(vaultGatewayUrl ? { vaultGatewayUrl } : {}),
+    ...(vaultGatewayToken ? { vaultGatewayToken } : {}),
+    vaultGatewayTimeoutMs: parsePositiveInteger(
+      environment.JERICHO_VAULT_GATEWAY_TIMEOUT_MS ?? '45000',
+      'JERICHO_VAULT_GATEWAY_TIMEOUT_MS',
+    ),
+    vaultCacheTtlMs: parsePositiveInteger(
+      environment.JERICHO_VAULT_CACHE_TTL_MS ?? '86400000',
+      'JERICHO_VAULT_CACHE_TTL_MS',
+    ),
+    vaultMaintenanceIntervalMs: parsePositiveInteger(
+      environment.JERICHO_VAULT_MAINTENANCE_INTERVAL_MS ?? '600000',
+      'JERICHO_VAULT_MAINTENANCE_INTERVAL_MS',
+    ),
+    vaultSyncStaleMs: parsePositiveInteger(
+      environment.JERICHO_VAULT_SYNC_STALE_MS ?? '3600000',
+      'JERICHO_VAULT_SYNC_STALE_MS',
+    ),
+    vaultRebuildWindowStartUtc,
+    vaultRebuildWindowEndUtc,
     connectorLeaseMs: parsePositiveInteger(
       environment.JERICHO_CONNECTOR_LEASE_MS ?? '30000',
       'JERICHO_CONNECTOR_LEASE_MS',
@@ -369,6 +413,15 @@ function parsePositiveInteger(value: string, variable: string): number {
   const parsed = Number(value);
   if (!Number.isSafeInteger(parsed) || parsed < 1) {
     throw new Error(`${variable} must be a positive integer`);
+  }
+  return parsed;
+}
+
+function parseUtcHour(value: string, variable: string): number {
+  if (!/^\d{1,2}$/u.test(value)) throw new Error(`${variable} must be a UTC hour from 0 to 23`);
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0 || parsed > 23) {
+    throw new Error(`${variable} must be a UTC hour from 0 to 23`);
   }
   return parsed;
 }

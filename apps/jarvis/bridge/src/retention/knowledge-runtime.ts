@@ -5,12 +5,18 @@ import {
   ReflectionReviewService,
 } from './knowledge-services.js';
 import { ObsidianRetentionWriter } from './obsidian-writer.js';
+import type { VaultGatewayPort } from '../vault/vault-gateway-client.js';
+import { VaultMaintenanceScheduler } from './vault-maintenance.js';
 
 export interface KnowledgeRuntimeOptions {
   store: JerichoStore;
   reflectionIntervalMs: number;
   obsidianVaultPath?: string;
   clock?: () => string;
+  vaultGateway?: VaultGatewayPort;
+  vaultMaintenanceIntervalMs?: number;
+  vaultRebuildWindowStartUtc?: number;
+  vaultRebuildWindowEndUtc?: number;
 }
 
 /** Owns the review-only reflection loop and optional verified Obsidian writer. */
@@ -18,6 +24,7 @@ export class KnowledgeRuntime {
   readonly reflection: ReflectionReviewService;
   readonly retention?: MissionKnowledgeRetentionService;
   readonly #scheduler: ReflectionScheduler;
+  readonly #vaultMaintenance?: VaultMaintenanceScheduler;
 
   constructor(options: KnowledgeRuntimeOptions) {
     this.reflection = new ReflectionReviewService(options.store);
@@ -37,14 +44,24 @@ export class KnowledgeRuntime {
       }),
       publish: (suggestions) => { this.reflection.publish(suggestions); },
     });
+    this.#vaultMaintenance = options.vaultGateway
+      ? new VaultMaintenanceScheduler({
+          gateway: options.vaultGateway,
+          intervalMs: options.vaultMaintenanceIntervalMs ?? 10 * 60_000,
+          windowStartUtcHour: options.vaultRebuildWindowStartUtc ?? 1,
+          windowEndUtcHour: options.vaultRebuildWindowEndUtc ?? 5,
+          clock: options.clock,
+        })
+      : undefined;
   }
 
-  start(): Promise<void> {
-    return this.#scheduler.start();
+  async start(): Promise<void> {
+    await this.#scheduler.start();
+    await this.#vaultMaintenance?.start();
   }
 
-  stop(): Promise<void> {
-    return this.#scheduler.stop();
+  async stop(): Promise<void> {
+    await this.#vaultMaintenance?.stop();
+    await this.#scheduler.stop();
   }
 }
-

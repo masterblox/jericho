@@ -1,0 +1,26 @@
+[Unit]
+Description=Jericho narrow vault RAG gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hermes
+Group=hermes
+WorkingDirectory=/opt/jericho/apps/jarvis
+EnvironmentFile=/etc/jericho/vault-gateway.env
+ExecStart=/usr/bin/env pnpm --filter bridge vault-gateway
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/opt/brain /opt/data/scripts/vault-rag.py
+ReadWritePaths=/opt/data/vault-rag-index /opt/data/jericho/intel
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target

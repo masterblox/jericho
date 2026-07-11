@@ -1721,6 +1721,10 @@ async function main(): Promise<void> {
     store,
     reflectionIntervalMs: config.reflectionIntervalMs,
     obsidianVaultPath: config.obsidianVaultPath,
+    vaultGateway: connectors.vaultGateway,
+    vaultMaintenanceIntervalMs: config.vaultMaintenanceIntervalMs,
+    vaultRebuildWindowStartUtc: config.vaultRebuildWindowStartUtc,
+    vaultRebuildWindowEndUtc: config.vaultRebuildWindowEndUtc,
   });
   const execution = createMissionExecutionRuntime(config, store, {
     connectorActions: connectors.actionAdapters,

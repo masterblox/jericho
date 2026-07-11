@@ -142,6 +142,35 @@ describe('reflection review publication', () => {
       await runtime.stop();
     }
   });
+
+  it('starts and stops independent vault maintenance when a gateway is configured', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 43) });
+    stores.push(store);
+    const rebuildIndex = vi.fn(async () => ({
+      lastIndexAt: '2026-07-11T03:00:00.000Z', indexSizeMb: 1,
+    }));
+    const runtime = new KnowledgeRuntime({
+      store,
+      reflectionIntervalMs: 60 * 60_000,
+      vaultGateway: {
+        search: async () => ({ cached: false, results: [] }),
+        health: async () => ({
+          status: 'healthy', lastCommitAt: '2026-07-11T02:30:00.000Z',
+          syncAgeMs: 30 * 60_000, lastIndexAt: '2026-07-10T03:00:00.000Z',
+          indexSizeMb: 1, cachedQueries: 0, reason: 'ok',
+        }),
+        rebuildIndex,
+      },
+      vaultMaintenanceIntervalMs: 600_000,
+      vaultRebuildWindowStartUtc: 1,
+      vaultRebuildWindowEndUtc: 5,
+      clock: () => '2026-07-11T03:00:00.000Z',
+    });
+
+    await runtime.start();
+    expect(rebuildIndex).toHaveBeenCalledTimes(1);
+    await runtime.stop();
+  });
 });
 
 function knowledgeStore(

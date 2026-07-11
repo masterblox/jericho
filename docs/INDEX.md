@@ -13,6 +13,7 @@
 | [`JERICHO-V1-GESTURES.md`](JERICHO-V1-GESTURES.md) | Low-level v1 gesture invariants retained by the current runtime. | Any tracking threshold or gesture grammar change. |
 | [`HERMES-EXECUTION-PROTOCOL-V1.md`](HERMES-EXECUTION-PROTOCOL-V1.md) | Fail-closed Hermes capability handshake, result, verification, cancellation, and repository-authority contract. | Any Hermes execution protocol or repository grant change. |
 | [`JERICHO-LIVE-SMOKE-TEST.md`](JERICHO-LIVE-SMOKE-TEST.md) | Live-safe operator checks, deterministic gate, privacy boundaries, and physical/Hermes prerequisites. | Any boot, authentication, connector-send, voice, gesture, or smoke acceptance change. |
+| [`VAULT-RAG-GATEWAY.md`](VAULT-RAG-GATEWAY.md) | Narrow vault search/index/health boundary, deployment, cache, and sync-freshness policy. | Any Obsidian RAG, vault health, cache, or maintenance scheduling change. |
 
 ## Historical or superseded material
 

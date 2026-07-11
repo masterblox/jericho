@@ -16,6 +16,7 @@ import { join } from 'node:path';
 import {
   CaptureFailureKind,
   ConnectorCapability,
+  ConnectorHealthStatus,
   RouteType,
 } from '@jericho/shared';
 
@@ -262,7 +263,21 @@ describe('ObsidianConnector', () => {
     writeFileSync(join(vault, 'Client.md'), '# Client\nImportant account.');
     mkdirSync(join(vault, '.obsidian'));
     writeFileSync(join(vault, '.obsidian', 'workspace.json'), '{"private":true}');
-    const adapter = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
+    const search = vi.fn(async () => ({
+      cached: false,
+      results: [{ path: 'Client.md', title: 'Client', excerpt: 'Important account.', score: 2.1 }],
+    }));
+    const adapter = new ObsidianConnector({
+      vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000,
+      gateway: {
+        search,
+        health: async () => ({
+          status: 'healthy' as const, lastCommitAt: T0, syncAgeMs: 0,
+          cachedQueries: 0, reason: 'ok',
+        }),
+        rebuildIndex: async () => ({ lastIndexAt: T0, indexSizeMb: 1 }),
+      },
+    });
 
     const page = await adapter.capture(request('vault'));
     const project = page.captures.find((item) =>
@@ -275,7 +290,40 @@ describe('ObsidianConnector', () => {
     });
     expect(project.event.freshness?.observedAt).toBeDefined();
     expect(await adapter.search('important', 1)).toHaveLength(1);
+    expect(search).toHaveBeenCalledWith('important', 1, expect.any(AbortSignal));
     expect(readdirSync(vault).sort()).toEqual(['.obsidian', 'Client.md', 'Project.md']);
+  });
+
+  it('projects gateway sync freshness through connector health and fails closed without it', async () => {
+    const vault = tempDirectory('obsidian-health-');
+    const degraded = new ObsidianConnector({
+      vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000,
+      gateway: {
+        search: async () => ({ cached: false, results: [] }),
+        health: async () => ({
+          status: 'degraded' as const,
+          lastCommitAt: '2026-07-11T00:00:00.000Z', syncAgeMs: 3_600_001,
+          lastIndexAt: '2026-07-10T03:00:00.000Z', indexSizeMb: 12.4,
+          cachedQueries: 2, reason: 'sync_stale',
+        }),
+        rebuildIndex: async () => ({ lastIndexAt: T0, indexSizeMb: 1 }),
+      },
+    });
+    await expect(degraded.probe(new AbortController().signal)).resolves.toEqual({
+      status: ConnectorHealthStatus.Degraded,
+      details: {
+        mode: 'vault_rag_gateway', reason: 'sync_stale',
+        lastCommitAt: '2026-07-11T00:00:00.000Z', syncAgeMs: 3_600_001,
+        lastIndexAt: '2026-07-10T03:00:00.000Z', indexSizeMb: 12.4,
+      },
+    });
+
+    const disabled = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
+    await expect(disabled.probe(new AbortController().signal)).resolves.toEqual({
+      status: ConnectorHealthStatus.Unavailable,
+      details: { mode: 'vault_rag_gateway', reason: 'gateway_not_configured' },
+    });
+    await expect(disabled.search('anything', 5)).rejects.toThrow(/unavailable/i);
   });
 
   it('detects rename and delete from the durable manifest cursor', async () => {

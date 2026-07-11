@@ -52,6 +52,10 @@ import {
   type ConnectorActionAdapters,
 } from './orchestration/connector-action-executor.js';
 import { MissionRunner, type RunnerOutcome } from './orchestration/runner.js';
+import {
+  HttpVaultGatewayClient,
+  type VaultGatewayPort,
+} from './vault/vault-gateway-client.js';
 
 export interface ConnectorRuntime {
   registry: CaptureConnectorRegistry;
@@ -62,6 +66,7 @@ export interface ConnectorRuntime {
     whatsapp: WhatsAppGatewayAdapter;
   }>;
   obsidianSearch?: ObsidianConnector;
+  vaultGateway?: VaultGatewayPort;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -96,6 +101,15 @@ export function createConnectorRuntime(
       transport: new LinearGraphqlTransport(fetchImplementation),
     }),
   ];
+  const vaultGateway = config.vaultGatewayUrl && config.vaultGatewayToken
+    ? new HttpVaultGatewayClient({
+        gatewayUrl: config.vaultGatewayUrl,
+        gatewayToken: config.vaultGatewayToken,
+        timeoutMs: config.vaultGatewayTimeoutMs,
+        maxResponseBytes: 256 * 1024,
+        fetch: fetchImplementation,
+      })
+    : undefined;
   if (config.gitRepositories.length) {
     connectors.push(new GitConnector({
       repositories: config.gitRepositories,
@@ -113,6 +127,8 @@ export function createConnectorRuntime(
         vaultPath: config.obsidianVaultPath,
         maxNotes: 500,
         maxNoteBytes: 2 * 1024 * 1024,
+        staleAfterMs: config.vaultSyncStaleMs,
+        ...(vaultGateway ? { gateway: vaultGateway } : {}),
       })
     : undefined;
   if (obsidian) connectors.push(obsidian);
@@ -137,6 +153,7 @@ export function createConnectorRuntime(
     descriptors,
     actionAdapters: Object.freeze({ telegram, whatsapp }),
     ...(obsidian ? { obsidianSearch: obsidian } : {}),
+    ...(vaultGateway ? { vaultGateway } : {}),
     start: () => scheduler.start(),
     stop: () => scheduler.stop(),
   };

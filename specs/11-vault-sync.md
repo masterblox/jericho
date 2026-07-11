@@ -2,7 +2,7 @@
 
 **Subsystem:** Obsidian vault → GitHub sync
 **Source:** obsidian-git plugin on Carlos's Mac
-**Target:** `/opt/data/jericho/state/vault-sync.json`
+**Target:** Existing Jericho connector-health records
 **Frequency:** ~10-30 minutes (automatic)
 **Status:** ✅ ACTIVE
 
@@ -16,19 +16,12 @@
 
 ### Jericho Wiring
 1. Passive integration — vault sync already works
-2. Jericho periodically checks last sync timestamp via `state/vault-sync.json`
+2. Jericho periodically reads the last commit timestamp through the narrow vault gateway
 3. If last sync >1h ago → alert in fleet health check
 4. Sync stats (files changed, size delta) included in morning digest
 
-### State File
-```json
-{
-  "last_sync": "2026-06-27T23:25:00Z",
-  "repo": "masterblox/jarvis-brain",
-  "status": "healthy",
-  "avg_interval_minutes": 20
-}
-```
+Health is retained through the existing connector-health interface with
+privacy-safe timestamps, age, index metadata, and a stable reason code.
 
 ### Health Check
 ```bash
@@ -37,6 +30,6 @@ git -C /opt/brain log -1 --format=%aI
 ```
 
 ### Verification
-- [ ] Commits appearing on GitHub within 30m
-- [ ] Jericho detects sync gaps >1h
-- [ ] No action needed — passive integration
+- [ ] Commits appearing on GitHub within 30m (live deployment check)
+- [x] Jericho detects sync gaps >1h
+- [x] No mutation action is taken — sync remains passive

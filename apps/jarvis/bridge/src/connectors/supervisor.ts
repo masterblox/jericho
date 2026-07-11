@@ -172,7 +172,7 @@ export class ConnectorSupervisor {
       if (hasMore && pages >= this.options.maxPages) {
         throw new Error(`Connector ${connectorId} exceeded its page limit`);
       }
-      this.#recordHealth(connectorId, ConnectorHealthStatus.Healthy, {}, this.#clock(), true);
+      this.#recordHealth(connectorId, probe.status, probe.details, this.#clock(), true);
       return {
         status: 'completed', pages, captures, failures,
         processed, reviews, processingFailures,
