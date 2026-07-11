@@ -14,7 +14,8 @@
     "@jericho/shared": "workspace:*",
     "@mediapipe/tasks-vision": "^0.10.35",
     "react": "19.1.0",
-    "react-dom": "19.1.0"
+    "react-dom": "19.1.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@testing-library/dom": "10.4.0",
