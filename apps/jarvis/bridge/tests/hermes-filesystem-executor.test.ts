@@ -82,6 +82,7 @@ describe('Hermes filesystem execution adapter', () => {
         'bounded_stop',
         'idempotent_dispatch',
         'independent_verification_evidence',
+        'metered_cost_evidence',
         'structured_artifacts',
       ],
       generatedAt: T0,
@@ -140,11 +141,21 @@ describe('Hermes filesystem execution adapter', () => {
         checks: ['hermes-result-valid'],
         evidence: ['hermes-result'],
       },
+      costs: [{
+        category: 'other', estimated_micro_usd: 100, actual_micro_usd: 0,
+        evidence: ['operator-meter:no-charge'],
+      }],
     });
 
     await expect(execution).resolves.toEqual({
       artifact: { type: 'report', data: { complete: true } },
-      costs: [],
+      costs: [{
+        id: expect.stringMatching(/^hermes-cost-[a-f0-9]{32}$/),
+        category: 'other',
+        estimatedMicroUsd: 100,
+        actualMicroUsd: 0,
+        idempotencyKey: expect.stringMatching(/^hermes-cost-key-[a-f0-9]{32}$/),
+      }],
     });
     expect(store.listEvents({ source: 'hermes-filesystem' })).toMatchObject([
       {
@@ -190,6 +201,42 @@ describe('Hermes filesystem execution adapter', () => {
       verified: true,
       checks: ['hermes-result-valid'],
       evidence: [{ eventId: event!.id, selector: 'hermes-result' }],
+    });
+  });
+
+  it('returns assignment-bound metered model cost evidence for runner budget enforcement', async () => {
+    const { busRoot, store } = setupBus();
+    const context = executionContext();
+    const execution = executorFor(busRoot, store).execute(context);
+    const taskFile = await waitForTask(busRoot);
+    const task = JSON.parse(readFileSync(taskFile, 'utf8'));
+    writeResult(busRoot, task.id, successfulResult(task.id, {
+      costs: [{
+        category: 'model',
+        estimated_micro_usd: context.assignment.estimatedCostMicroUsd,
+        actual_micro_usd: 83,
+        provider: 'local-runtime',
+        model: context.task.model,
+        evidence: ['operator-meter:usage-1'],
+      }],
+    }));
+
+    await expect(execution).resolves.toMatchObject({
+      costs: [{
+        id: expect.stringMatching(/^hermes-cost-[a-f0-9]{32}$/),
+        idempotencyKey: expect.stringMatching(/^hermes-cost-key-[a-f0-9]{32}$/),
+        category: 'model',
+        estimatedMicroUsd: context.assignment.estimatedCostMicroUsd,
+        actualMicroUsd: 83,
+        provider: 'local-runtime',
+        model: 'local',
+      }],
+    });
+    expect(store.listEvents({ source: 'hermes-filesystem' })[0]?.payload).toMatchObject({
+      costs: [expect.objectContaining({
+        actual_micro_usd: 83,
+        evidence: ['operator-meter:usage-1'],
+      })],
     });
   });
 
@@ -407,6 +454,26 @@ describe('Hermes filesystem execution adapter', () => {
     expect(readdirSync(join(busRoot, 'outbox'))).toEqual([]);
   });
 
+  it('rejects external actions before dispatch because v1 has no destination receipt contract', async () => {
+    const { busRoot, store } = setupBus();
+    const externalAction = {
+      connectorId: 'telegram',
+      action: 'send',
+      destination: 'chat-1',
+      idempotencyKey: 'send-1',
+      mutationClass: MutationClass.Reversible,
+    };
+    const context = executionContext({
+      assignment: { externalAction },
+      task: { externalAction },
+    });
+
+    await expect(executorFor(busRoot, store).execute(context)).rejects.toThrow(
+      /external action.*receipt|receipt.*unsupported/i,
+    );
+    expect(readdirSync(join(busRoot, 'outbox'))).toEqual([]);
+  });
+
   it('never serializes nested private inputs, raw payloads, or secrets', async () => {
     const { busRoot, store } = setupBus();
     const controller = new AbortController();
@@ -476,6 +543,7 @@ function writeProtocolManifest(
     capabilities: [
       'structured_artifacts',
       'independent_verification_evidence',
+      'metered_cost_evidence',
       'bounded_stop',
       'idempotent_dispatch',
     ],
@@ -572,7 +640,7 @@ function writeResult(busRoot: string, taskId: string, result: unknown): void {
   writeFileSync(join(busRoot, 'inbox', `${taskId}.json`), JSON.stringify(result));
 }
 
-function successfulResult(taskId: string) {
+function successfulResult(taskId: string, overrides: Record<string, unknown> = {}) {
   return {
     task_id: taskId,
     completed_at: T0,
@@ -584,5 +652,10 @@ function successfulResult(taskId: string) {
       checks: ['hermes-result-valid'],
       evidence: ['hermes-result'],
     },
+    costs: [{
+      category: 'other', estimated_micro_usd: 100, actual_micro_usd: 0,
+      evidence: ['operator-meter:no-charge'],
+    }],
+    ...overrides,
   };
 }

@@ -16,6 +16,7 @@ import {
 import { join, resolve } from 'node:path';
 
 import {
+  CostCategory,
   LifecycleStatus,
   RouteType,
   SourceType,
@@ -34,6 +35,7 @@ import type {
   ArtifactVerifier,
   DynamicAssignmentExecutor,
   ExecutorDescriptor,
+  ExecutorCost,
   ExecutorResult,
 } from './runner.js';
 
@@ -44,6 +46,7 @@ const REQUIRED_PROTOCOL_CAPABILITIES = [
   'bounded_stop',
   'idempotent_dispatch',
   'independent_verification_evidence',
+  'metered_cost_evidence',
   'structured_artifacts',
 ] as const;
 
@@ -131,6 +134,17 @@ interface HermesResult {
   error: string | null;
   artifact?: { type: string; data: JsonValue };
   verification?: { checks: string[]; evidence: string[] };
+  costs?: HermesCostEvidence[];
+}
+
+interface HermesCostEvidence {
+  category: CostCategory;
+  estimatedMicroUsd: number;
+  actualMicroUsd: number;
+  evidence: string[];
+  provider?: string;
+  model?: string;
+  tool?: string;
 }
 
 export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
@@ -197,7 +211,7 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
             appendResultEvent(this.options.store, context, result);
             throw new Error(`Hermes task ${task.id} ${result.status}: ${result.error ?? result.summary}`);
           }
-          if (!result.artifact || !result.verification) {
+          if (!result.artifact || !result.verification || !result.costs) {
             appendLegacyCheckpoint(this.options.store, context, result);
             throw new TypeError(
               `Hermes task ${task.id} returned a legacy unverified checkpoint, not a verified result`,
@@ -207,7 +221,7 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
           appendResultEvent(this.options.store, context, result);
           return {
             artifact: structuredClone(result.artifact),
-            costs: [],
+            costs: executorCosts(context, result),
           };
         }
         await wait(this.#pollIntervalMs, context.signal);
@@ -326,6 +340,42 @@ function assertSuccessfulResultMatches(
   ) {
     throw new TypeError('Hermes result verification does not satisfy the assignment');
   }
+  const costs = result.costs ?? [];
+  if (
+    costs.reduce((total, cost) => total + cost.estimatedMicroUsd, 0) !==
+      context.assignment.estimatedCostMicroUsd
+  ) {
+    throw new TypeError('Hermes cost evidence does not match the approved estimate');
+  }
+  for (const cost of costs) {
+    if (cost.category === CostCategory.Model && cost.model !== context.task.model) {
+      throw new TypeError('Hermes model cost is outside the approved model');
+    }
+    if (
+      cost.category === CostCategory.Tool &&
+      (!cost.tool || !context.task.requiredTools.includes(cost.tool))
+    ) {
+      throw new TypeError('Hermes tool cost is outside the approved tools');
+    }
+  }
+}
+
+function executorCosts(
+  context: AssignmentExecutionContext,
+  result: HermesResult,
+): ExecutorCost[] {
+  return (result.costs ?? []).map((cost, index) => ({
+    id: `hermes-cost-${createHash('sha256').update(`${result.taskId}\0${index}`).digest('hex').slice(0, 32)}`,
+    category: cost.category,
+    estimatedMicroUsd: cost.estimatedMicroUsd,
+    actualMicroUsd: cost.actualMicroUsd,
+    idempotencyKey: `hermes-cost-key-${createHash('sha256')
+      .update(`${context.assignment.idempotencyKey}\0${index}`)
+      .digest('hex').slice(0, 32)}`,
+    ...(cost.provider ? { provider: cost.provider } : {}),
+    ...(cost.model ? { model: cost.model } : {}),
+    ...(cost.tool ? { tool: cost.tool } : {}),
+  }));
 }
 
 export class HermesResultVerifier implements ArtifactVerifier {
@@ -455,6 +505,9 @@ function assertApprovedContext(
   if (!task.writableScope.allowedRepositories.some((grant) => grant.repository === workspace.repo)) {
     throw new TypeError(`Hermes workspace ${workspace.repo} is outside the approved task scope`);
   }
+  if (assignment.externalAction || task.externalAction) {
+    throw new TypeError('Hermes v1 external action receipts are unsupported');
+  }
 }
 
 function canonicalPermissions(permissions: MissionPermissions): MissionPermissions {
@@ -503,6 +556,15 @@ function appendResultEvent(
       error: result.error,
       artifact: result.artifact ? structuredClone(result.artifact) : null,
       verification: result.verification ? structuredClone(result.verification) : null,
+      costs: result.costs ? structuredClone(result.costs.map((cost) => ({
+        category: cost.category,
+        estimated_micro_usd: cost.estimatedMicroUsd,
+        actual_micro_usd: cost.actualMicroUsd,
+        evidence: [...cost.evidence],
+        ...(cost.provider ? { provider: cost.provider } : {}),
+        ...(cost.model ? { model: cost.model } : {}),
+        ...(cost.tool ? { tool: cost.tool } : {}),
+      }))) : null,
     },
     status: result.status === 'success'
       ? LifecycleStatus.Succeeded
@@ -616,6 +678,7 @@ function readResult(path: string, expectedTaskId: string): HermesResult {
   const status = value.status as HermesResult['status'];
   const artifact = parseArtifact(value.artifact);
   const verification = parseVerification(value.verification);
+  const costs = parseCosts(value.costs);
   return {
     taskId: value.task_id,
     completedAt: value.completed_at,
@@ -624,6 +687,7 @@ function readResult(path: string, expectedTaskId: string): HermesResult {
     error: value.error,
     ...(artifact ? { artifact } : {}),
     ...(verification ? { verification } : {}),
+    ...(costs ? { costs } : {}),
   };
 }
 
@@ -641,6 +705,40 @@ function parseVerification(value: unknown): HermesResult['verification'] | undef
     throw new TypeError('Hermes result verification is invalid');
   }
   return { checks: [...value.checks], evidence: [...value.evidence] };
+}
+
+function parseCosts(value: unknown): HermesCostEvidence[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) throw new TypeError('Hermes result costs are invalid');
+  const categories = new Set(Object.values(CostCategory));
+  return value.map((item) => {
+    if (!isRecord(item)) throw new TypeError('Hermes result cost is invalid');
+    const category = item.category;
+    const estimated = item.estimated_micro_usd;
+    const actual = item.actual_micro_usd;
+    if (
+      typeof category !== 'string' || !categories.has(category as CostCategory) ||
+      !Number.isSafeInteger(estimated) || (estimated as number) < 0 ||
+      !Number.isSafeInteger(actual) || (actual as number) < 0 ||
+      !isStringArray(item.evidence) || item.evidence.length === 0
+    ) {
+      throw new TypeError('Hermes result cost evidence is invalid');
+    }
+    for (const field of ['provider', 'model', 'tool'] as const) {
+      if (item[field] !== undefined && (typeof item[field] !== 'string' || !item[field].trim())) {
+        throw new TypeError('Hermes result cost identity is invalid');
+      }
+    }
+    return {
+      category: category as CostCategory,
+      estimatedMicroUsd: estimated as number,
+      actualMicroUsd: actual as number,
+      evidence: [...item.evidence],
+      ...(typeof item.provider === 'string' ? { provider: item.provider } : {}),
+      ...(typeof item.model === 'string' ? { model: item.model } : {}),
+      ...(typeof item.tool === 'string' ? { tool: item.tool } : {}),
+    };
+  });
 }
 
 function prepareDirectory(path: string): string {

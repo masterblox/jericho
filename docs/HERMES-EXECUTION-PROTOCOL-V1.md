@@ -25,6 +25,7 @@ The operator atomically refreshes
     "bounded_stop",
     "idempotent_dispatch",
     "independent_verification_evidence",
+    "metered_cost_evidence",
     "structured_artifacts"
   ]
 }
@@ -64,7 +65,15 @@ A terminal `success` result must include the historical result fields plus:
   "verification": {
     "checks": ["every approved check"],
     "evidence": ["every approved evidence selector"]
-  }
+  },
+  "costs": [{
+    "category": "model",
+    "estimated_micro_usd": 500,
+    "actual_micro_usd": 83,
+    "provider": "local-runtime",
+    "model": "local",
+    "evidence": ["operator-meter:usage-1"]
+  }]
 }
 ```
 
@@ -73,6 +82,13 @@ and approved evidence before the independent mission verifier may complete the
 assignment. Legacy `in_progress` or `success` files without this data are
 encrypted as `hermes.legacy_result_checkpoint` events for human review. They
 remain `pending_approval` and can never become successful artifacts.
+
+The cost estimates must sum exactly to the approved assignment estimate. Model
+and tool identities must match the approved descriptor. Jericho derives cost
+record IDs/idempotency keys, records the reported actual integer micro-USD, and
+the mission runner pauses when the accumulated actual cost exceeds budget.
+External-action assignments are rejected before dispatch: filesystem v1 does
+not yet define independently verified destination receipts.
 
 ## Repository authority
 
@@ -110,6 +126,9 @@ therefore not possible with the installed operator.
 The remaining external action is a Hermes-side implementation and deployment
 of this v1 contract (or an equivalently authenticated gateway adapter),
 including the expiring handshake, scope enforcement, cancellation,
-idempotency, structured artifacts, and independent verification receipts.
+idempotency, metered cost evidence, structured artifacts, and independent
+verification receipts. A later protocol version is required before this bus may
+perform external sends, deployments, or other actions needing destination
+receipts.
 After deployment, restart Jericho and verify `hermes-execution` is healthy
 before approving a live mission.

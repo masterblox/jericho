@@ -31,6 +31,7 @@ function writeHermesManifest(busRoot: string): void {
     capabilities: [
       'structured_artifacts',
       'independent_verification_evidence',
+      'metered_cost_evidence',
       'bounded_stop',
       'idempotent_dispatch',
     ],
