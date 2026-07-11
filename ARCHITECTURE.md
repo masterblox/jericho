@@ -1,166 +1,116 @@
-# Jericho — Supreme Intelligence & Orchestration Layer
+# Jericho Private Intelligence OS
 
-**Layer:** One step below Carlos. One step above all agents.
-**Bus:** `/opt/data/jericho/`
-**Vault:** `/opt/brain/` (synced via obsidian-git, ~10-30min)
-**Mode:** Cron-driven intelligence aggregation + filesystem command dispatch
+**Owner:** Carlos
 
-## Architecture
+**Architecture owner:** Jericho Core
 
-```
-                          CARLOS
-                             │
-                    ┌────────┴────────┐
-                    │    JERICHO      │  ← Supreme intelligence layer
-                    │  (this system)  │
-                    └───┬───┬───┬─────┘
-                        │   │   │
-           ┌────────────┼───┼───┼────────────┐
-           ▼            ▼   ▼   ▼            ▼
-        ┌──────┐   ┌──────┐ ┌──────┐   ┌─────────┐
-        │ DEV  │   │  PA  │ │ IRIS │   │ DONALD  │  ← Leaf agents
-        │infra │   │ ops  │ │design│   │ sales   │
-        └──────┘   └──────┘ └──────┘   └─────────┘
-```
+**Freshness:** 2026-07-11
 
-### Two Flow Directions
+Jericho is Carlos's private, local-first chief of staff. It turns evidence into bounded missions and orchestrates registered agents after one explicit approval:
 
-**UPLINK (data → Jericho):**
-Every automated report, watcher, synthesis, and health check routes its output to Jericho's inbox. Jericho aggregates, deduplicates, and produces a single intelligence snapshot for Carlos.
+`Capture → Understand → Route → Plan → Approve → Execute → Retain → Present`
 
-**DOWNLINK (Jericho → agents):**
-Carlos gives Jericho a directive. Jericho decomposes it, dispatches to the correct agent lane via the conductor bridge outbox, and tracks completion.
+It is an authority and evidence system, not a decorative agent dashboard. The Nucleus may visualize only persisted, truth-backed activity.
 
-## Bus Structure
+## Trust topology
 
-```
-/opt/data/jericho/
-├── inbox/          # All uplink reports land here
-│   ├── morning/    # Morning synthesis (DEV, PA, Iris)
-│   ├── nightly/    # Vault processing results
-│   ├── weekly/     # Weekly review
-│   └── realtime/   # Watcher alerts (errors, PRs, costs, replies)
-├── outbox/         # Downlink dispatches to agents
-│   ├── dev/        # DEV lane commands
-│   ├── pa/         # PA lane commands
-│   ├── iris/       # Iris consult requests
-│   ├── donald/     # Donald lane commands
-│   └── fleet/      # Fleet-wide directives (upgrades, restarts)
-├── state/          # Durable state files
-│   ├── fleet.json  # Agent status, versions, health
-│   ├── digest.json # Last digest timestamp per source
-│   └── dispatch.json # Active dispatch tracking
-├── dispatch/       # Active dispatch manifests
-├── reports/        # Aggregated intelligence digests
-│   ├── daily/      # Daily briefs for Carlos
-│   └── weekly/     # Weekly summaries
-├── intel/          # Cross-referenced intelligence
-│   ├── people/     # Contact cross-references
-│   ├── projects/   # Project state synthesis
-│   └── signals/    # Early warning signals
-└── health/         # Fleet health snapshots
-    ├── versions.json
-    ├── costs.json
-    └── errors.json
+```text
+Direct APIs / Git / Hermes collectors / local captures
+                         │ immutable evidence
+                         ▼
+              ┌─────────────────────┐
+              │ Jericho Core        │
+              │ encrypted SQLite    │
+              │ identity + policy   │
+              │ mission authority   │
+              └──────┬────────┬─────┘
+                     │        │
+       bounded work  │        │ verified projections
+                     ▼        ▼
+          Registered agents   Command Center / Nucleus
+          + remote executors  + selected Obsidian notes
 ```
 
-## Subsystem Integration Registry
+The laptop owns personal context and authority. Remote Hermes services may collect source events and execute approved assignments, but cannot approve work, expand mission scope, or rewrite local memory. Paperclip is a reconciled worker queue, never evidence truth.
 
-| # | Subsystem | Status | Integration Point | Spec |
-|---|-----------|--------|-------------------|------|
-| 1 | **Morning Synthesis** (DEV/PA/Iris) | Scripts exist, not running | `inbox/morning/` | `specs/01-morning-synthesis.md` |
-| 2 | **Nightly Vault Processor** | Script exists, not running | `inbox/nightly/` | `specs/02-nightly-processor.md` |
-| 3 | **Weekly Review** | Script exists, not running | `inbox/weekly/` | `specs/03-weekly-review.md` |
-| 4 | **Iris Reply Watcher** | Cron paused | `inbox/realtime/iris-*.json` | `specs/04-iris-watcher.md` |
-| 5 | **Error Log Watcher** | Script exists, not running | `inbox/realtime/errors-*.json` | `specs/05-error-watcher.md` |
-| 6 | **GitHub PR Watcher** | Script exists, not running | `inbox/realtime/github-*.json` | `specs/06-github-watcher.md` |
-| 7 | **Linear Change Watcher** | Script exists, not running | `inbox/realtime/linear-*.json` | `specs/07-linear-watcher.md` |
-| 8 | **DeepSeek Cost Watcher** | Script exists, not running | `inbox/realtime/cost-*.json` | `specs/08-cost-watcher.md` |
-| 9 | **Fleet Health Check** | Scaffold needed | `health/` | `specs/09-fleet-health.md` |
-| 10 | **Nous Release Monitor** | Scaffold needed | `health/versions.json` | `specs/10-nous-monitor.md` |
-| 11 | **Obsidian Vault Sync** | ✅ Active | `state/vault-sync.json` | `specs/11-vault-sync.md` |
-| 12 | **Conductor Bridge** | ✅ Active (partial) | Bridge outbox → Jericho inbox | `specs/12-conductor-bridge.md` |
-| 13 | **Memory Cross-Sync** | N/A (single profile) | Future: multi-profile | `specs/13-memory-sync.md` |
-| 14 | **Agent Dispatch** | Scaffold needed | `dispatch/` → bridge outbox | `specs/14-agent-dispatch.md` |
-| 15 | **MoA Preset (Jericho)** | ✅ Configured | `config.yaml` moa section | `specs/15-moa-preset.md` |
-| 16 | **Vault RAG** | Script exists, on-demand | `intel/` cross-ref cache | `specs/16-vault-rag.md` |
+## Runtime topology
 
-## Operational Rhythm
+`apps/jarvis` is the canonical implementation:
 
-```
-08:00 UTC — Morning Synthesis fires (DEV, PA, Iris)
-           → inbox/morning/{dev,pa,iris}-{date}.md
-           → Jericho aggregates into reports/daily/{date}.md
-           → Delivered to Carlos DM
+- `bridge/` is one loopback TypeScript service. It serves the built React UI, authenticated HTTP/SSE, the optional voice WebSocket, connector polling, and mission execution from one origin.
+- `shared/` contains versioned contracts used by Core and the command center.
+- `frontend/` is the cinematic command center and disposable local voice/gesture runtime.
+- macOS Keychain holds the generated Core master key and local API token unless explicit environment overrides are supplied.
+- SQLite record bodies and provenance are authenticated and encrypted. Immutable source-event identity and exact plan hashes prevent silent mutation.
 
-09:00 UTC — Fleet Health Check
-           → health/versions.json, costs.json
-           → Alerts if: version drift, cost spike, agent silent >24h
+Conductor supplies a workspace-specific port, but runtime mode is nonconcurrent because all workspaces would otherwise compete for Carlos's single private Core and connector leases.
 
-Every 5m  — Realtime watchers (Iris replies, errors, PRs, Linear, costs)
-           → inbox/realtime/{source}-{timestamp}.json
-           → Jericho deduplicates, signals only
+## Authority hierarchy
 
-23:00 UTC — Nightly Vault Processor
-           → inbox/nightly/{date}.md
-           → Inbox filing, orphan detection, RAG rebuild, meeting processing
+1. Direct source APIs and Git are evidence truth for their own systems.
+2. Immutable `EventEnvelope` records preserve captured source identity, time, evidence, provenance, and integrity.
+3. Canonical entities and typed relationships reconcile observations without deleting contradictions.
+4. A versioned, hash-bound `MissionPlan` is execution authority only after Carlos approves that exact version.
+5. `ActionReceipt` and independently verified artifacts prove outcomes; queue state or successful tool return alone does not.
+6. Obsidian is selected, human-readable durable memory. It is not an authority ledger or job queue.
+7. Paperclip, filesystem buses, prototypes, and old reports are reconciled surfaces only.
 
-Friday   — Weekly Review
-           → inbox/weekly/{date}.md
-           → Git velocity, shipped tickets, decisions, blocked items
-```
+## Lifecycle
 
-## Jericho Digest Format
+### Capture
 
-Every morning, Jericho produces a single digest for Carlos:
+Core accepts spoken/local captures, Telegram via the authenticated Hermes gateway, Linear, Git, GitHub, Conductor, Obsidian, URLs/files/transcripts supplied by Carlos, and semantic selections from the command center. Connector cursors, leases, pagination, retries, and health are durable. Source event IDs make ingestion idempotent.
 
-```markdown
-# Jericho — {date}
+### Understand
 
-## Fleet
-DEV v0.14.0 (3 behind) | PA: memory-only | Iris: memory-only | Donald: not found
+The classifier is read-only. It extracts entities, intent, expected outcome, commitments, claims, assumptions, deadlines, affected parties, risk, evidence requirements, capability needs, confidence, and ambiguity. It cannot authorize an external action.
 
-## Since Yesterday
-- Linear: {N} tickets moved, {M} new
-- GitHub: {N} PRs, {M} commits across repos
-- Vault: {N} notes changed, sync healthy
-- Costs: ${X} DeepSeek, ${Y} FAL, ${Z} total
+### Route
 
-## Requiring Attention
-- [ ] {urgent item}
-- [ ] {blocked item}
+Every intent has exactly one primary route: `Reply`, `Action`, `Project`, `Knowledge`, `Signal`, or `Review`. Deterministic ownership and safety rules override model suggestions. Low confidence, contradictory evidence, and high-risk ambiguity enter Review.
 
-## Signals
-- Iris replied: {N} messages waiting
-- DeepSeek cost: {status} vs 7-day avg
-- Errors: {N} in last 24h
-```
+### Plan
 
-## Integration Principle
+Project work becomes a dependency-aware `MissionPlan` with deliverables, acceptance tests, evidence snapshot, registered capabilities, cost/runtime/concurrency/retry ceilings, tool and writable scopes, recipients and systems, mutation boundaries, rollback, and escalation conditions.
 
-Every subsystem writes to Jericho's inbox in a standardized format:
-- **Filename:** `{source}-{timestamp}.{md|json}`
-- **Schema:** Frontmatter with `source`, `timestamp`, `priority`, `category`
-- **Dedup:** Jericho tracks last-processed timestamps in `state/digest.json`
+Default lanes are DEV for code and delivery preparation, Angela for personal operations, Donald for sales and relationships, Iris for visual work, and Researcher/Analyst for evidence and synthesis.
 
-Jericho never edits other agents' memory or config directly. It communicates exclusively through:
-1. The Jericho bus (filesystem)
-2. The conductor bridge outbox (for agent dispatch)
-3. Carlos's DM (for human-facing digests)
+### Approve once
 
-## Current State (2026-06-27)
+Carlos approves an exact plan version and hash. That approval permits internal orchestration only inside the displayed boundary. The approved version is immutable.
 
-**Active:** Obsidian vault sync, Hermes gateway, Figma MCP, MoA preset
-**Paused:** All cron jobs, all watchers, iris consult runner
-**Missing:** Jericho cron layer, fleet health check, Nous monitor, agent dispatch
-**Critical:** Hermes v0.14.0 → v0.17.0 upgrade (3 versions, ~6 weeks behind)
+A checkpoint is mandatory before any budget/runtime/concurrency/retry overrun, new recipient or system, broader repository/credential/data access, changed objective or acceptance test, unapproved destructive/production mutation, or recommendation-changing contradiction.
 
-## Boot Sequence
+### Execute
 
-When Jericho is fully wired:
+Assignments use durable leases, idempotency keys, bounded retries, cancellation, dependency checks, and minimum evidence/tool/writable scope. Only versioned `AgentCapability` entries may run. Workers cannot recursively create unrestricted workers or widen their own authority. Completion requires a structured artifact and independent verification.
 
-1. Gateway starts → `enforce-fleet-routing.py` pins model routing
-2. Jericho cron layer activates → morning synthesis, watchers, health checks
-3. Bridge watchers resume → Iris reply detection, engineer message routing
-4. Fleet health → version check, memory pressure, error rate monitoring
-5. Daily digest → Carlos gets one morning message, not N separate pings
+External effects require destination-scoped idempotency and a verified receipt. Retries must not duplicate a send, deployment, or other mutation.
+
+### Retain
+
+Verified outcomes, evidence, decisions, artifacts, edits, costs, and receipts return to the truth graph. Claims keep their assumptions and contradictory observations remain separate. Preference and memory changes are source-backed proposals, never silent merges. Selected summaries may be written to Obsidian after verification.
+
+### Present
+
+The command center projects Today, ranked communications and people, active context, approvals, assignments, outcomes, connector health, and replayable history. Nucleus combines semantic, activity, and mission graphs. A visible node or animation must trace to persisted evidence; storage integrity is not a substitute for destination verification.
+
+## Interaction boundary
+
+Voice expresses intent, edits, filters, and explanations. Gestures operate only when their visual context makes the action valid. Clap wake is detected locally in standby; standby audio is not sent upstream. Open palm aims, left palm scrolls communications, fresh pinch focuses, stationary pinch-hold opens contextual actions, and early movement drags. Nucleus owns camera clutch and semantic-depth gestures. Held thumb up/down acts only on an active approval. Both open palms cancel pending work. Closed-fist actions are deliberately absent.
+
+The React tree owns application state and `#app`. The gesture renderer owns only a disposable body overlay. Hardware starts from an explicit user engagement and tears down completely on dismissal, failure, or unmount. Keyboard and pointer operation remain complete fallbacks.
+
+## Privacy invariants
+
+- Bind to loopback by default; reject untrusted Host and Origin values.
+- Require an authenticated bearer or per-process same-origin session for Core APIs and voice upgrade.
+- Never persist or log audio frames, transcripts, raw hand landmarks, secrets, or private source payloads outside their encrypted evidence record.
+- Route only semantic gesture events into application state.
+- Keep remote workers on minimum evidence and permissions.
+- Record estimated and actual mission cost without recording secret prompts or credentials.
+- Fail closed on wrong keys, tampered ciphertext, stale plan versions, expired leases, scope expansion, and unverifiable external results.
+
+## Change discipline
+
+Any change to shared contracts, authority boundaries, approval semantics, connector source identity, receipt verification, credential handling, or gesture grammar requires executable tests and an update to this document plus the nearest `INDEX.md`. Historical plans in `docs/` never override this architecture or the shared contracts.

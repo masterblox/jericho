@@ -1,5 +1,7 @@
 # Jericho
 
-Jericho OS — real-life Jarvis interface and orchestration layer by Masterblox.
+Jericho is Carlos's private, local-first intelligence OS: an encrypted evidence graph, bounded mission orchestrator, and voice/gesture command center inspired by JARVIS.
 
-The v1.0.4 sticky card-target palm-and-pinch interface lives in [`apps/jarvis`](apps/jarvis/README.md).
+Start with the [repository index](INDEX.md) and [canonical architecture](ARCHITECTURE.md). The active implementation, setup, and verification commands live in [`apps/jarvis`](apps/jarvis/INDEX.md).
+
+From Conductor, the shared **Jericho** run action builds and starts the complete loopback runtime on the workspace port. On macOS, local Core credentials initialize in Keychain on first boot; external connector and optional voice credentials remain explicit configuration.
