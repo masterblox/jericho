@@ -36,8 +36,9 @@ export function ParticleField() {
     const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches
     const rnd = mulberry(1337)
 
+    // ambient dust + node clusters only — the 3D CoreSphere owns the center now
     const area = window.innerWidth * window.innerHeight
-    const count = Math.round(Math.min(7500, Math.max(2500, area / 180)))
+    const count = Math.round(Math.min(4500, Math.max(2200, area / 300)))
 
     // particle storage
     const pr = new Float32Array(count)   // base radius (viewBox units)

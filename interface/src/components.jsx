@@ -1,5 +1,6 @@
 import React from 'react'
 import { agents } from './data'
+import { useTypeOn, Chip } from './components/JerichoCard'
 
 export function StatusDot({ status }) {
   return <span className={`status-dot ${status}`} aria-label={status} />
@@ -32,15 +33,27 @@ export function decompose(text) {
   }
 }
 
+function TypedDirective({ text }) {
+  const typed = useTypeOn(text, 80, 640)
+  return <h2 id="dispatch-title" aria-label={text}>{typed}<span className="caret" aria-hidden="true" /></h2>
+}
+
 export function DispatchModal({ directive, onClose, onDispatch }) {
   if (!directive) return null
   const route = decompose(directive)
   return <div className="modal-backdrop" role="presentation" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-    <section className="dispatch-modal" role="dialog" aria-modal="true" aria-labelledby="dispatch-title">
-      <header><span className="micro">DIRECTIVE DECOMPOSITION / HUMAN GATE</span><button onClick={onClose} aria-label="Close">×</button></header>
+    <section className="dispatch-modal jcard-frame" role="dialog" aria-modal="true" aria-labelledby="dispatch-title">
+      <i className="jc-bracket tl" aria-hidden="true" /><i className="jc-bracket tr" aria-hidden="true" />
+      <i className="jc-bracket bl" aria-hidden="true" /><i className="jc-bracket br" aria-hidden="true" />
+      <div className="jc-scan" aria-hidden="true" />
+      <header>
+        <span className="micro">DIRECTIVE DECOMPOSITION / HUMAN GATE</span>
+        <Chip tone={route.risky ? 'fault' : 'ok'}>{route.risky ? 'HIGH RISK' : 'LOW RISK'}</Chip>
+        <button onClick={onClose} aria-label="Close">×</button>
+      </header>
       <div className="modal-body">
         <p className="micro cy">DIRECTIVE</p>
-        <h2 id="dispatch-title">{directive}</h2>
+        <TypedDirective text={directive} />
         <ol className="dispatch-route">
           <li className="step"><span className="step-num">01</span><strong>ANALYZE</strong><small>JERICHO / {route.secs} SEC</small></li>
           <li aria-hidden="true" className="route-line" />

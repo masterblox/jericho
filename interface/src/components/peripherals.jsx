@@ -1,6 +1,8 @@
 import React from 'react'
 import { agents, signals, system, tasks } from '../data'
 import { StatusDot } from '../components'
+import { JerichoCard } from './JerichoCard'
+import { Sparkbars, SegBar } from './charts'
 
 function Clock() {
   const [now, setNow] = React.useState(() => new Date())
@@ -94,35 +96,63 @@ export function SignalsCluster({ onSummon }) {
   </div>
 }
 
+const AGE_UNITS = { H: 1, D: 24 }
+function ageHours(age) {
+  let hours = 0
+  for (const [, n, u] of age.matchAll(/(\d+)\s*([DH])/g)) hours += Number(n) * AGE_UNITS[u]
+  return hours
+}
+
 export function MissionsProjection({ onReturn }) {
+  const blocked = tasks.filter(t => t.status === 'BLOCKED').length
   return <section className="projection" aria-label="Mission projection">
     <header>
-      <h2>MISSION FIELD</h2><span className="micro">05 ACTIVE · 03 BLOCKED</span>
+      <h2>MISSION FIELD</h2>
+      <span className="micro">{String(tasks.length).padStart(2, '0')} ACTIVE · {String(blocked).padStart(2, '0')} BLOCKED</span>
+      <span className="trend micro">QUEUE <Sparkbars series={system.queueTrend} width={84} height={16} /></span>
       <button className="return micro" onClick={onReturn}>RETURN</button>
     </header>
-    {tasks.map(task => (
-      <div key={task.id} className={`proj-row ${task.priority} ${task.status.toLowerCase()}`}>
-        <span className="code">{task.id}</span>
-        <span className="title"><strong>{task.title}</strong><small>{task.meta}</small></span>
-        <span className="state">{task.status} · {task.agent}</span>
-        <span className="age">{task.age}</span>
-      </div>
-    ))}
+    <div className="card-grid">
+      {tasks.map((task, i) => {
+        const blockedTask = task.status === 'BLOCKED'
+        return <JerichoCard
+          key={task.id}
+          index={i}
+          tone={blockedTask ? 'fault' : ''}
+          eyebrow={task.id}
+          source={task.agent}
+          chip={task.status}
+          chipTone={blockedTask ? 'fault' : task.status === 'READY' ? 'ok' : 'dim'}
+          provenance={`${task.meta.toUpperCase()} · AGE ${task.age}`}
+        >
+          <p className="jc-title">{task.title}</p>
+          <SegBar value={Math.min(ageHours(task.age), 96)} max={96} units={12} mode="circle" width={110} height={7} fault={blockedTask} />
+        </JerichoCard>
+      })}
+    </div>
   </section>
 }
 
 export function SignalsProjection({ onReturn }) {
   return <section className="projection" aria-label="Signal projection">
     <header>
-      <h2>BUS SPECTRUM</h2><span className="micro">LIVE · 05 EVENT</span>
+      <h2>BUS SPECTRUM</h2><span className="micro">LIVE · {String(signals.length).padStart(2, '0')} EVENT</span>
       <button className="return micro" onClick={onReturn}>RETURN</button>
     </header>
-    {signals.map(signal => (
-      <div key={signal.time} className={`proj-row signal ${signal.level}`}>
-        <time>{signal.time}</time>
-        <span className="src">{signal.source}</span>
-        <p>{signal.message}</p>
-      </div>
-    ))}
+    <div className="card-grid">
+      {signals.map((signal, i) => (
+        <JerichoCard
+          key={signal.time}
+          index={i}
+          tone={signal.level === 'critical' ? 'fault' : ''}
+          eyebrow={signal.source}
+          chip={signal.level.toUpperCase()}
+          chipTone={signal.level === 'critical' ? 'fault' : signal.level === 'warn' ? 'dim' : signal.level === 'ok' ? 'ok' : ''}
+          provenance={`BUS EVENT · ${signal.time} GST`}
+        >
+          <p className="jc-title">{signal.message}</p>
+        </JerichoCard>
+      ))}
+    </div>
   </section>
 }

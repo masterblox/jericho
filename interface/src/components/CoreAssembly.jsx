@@ -1,6 +1,9 @@
 import React from 'react'
 import { agents, signals } from '../data'
 import { StatusDot } from '../components'
+import { CoreSphere } from './CoreSphere'
+import { JerichoCard, BreakdownRow } from './JerichoCard'
+import { SegBar, Sparkbars } from './charts'
 
 const RADIUS = 41
 
@@ -50,22 +53,6 @@ function sector(r1, r2, a1, a2) {
 // stator 26.8-28.6 · conduits 29-31 (waveform bars live at 31.5-34 outside).
 function Reactor() {
   return <svg className="reactor" viewBox="0 0 100 100" aria-hidden="true">
-    <defs>
-      <radialGradient id="plasma-core">
-        <stop offset="0%" stopColor="#ffffff" />
-        <stop offset="45%" stopColor="#dbf1ff" />
-        <stop offset="100%" stopColor="#9fd8ff" stopOpacity="0" />
-      </radialGradient>
-      <radialGradient id="plasma-mid">
-        <stop offset="0%" stopColor="#bfe4ff" stopOpacity=".9" />
-        <stop offset="100%" stopColor="#79cdff" stopOpacity="0" />
-      </radialGradient>
-      <radialGradient id="plasma-fringe" fx="42%" fy="42%">
-        <stop offset="55%" stopColor="#9fd8ff" stopOpacity="0" />
-        <stop offset="82%" stopColor="#9fd8ff" stopOpacity=".55" />
-        <stop offset="100%" stopColor="#79cdff" stopOpacity="0" />
-      </radialGradient>
-    </defs>
 
     {/* spiral axis: caged inside the coil ring (4 -> 12), one turn */}
     <g className="spiral-g">
@@ -166,12 +153,8 @@ function Reactor() {
       </g>
     </g>
 
-    {/* plasma lens: the living heart */}
+    {/* lens mount ring — the 3D particle sphere lives inside it */}
     <g className="lens-g">
-      <g className="lens-shimmer s1"><circle cx="50" cy="50" r="7.6" fill="url(#plasma-fringe)" /></g>
-      <g className="lens-shimmer s2"><circle cx="50" cy="50" r="7.2" fill="url(#plasma-fringe)" opacity=".7" /></g>
-      <circle className="lens-mid" cx="50" cy="50" r="6" fill="url(#plasma-mid)" />
-      <circle className="lens-core" cx="50" cy="50" r="4.2" fill="url(#plasma-core)" />
       <circle className="lens-ring" cx="50" cy="50" r="7.9" />
     </g>
   </svg>
@@ -268,18 +251,25 @@ function Callout({ node }) {
   const last = signals.find(s => s.source === node.id)
   const style = right
     ? { left: `calc(${node.nx + 15}% + 6px)`, top: `${node.ny - 6}%`, transform: 'translateY(-12px)' }
-    : { left: `calc(${node.nx - 15}% - 6px)`, top: `${node.ny - 6}%`, transform: 'translate(-100%, -12px)', justifyItems: 'end', textAlign: 'right' }
-  return <div className={`callout ${node.status}`} style={style}>
-    <header><strong>{node.id}</strong><span className="micro">{node.status}</span></header>
-    <div className="rule" />
-    <dl>
-      <div><dt>ROLE</dt><dd>{node.role}</dd></div>
-      <div><dt>LOAD</dt><dd>{node.load}%</dd></div>
-      <div><dt>PULSE</dt><dd>{node.pulse}</dd></div>
-      <div><dt>BUILD</dt><dd>{node.version}</dd></div>
-    </dl>
+    : { left: `calc(${node.nx - 15}% - 6px)`, top: `${node.ny - 6}%`, transform: 'translate(-100%, -12px)' }
+  const degraded = node.status === 'degraded'
+  return <JerichoCard
+    className={`callout ${node.status}`}
+    style={style}
+    tone={degraded ? 'fault' : ''}
+    eyebrow={`NODE / ${node.id}`}
+    chip={node.status.toUpperCase()}
+    chipTone={degraded ? 'fault' : node.status === 'paused' ? 'dim' : ''}
+    big={node.load}
+    bigUnit="%"
+    label="PROCESS LOAD"
+    provenance={`NODE VERIFIED ${new Date().toISOString().slice(11, 16)}Z · ${node.version.toUpperCase()}`}
+  >
+    <Sparkbars series={node.loadHistory} fault={degraded} width={150} height={22} />
+    <BreakdownRow label="ROLE" value={node.role}><SegBar value={node.load} units={8} width={56} height={6} fault={degraded} /></BreakdownRow>
+    <BreakdownRow label="PULSE" value={node.pulse}><SegBar value={100 - node.load} units={8} width={56} height={6} /></BreakdownRow>
     {last && <p className="micro last">{last.message}</p>}
-  </div>
+  </JerichoCard>
 }
 
 export function CoreAssembly({ selected, onSelect }) {
@@ -297,6 +287,7 @@ export function CoreAssembly({ selected, onSelect }) {
     <svg className="pulse-ring" viewBox="0 0 100 100" aria-hidden="true">
       <circle cx="50" cy="50" r="35.2" />
     </svg>
+    <CoreSphere />
     <Reactor />
     {current && <Leader node={current} />}
     <div role="listbox" aria-label="Fleet roster">

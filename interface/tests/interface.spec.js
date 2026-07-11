@@ -67,6 +67,16 @@ test.describe('Jericho Fleet Command', () => {
     await expect(page.locator('.layer-particles canvas')).toHaveCount(1)
     const particles = await page.evaluate(() => window.__jerichoParticles?.count || 0)
     expect(particles).toBeGreaterThanOrEqual(2500)
+
+    // the gate engine (3D core sphere) is mounted and populated
+    await expect(page.locator('.core-sphere canvas')).toHaveCount(1)
+    const sphere = await page.evaluate(() => window.__jerichoSphere?.count || 0)
+    expect(sphere).toBeGreaterThanOrEqual(5000)
+
+    // summoned missions render as a card field
+    await page.evaluate(() => window.jericho.summon('MISSIONS'))
+    await expect(page.locator('.projection .jcard')).toHaveCount(5)
+    await page.evaluate(() => window.jericho.summon('CORE'))
   })
 
   test('programmatic selection, persona mode and dispatch flow', async ({ page }) => {
