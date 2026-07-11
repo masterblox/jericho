@@ -97,6 +97,7 @@ describe('CoreClient', () => {
       .mockResolvedValueOnce(new Response(JSON.stringify({
         relativePath: 'Jericho/Missions/mission-1.md', status: 'created',
       }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(snapshot({ lastChangeSequence: 8 })), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: next }), { status: 201 }));
     const store = new CommandCenterStore();
     const client = new CoreClient(store, { fetch: fetchPort as typeof fetch });
@@ -117,15 +118,49 @@ describe('CoreClient', () => {
     await expect(client.retainMission('mission-1')).resolves.toEqual({
       relativePath: 'Jericho/Missions/mission-1.md', status: 'created',
     });
+    expect(store.getSnapshot().snapshot?.lastChangeSequence).toBe(8);
     await client.proposeRelationship({
       fromNodeId: 'mission:1', toNodeId: 'agent:dev', relation: RelationType.AssignedTo,
     });
-    expect(fetchPort).toHaveBeenNthCalledWith(3, '/api/v1/relationship-proposals', expect.objectContaining({
+    expect(fetchPort).toHaveBeenNthCalledWith(4, '/api/v1/relationship-proposals', expect.objectContaining({
       method: 'POST', credentials: 'same-origin',
       body: JSON.stringify({
         fromNodeId: 'mission:1', toNodeId: 'agent:dev', relation: 'assigned_to',
       }),
     }));
+  });
+
+  it('posts exact review-intent and checkpoint bindings without authorizing connector work', async () => {
+    const next = snapshot({ lastChangeSequence: 11 });
+    const fetchPort = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: next }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: next }), { status: 200 }));
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+
+    await client.decideReviewIntent({
+      intentId: 'intent-review', intentHash: 'b'.repeat(64),
+      disposition: 'reclassify_project', reason: 'Project scope needs a bounded plan',
+    });
+    await client.decideCheckpoint({
+      proposalId: 'checkpoint-1', planHash: 'a'.repeat(64), version: 3,
+      outcome: 'rejected', reason: 'Create a new immutable plan',
+    });
+
+    expect(fetchPort).toHaveBeenNthCalledWith(1, '/api/v1/review-intents/intent-review/decisions', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin',
+      body: JSON.stringify({
+        intentHash: 'b'.repeat(64), disposition: 'reclassify_project',
+        reason: 'Project scope needs a bounded plan',
+      }),
+    }));
+    expect(fetchPort).toHaveBeenNthCalledWith(2, '/api/v1/checkpoints/checkpoint-1/decisions', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin',
+      body: JSON.stringify({
+        planHash: 'a'.repeat(64), version: 3,
+        outcome: 'rejected', reason: 'Create a new immutable plan',
+      }),
+    }));
+    expect(JSON.stringify(fetchPort.mock.calls)).not.toMatch(/send_message|deploy|connector.*execute/i);
   });
 });
 

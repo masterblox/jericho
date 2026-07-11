@@ -1,4 +1,4 @@
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { chmodSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -33,6 +33,7 @@ import {
   ExternalIdentityLinkStatus,
   IdentityReviewKind,
   LifecycleStatus,
+  ProposalKind,
   ReceiptStatus,
   RiskLevel,
   RouteType,
@@ -102,6 +103,38 @@ export interface MissionCancellationBinding {
   planHash: string;
   planVersion: number;
   decision: DecisionRecord;
+}
+
+export interface ReviewIntentResolutionInput {
+  intentId: string;
+  intentHash: string;
+  decision: DecisionRecord;
+  derivedIntent?: IntentEnvelope;
+  derivedMission?: MissionPlan;
+}
+
+export interface ReviewIntentResolution {
+  originalIntent: IntentEnvelope;
+  decision: DecisionRecord;
+  derivedIntent?: IntentEnvelope;
+  mission?: MissionPlan;
+}
+
+export interface CheckpointResolutionInput {
+  proposalId: string;
+  planHash: string;
+  planVersion: number;
+  decision: DecisionRecord;
+  resume: boolean;
+}
+
+export interface CheckpointResolution {
+  proposal: Proposal;
+  decision: DecisionRecord;
+  assignment: Assignment;
+  mission: MissionPlan;
+  resumed: boolean;
+  requiresNewPlan: boolean;
 }
 
 export interface CommitCaptureBatchInput {
@@ -218,6 +251,20 @@ export class MissionDecisionConflictError extends Error {
   constructor(id: string, reason: string) {
     super(`Mission ${id} decision ${reason}`);
     this.name = 'MissionDecisionConflictError';
+  }
+}
+
+export class ReviewIntentDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Review intent ${id} decision ${reason}`);
+    this.name = 'ReviewIntentDecisionConflictError';
+  }
+}
+
+export class CheckpointDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Checkpoint ${id} decision ${reason}`);
+    this.name = 'CheckpointDecisionConflictError';
   }
 }
 
@@ -705,6 +752,7 @@ export class JerichoStore {
   readonly #masterCrypto: CoreCrypto;
   readonly #crypto: CoreCrypto;
   readonly #storeUuid: string;
+  #writeTransactionDepth = 0;
 
   constructor(options: JerichoStoreOptions = {}) {
     this.#masterCrypto = new CoreCrypto(options.key ?? loadMasterKey());
@@ -1375,27 +1423,7 @@ export class JerichoStore {
     assertIntentEnvelope(intent);
     const normalized = normalizeIntent(intent);
     assertIntentEnvelope(normalized);
-    return this.#writeTransaction(() => {
-      const existing = this.getIntent(normalized.id);
-      if (existing) {
-        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
-        throw new Error(`Intent ${normalized.id} conflicts with the stored record`);
-      }
-      const sealed = this.#sealRecord('intents', normalized.id, normalized);
-      const stored = sealed.record;
-      this.#database.prepare(`
-        INSERT INTO intents (
-          id, event_id, actor_entity_id, intent_type, status, route, risk,
-          confidence, freshness_at, created_at, updated_at, integrity_hash, body
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        stored.id, stored.eventId ?? null, stored.actorEntityId ?? null,
-        stored.kind, stored.status, stored.route, stored.risk, stored.confidence,
-        stored.freshness?.observedAt ?? null, stored.createdAt, stored.updatedAt,
-        sealed.integrityHash, sealed.body,
-      );
-      return stored;
-    });
+    return this.#writeTransaction(() => this.#insertIntentRecord(normalized));
   }
 
   getIntent(id: string): IntentEnvelope | undefined {
@@ -1416,6 +1444,68 @@ export class JerichoStore {
       .map((row) => this.#readRecord<IntentEnvelope>(
         'intents', String(row.id), row, (value) => assertIntentEnvelope(value), (value) => value.id,
       ));
+  }
+
+  resolveReviewIntent(input: ReviewIntentResolutionInput): ReviewIntentResolution {
+    return this.#writeTransaction(() => {
+      const original = this.getIntent(input.intentId);
+      if (!original) throw new ReviewIntentDecisionConflictError(input.intentId, 'does not exist');
+      if (
+        original.route !== 'review' ||
+        original.status !== LifecycleStatus.PendingApproval
+      ) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'is not pending Review');
+      }
+      if (!original.integrityHash || original.integrityHash !== input.intentHash) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'hash does not match');
+      }
+      if (this.listDecisions().some((decision) => decision.intentId === input.intentId)) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'was already disposed');
+      }
+      if (
+        input.decision.intentId !== undefined && input.decision.intentId !== input.intentId ||
+        input.decision.intentHash !== undefined && input.decision.intentHash !== input.intentHash
+      ) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'binding does not match');
+      }
+      if (
+        input.derivedIntent &&
+        (
+          input.derivedIntent.route !== 'project' ||
+          input.derivedIntent.status !== LifecycleStatus.Active ||
+          input.decision.outcome !== DecisionOutcome.Superseded
+        )
+      ) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'reclassification is invalid');
+      }
+      if (
+        Boolean(input.derivedIntent) !== Boolean(input.derivedMission) ||
+        input.derivedMission && input.derivedIntent &&
+        input.derivedMission.intentId !== input.derivedIntent.id
+      ) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'derived plan binding is invalid');
+      }
+      if (!input.derivedIntent && input.decision.outcome !== DecisionOutcome.Rejected) {
+        throw new ReviewIntentDecisionConflictError(input.intentId, 'dismissal is invalid');
+      }
+      const decision = this.#insertDecision(normalizeDecision({
+        ...input.decision,
+        intentId: input.intentId,
+        intentHash: input.intentHash,
+      }));
+      const derivedIntent = input.derivedIntent
+        ? this.#insertIntentRecord(normalizeIntent(input.derivedIntent))
+        : undefined;
+      const mission = input.derivedMission
+        ? this.createMissionPlan(input.derivedMission)
+        : undefined;
+      return {
+        originalIntent: original,
+        decision,
+        ...(derivedIntent ? { derivedIntent } : {}),
+        ...(mission ? { mission } : {}),
+      };
+    });
   }
 
   registerAgentCapability(capability: AgentCapability): AgentCapability {
@@ -1675,37 +1765,7 @@ export class JerichoStore {
     if (normalized.status !== LifecycleStatus.PendingApproval) {
       throw new Error(`Proposal ${normalized.id} initial lifecycle must be pending approval`);
     }
-    return this.#writeTransaction(() => {
-      const existingRow = this.#database.prepare('SELECT * FROM proposals WHERE id = ?').get(normalized.id);
-      if (existingRow) {
-        const existing = this.#readRecord<Proposal>(
-          'proposals', String(existingRow.id), existingRow, (value) => assertProposal(value), (value) => value.id,
-        );
-        if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
-        throw new Error(`Proposal ${normalized.id} conflicts with the stored record`);
-      }
-      const sealed = this.#sealRecord('proposals', normalized.id, normalized);
-      const stored = sealed.record;
-      this.#database.prepare(`
-        INSERT INTO proposals (
-          id, assignment_id, mission_task_id, proposal_type, status, route,
-          risk, confidence, created_at, expires_at, integrity_hash, body
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `).run(
-        stored.id, stored.assignmentId ?? null, stored.missionTaskId ?? null,
-        stored.kind, stored.status, stored.route, stored.risk,
-        stored.confidence ?? null, stored.createdAt, stored.expiresAt ?? null,
-        sealed.integrityHash, sealed.body,
-      );
-      this.#appendChangeLog({
-        kind: ChangeLogKind.ProposalChanged,
-        recordType: 'proposal',
-        recordId: stored.id,
-        changedAt: stored.createdAt,
-        payload: { status: stored.status, kind: stored.kind },
-      });
-      return stored;
-    });
+    return this.#writeTransaction(() => this.#insertProposalRecord(normalized));
   }
 
   getProposal(id: string): Proposal | undefined {
@@ -1739,6 +1799,112 @@ export class JerichoStore {
       this.#insertDecision(boundDecision);
       this.#writeProposalRecord({ ...proposal, status: nextStatus });
       return this.getProposal(id)!;
+    });
+  }
+
+  resolveCheckpoint(input: CheckpointResolutionInput): CheckpointResolution {
+    return this.#writeTransaction(() => {
+      const proposal = this.getProposal(input.proposalId);
+      if (!proposal || !isCheckpointProposal(proposal)) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'does not exist');
+      }
+      if (proposal.status !== LifecycleStatus.PendingApproval) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'is not pending');
+      }
+      const missionId = String(proposal.body.missionId);
+      const assignmentId = String(proposal.body.assignmentId);
+      const mission = this.getMission(missionId);
+      const assignment = this.getAssignment(assignmentId);
+      const task = assignment ? this.getMissionTask(assignment.missionTaskId) : undefined;
+      if (!mission || !assignment || !task) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'context is missing');
+      }
+      if (
+        input.planVersion !== mission.version ||
+        input.planHash !== mission.planHash ||
+        computeMissionPlanHash(mission) !== input.planHash ||
+        proposal.body.planHash !== input.planHash ||
+        proposal.body.planVersion !== input.planVersion
+      ) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'plan binding does not match');
+      }
+      if (
+        assignment.id !== proposal.assignmentId ||
+        assignment.missionId !== mission.id ||
+        assignment.status !== LifecycleStatus.Paused ||
+        task.status !== LifecycleStatus.Paused
+      ) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'paused assignment binding does not match');
+      }
+      if (
+        input.decision.proposalId !== undefined && input.decision.proposalId !== proposal.id ||
+        input.decision.missionId !== undefined && input.decision.missionId !== mission.id ||
+        input.decision.planHash !== undefined && input.decision.planHash !== input.planHash ||
+        input.decision.planVersion !== undefined && input.decision.planVersion !== input.planVersion
+      ) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'decision binding does not match');
+      }
+      const requiresNewPlan = proposal.body.requiresNewPlan === true;
+      const resumable = proposal.body.resumable === true && !requiresNewPlan;
+      if (input.resume) {
+        if (input.decision.outcome !== DecisionOutcome.Approved || !resumable) {
+          throw new CheckpointDecisionConflictError(input.proposalId, 'requires a new immutable plan');
+        }
+        const reasons = Array.isArray(proposal.body.reasons) ? proposal.body.reasons : [];
+        if (!reasons.length || reasons.some((reason) => reason !== 'concurrency_budget')) {
+          throw new CheckpointDecisionConflictError(input.proposalId, 'cannot resume within the original plan');
+        }
+        const active = this.listAssignments({ missionId: mission.id, status: LifecycleStatus.Active });
+        if (active.length >= mission.budget.maxConcurrency) {
+          throw new CheckpointDecisionConflictError(input.proposalId, 'concurrency is still exhausted');
+        }
+      } else if (input.decision.outcome !== DecisionOutcome.Rejected) {
+        throw new CheckpointDecisionConflictError(input.proposalId, 'approval must resume exact scope');
+      }
+      const decision = this.#insertDecision(normalizeDecision({
+        ...input.decision,
+        proposalId: proposal.id,
+        missionId: mission.id,
+        missionTaskId: assignment.missionTaskId,
+        planHash: input.planHash,
+        planVersion: input.planVersion,
+      }));
+      this.#writeProposalRecord({
+        ...proposal,
+        status: input.resume ? LifecycleStatus.Approved : LifecycleStatus.Rejected,
+      });
+      if (input.resume) {
+        this.#writeAssignmentRecord({
+          ...assignment,
+          status: LifecycleStatus.Queued,
+          availableAt: decision.decidedAt,
+          instructions: withoutCheckpointReasons(assignment.instructions),
+        });
+        this.#writeMissionTaskRecord({
+          ...task,
+          status: LifecycleStatus.Queued,
+          updatedAt: decision.decidedAt,
+        });
+        this.#writeMissionRecord({
+          ...mission,
+          status: LifecycleStatus.Active,
+          updatedAt: decision.decidedAt,
+        });
+      } else {
+        this.requestMissionCancellation(
+          mission.id,
+          decision.rationale,
+          decision.decidedAt,
+        );
+      }
+      return {
+        proposal: this.getProposal(proposal.id)!,
+        decision,
+        assignment: this.getAssignment(assignment.id)!,
+        mission: this.getMission(mission.id)!,
+        resumed: input.resume,
+        requiresNewPlan,
+      };
     });
   }
 
@@ -2313,6 +2479,7 @@ export class JerichoStore {
       this.#writeMissionTaskRecord({ ...task, status: LifecycleStatus.Paused, updatedAt: at });
       const mission = this.getMission(assignment.missionId)!;
       this.#writeMissionRecord({ ...mission, status: LifecycleStatus.Paused, updatedAt: at });
+      this.#insertProposalRecord(checkpointProposal(assignment, mission, reasons, at));
       return this.getAssignment(id)!;
     });
   }
@@ -3370,6 +3537,67 @@ export class JerichoStore {
     return stored;
   }
 
+  #insertIntentRecord(intent: IntentEnvelope): IntentEnvelope {
+    assertIntentEnvelope(intent);
+    const normalized = normalizeIntent(intent);
+    const existing = this.getIntent(normalized.id);
+    if (existing) {
+      if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+      throw new Error(`Intent ${normalized.id} conflicts with the stored record`);
+    }
+    const sealed = this.#sealRecord('intents', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO intents (
+        id, event_id, actor_entity_id, intent_type, status, route, risk,
+        confidence, freshness_at, created_at, updated_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.eventId ?? null, stored.actorEntityId ?? null,
+      stored.kind, stored.status, stored.route, stored.risk, stored.confidence,
+      stored.freshness?.observedAt ?? null, stored.createdAt, stored.updatedAt,
+      sealed.integrityHash, sealed.body,
+    );
+    return stored;
+  }
+
+  #insertProposalRecord(proposal: Proposal): Proposal {
+    assertProposal(proposal);
+    const normalized = normalizeProposal(proposal);
+    if (normalized.status !== LifecycleStatus.PendingApproval) {
+      throw new Error(`Proposal ${normalized.id} initial lifecycle must be pending approval`);
+    }
+    const existingRow = this.#database.prepare('SELECT * FROM proposals WHERE id = ?').get(normalized.id);
+    if (existingRow) {
+      const existing = this.#readRecord<Proposal>(
+        'proposals', String(existingRow.id), existingRow, (value) => assertProposal(value), (value) => value.id,
+      );
+      if (this.#integrityHashFor(existing) === this.#integrityHashFor(normalized)) return existing;
+      throw new Error(`Proposal ${normalized.id} conflicts with the stored record`);
+    }
+    const sealed = this.#sealRecord('proposals', normalized.id, normalized);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO proposals (
+        id, assignment_id, mission_task_id, proposal_type, status, route,
+        risk, confidence, created_at, expires_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.assignmentId ?? null, stored.missionTaskId ?? null,
+      stored.kind, stored.status, stored.route, stored.risk,
+      stored.confidence ?? null, stored.createdAt, stored.expiresAt ?? null,
+      sealed.integrityHash, sealed.body,
+    );
+    this.#appendChangeLog({
+      kind: ChangeLogKind.ProposalChanged,
+      recordType: 'proposal',
+      recordId: stored.id,
+      changedAt: stored.createdAt,
+      payload: { status: stored.status, kind: stored.kind },
+    });
+    return stored;
+  }
+
   #writeReceiptRecord(receipt: ActionReceipt): void {
     assertActionReceipt(receipt);
     const previous = this.#database.prepare(`
@@ -3458,7 +3686,9 @@ export class JerichoStore {
   }
 
   #writeTransaction<T>(operation: () => T): T {
+    if (this.#writeTransactionDepth > 0) return operation();
     withBusyRetry(() => this.#database.exec('BEGIN IMMEDIATE'));
+    this.#writeTransactionDepth = 1;
     try {
       const result = operation();
       this.#database.exec('COMMIT');
@@ -3466,6 +3696,8 @@ export class JerichoStore {
     } catch (error) {
       this.#database.exec('ROLLBACK');
       throw error;
+    } finally {
+      this.#writeTransactionDepth = 0;
     }
   }
 
@@ -4203,6 +4435,76 @@ function withoutLease(assignment: Assignment): Assignment {
     ...remaining
   } = assignment;
   return remaining;
+}
+
+function withoutCheckpointReasons(instructions: JsonObject): JsonObject {
+  const { checkpointReasons: _checkpointReasons, ...remaining } = instructions;
+  return remaining;
+}
+
+function checkpointProposal(
+  assignment: Assignment,
+  mission: MissionPlan,
+  rawReasons: readonly string[],
+  createdAt: string,
+): Proposal {
+  const reasons = uniqueStrings(rawReasons);
+  const resumable = reasons.length > 0 && reasons.every((reason) => reason === 'concurrency_budget');
+  const digest = createHash('sha256').update(canonicalJson({
+    assignmentId: assignment.id,
+    attempt: assignment.attempt,
+    planHash: mission.planHash,
+    reasons,
+  })).digest('hex').slice(0, 32);
+  const highRisk = reasons.some((reason) => [
+    'destructive_mutation',
+    'production_mutation',
+    'contradictory_evidence',
+    'uncertain_external_action',
+  ].includes(reason));
+  return {
+    id: `checkpoint-${digest}`,
+    assignmentId: assignment.id,
+    missionTaskId: assignment.missionTaskId,
+    proposedByAgentId: 'jericho:mission-runner',
+    kind: ProposalKind.Action,
+    summary: `Mission paused: ${reasons.map((reason) => reason.replaceAll('_', ' ')).join(', ')}`,
+    body: {
+      checkpoint: true,
+      missionId: mission.id,
+      assignmentId: assignment.id,
+      planHash: mission.planHash,
+      planVersion: mission.version,
+      reasons,
+      resumable,
+      requiresNewPlan: !resumable,
+    },
+    status: LifecycleStatus.PendingApproval,
+    route: RouteType.HumanApproval,
+    risk: highRisk ? RiskLevel.High : RiskLevel.Medium,
+    createdAt,
+    provenance: [{
+      source: 'local:mission-runner',
+      sourceType: SourceType.System,
+      sourceEventId: `checkpoint-${digest}`,
+      observedAt: createdAt,
+    }],
+  };
+}
+
+function isCheckpointProposal(proposal: Proposal): boolean {
+  return (
+    proposal.kind === ProposalKind.Action &&
+    proposal.body.checkpoint === true &&
+    typeof proposal.body.missionId === 'string' &&
+    typeof proposal.body.assignmentId === 'string' &&
+    typeof proposal.body.planHash === 'string' &&
+    Number.isInteger(proposal.body.planVersion) &&
+    Array.isArray(proposal.body.reasons) &&
+    proposal.body.reasons.every((reason) => typeof reason === 'string') &&
+    typeof proposal.body.resumable === 'boolean' &&
+    typeof proposal.body.requiresNewPlan === 'boolean'
+  );
 }
 
 function assertLifecycleTransition(

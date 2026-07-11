@@ -1,8 +1,12 @@
 import type {
+  CheckpointDecisionRequest,
+  CheckpointDecisionResponse,
   CommandCenterSnapshot,
   MissionDecisionRequest,
   MissionDecisionResponse,
   RelationType,
+  ReviewIntentDecisionRequest,
+  ReviewIntentDecisionResponse,
 } from '@jericho/shared';
 
 import type { CommandCenterStore } from './command-center-store';
@@ -34,6 +38,14 @@ export interface RelationshipProposalInput {
   fromNodeId: string;
   toNodeId: string;
   relation: RelationType;
+}
+
+export interface ReviewIntentDecisionInput extends ReviewIntentDecisionRequest {
+  intentId: string;
+}
+
+export interface CheckpointDecisionInput extends CheckpointDecisionRequest {
+  proposalId: string;
 }
 
 export interface RetentionResult {
@@ -125,6 +137,24 @@ export class CoreClient {
     );
   }
 
+  decideReviewIntent(input: ReviewIntentDecisionInput): Promise<ReviewIntentDecisionResponse> {
+    const { intentId, ...request } = input;
+    return this.#postWithSnapshot(
+      `/api/v1/review-intents/${encodeURIComponent(intentId)}/decisions`,
+      request,
+      'Review intent decision failed',
+    ) as Promise<ReviewIntentDecisionResponse>;
+  }
+
+  decideCheckpoint(input: CheckpointDecisionInput): Promise<CheckpointDecisionResponse> {
+    const { proposalId, ...request } = input;
+    return this.#postWithSnapshot(
+      `/api/v1/checkpoints/${encodeURIComponent(proposalId)}/decisions`,
+      request,
+      'Checkpoint decision failed',
+    ) as Promise<CheckpointDecisionResponse>;
+  }
+
   async retainMission(missionId: string): Promise<RetentionResult> {
     const response = await this.#fetch(
       `/api/v1/missions/${encodeURIComponent(missionId)}/retain`,
@@ -135,7 +165,11 @@ export class CoreClient {
       },
     );
     if (!response.ok) throw new Error(await responseError(response, 'Mission retention failed'));
-    return response.json() as Promise<RetentionResult>;
+    const result = await response.json() as RetentionResult;
+    // Retention appends an immutable Core event after the filesystem write.
+    // Refetch so its replay entry and Nucleus pulse appear immediately.
+    await this.#refresh(this.#generation, true);
+    return result;
   }
 
   proposeRelationship(input: RelationshipProposalInput): Promise<unknown> {
@@ -160,7 +194,7 @@ export class CoreClient {
     return result;
   }
 
-  async #refresh(generation: number): Promise<void> {
+  async #refresh(generation: number, forceReplace = false): Promise<void> {
     this.#controller?.abort();
     const controller = new AbortController();
     this.#controller = controller;
@@ -173,7 +207,7 @@ export class CoreClient {
       if (!response.ok) throw new Error(await responseError(response, 'Jericho Core unavailable'));
       const snapshot = await response.json() as CommandCenterSnapshot;
       if (!validSnapshot(snapshot)) throw new Error('Jericho Core returned an invalid snapshot');
-      if (this.#started && generation === this.#generation) this.store.replace(snapshot);
+      if (forceReplace || (this.#started && generation === this.#generation)) this.store.replace(snapshot);
     } catch (error) {
       if (controller.signal.aborted) return;
       if (this.#started && generation === this.#generation) {

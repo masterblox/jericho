@@ -4,6 +4,8 @@ import {
   AgentLane,
   CommandCenterActionKind,
   CommandCenterMissionStage,
+  CommandCenterTimelineKind,
+  CommandCenterVerification,
   CostCategory,
   CostClass,
   DecisionOutcome,
@@ -50,6 +52,141 @@ afterEach(async () => {
 });
 
 describe('command-center truth projection', () => {
+  it('replays the immutable mission lifecycle and anchors every capture pulse to evidence truth', () => {
+    const store = openStore();
+    seedTruth(store);
+    store.saveIntent(intent('intent-replay'));
+    const mission = plan('mission-replay', 'intent-replay', [
+      task('replay-task', 0, []),
+    ]);
+    store.createMissionPlan(mission);
+    store.approveMission(mission.id, mission.planHash, {
+      id: 'decision-replay', missionId: mission.id, decidedBy: 'carlos',
+      outcome: DecisionOutcome.Approved, rationale: 'Approved the exact replay plan',
+      assumptions: [], evidenceEventIds: ['event-command'], route: RouteType.HumanApproval,
+      risk: RiskLevel.Low, decidedAt: '2026-07-11T08:05:00.000Z',
+      provenance: provenance('carlos', 'event-command'),
+    });
+    store.enqueueAssignment(assignment('assignment-replay', mission, mission.taskGraph[0]));
+    const [leased] = store.leaseReadyAssignments({
+      workerId: 'replay-worker', now: '2026-07-11T08:11:00.000Z', leaseMs: 300_000, limit: 1,
+    });
+    store.completeAssignment(
+      leased.id,
+      leased.leaseToken!,
+      { kind: 'report', verified: true, evidence: [{ eventId: 'event-command' }] },
+      '2026-07-11T08:12:00.000Z',
+    );
+    store.reserveReceipt({
+      ...receipt(), id: 'receipt-replay', assignmentId: leased.id,
+      missionTaskId: mission.taskGraph[0].id, idempotencyKey: 'receipt-replay-key',
+      requestedAt: '2026-07-11T08:13:00.000Z',
+    });
+    store.startReceipt('receipt-replay', '2026-07-11T08:13:30.000Z');
+    store.completeReceipt('receipt-replay', {
+      status: ReceiptStatus.Succeeded, externalId: 'destination-replay', verified: true,
+      verifiedAt: '2026-07-11T08:14:00.000Z', completedAt: '2026-07-11T08:14:00.000Z',
+      evidenceEventIds: ['event-command'], result: { delivered: true },
+    });
+    store.appendEvent({
+      id: 'event-retention-replay', source: 'jericho:retention', sourceType: SourceType.System,
+      sourceEventId: `retention:${mission.id}:${mission.planHash}`,
+      type: 'jericho.retention.completed', occurredAt: '2026-07-11T08:15:00.000Z',
+      ingestedAt: '2026-07-11T08:15:00.000Z',
+      payload: {
+        missionId: mission.id, planHash: mission.planHash,
+        relativePath: 'Jericho/Missions/mission-replay.md', status: 'created',
+      },
+      provenance: [{
+        source: 'jericho:retention', sourceType: SourceType.System,
+        sourceEventId: `retention:${mission.id}:${mission.planHash}`,
+        observedAt: '2026-07-11T08:15:00.000Z',
+      }],
+    });
+
+    const snapshot = buildCommandCenterSnapshot(store, NOW);
+    const replay = snapshot.missions.find((candidate) => candidate.id === mission.id)!;
+
+    expect(replay.timeline.map((entry) => entry.kind)).toEqual([
+      CommandCenterTimelineKind.Capture,
+      CommandCenterTimelineKind.Understand,
+      CommandCenterTimelineKind.Route,
+      CommandCenterTimelineKind.Plan,
+      CommandCenterTimelineKind.Approve,
+      CommandCenterTimelineKind.Execute,
+      CommandCenterTimelineKind.Execute,
+      CommandCenterTimelineKind.Outcome,
+      CommandCenterTimelineKind.Present,
+      CommandCenterTimelineKind.Receipt,
+      CommandCenterTimelineKind.Receipt,
+      CommandCenterTimelineKind.Receipt,
+      CommandCenterTimelineKind.Retain,
+    ]);
+    expect(replay.timeline).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Capture, recordId: 'event-command',
+        missionId: mission.id, verification: CommandCenterVerification.Integrity,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Understand, recordId: 'intent-replay',
+        confidence: 1, risk: RiskLevel.Medium,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Route, recordId: 'intent-replay',
+        route: IntentRoute.Project, routeRuleId: 'project-rule', confidence: 1,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Plan, recordId: mission.id,
+        planHash: mission.planHash, planVersion: mission.version,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Approve, recordId: 'decision-replay',
+        actor: 'carlos', reason: 'Approved the exact replay plan',
+        planHash: mission.planHash, planVersion: mission.version,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Outcome, recordId: leased.id,
+        artifactRecorded: true, verification: CommandCenterVerification.Outcome,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Receipt, recordId: 'receipt-replay',
+        status: ReceiptStatus.Succeeded,
+        verification: CommandCenterVerification.Destination,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Present, recordId: mission.id,
+        status: LifecycleStatus.Succeeded,
+      }),
+      expect.objectContaining({
+        kind: CommandCenterTimelineKind.Retain, recordId: 'event-retention-replay',
+        missionId: mission.id, verification: CommandCenterVerification.Integrity,
+      }),
+    ]));
+
+    expect(snapshot.nucleus.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'evidence:event-command', recordType: 'event' }),
+      expect.objectContaining({ id: 'intent:intent-replay', recordType: 'intent' }),
+    ]));
+    expect(snapshot.nucleus.edges).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fromNodeId: 'evidence:event-command', toNodeId: 'intent:intent-replay',
+      }),
+      expect.objectContaining({
+        fromNodeId: 'intent:intent-replay', toNodeId: `mission:${mission.id}`,
+      }),
+    ]));
+    const capturePulse = snapshot.nucleus.activityPulses.find((pulse) =>
+      pulse.id.includes('event-command') && pulse.kind === CommandCenterTimelineKind.Capture);
+    expect(capturePulse).toMatchObject({
+      nodeId: 'evidence:event-command', verified: true,
+    });
+    expect(snapshot.nucleus.nodes.some((node) => node.id === capturePulse?.nodeId)).toBe(true);
+    expect(replay.timeline.find((entry) => entry.recordId === 'decision-replay')).not.toHaveProperty(
+      'verification',
+      CommandCenterVerification.Destination,
+    );
+  });
+
   it('exposes persisted Review intents without projecting them as missions', () => {
     const store = openStore();
     store.saveIntent({
@@ -214,7 +351,7 @@ describe('command-center truth projection', () => {
     expect(snapshot.history).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'capture', recordId: 'event-command', verified: true }),
       expect.objectContaining({
-        kind: 'decision', missionId: 'mission-active', verified: true,
+        kind: CommandCenterTimelineKind.Approve, missionId: 'mission-active', verified: true,
         actor: 'carlos', reason: 'Bounded work approved', evidenceEventIds: ['event-command'],
       }),
       expect.objectContaining({ kind: 'outcome', recordId: 'assignment-a', verified: true }),
@@ -255,7 +392,9 @@ describe('command-center truth projection', () => {
     expect(snapshot.outcomes.find((outcome) => outcome.assignmentId === 'assignment-a')).toMatchObject({
       verified: false,
     });
-    expect(snapshot.history.find((entry) => entry.recordId === 'assignment-a')).toMatchObject({
+    expect(snapshot.history.find((entry) =>
+      entry.recordId === 'assignment-a' && entry.kind === CommandCenterTimelineKind.Outcome,
+    )).toMatchObject({
       kind: 'outcome', verified: false,
     });
     expect(snapshot.history.find((entry) => entry.recordId === 'receipt-pending')).toMatchObject({
@@ -278,7 +417,9 @@ describe('command-center truth projection', () => {
 
     const snapshot = buildCommandCenterSnapshot(store, NOW);
     const capture = snapshot.history.find((entry) => entry.recordId === 'event-command')!;
-    const receiptEntry = snapshot.history.find((entry) => entry.recordId === 'receipt-a')!;
+    const receiptEntry = snapshot.history.find((entry) =>
+      entry.recordId === 'receipt-a' && entry.verified,
+    )!;
 
     expect(capture.actor).toBeUndefined();
     expect(capture.reason).toBeUndefined();
@@ -378,6 +519,9 @@ describe('command-center truth projection', () => {
 
     const snapshotResponse = await api(url, '/api/v1/command-center');
     expect(snapshotResponse.status).toBe(200);
+    expect(snapshotResponse.headers.get('content-security-policy')).toContain(
+      "script-src 'self' 'wasm-unsafe-eval'",
+    );
     expect(await snapshotResponse.json()).toMatchObject({
       revision: expect.stringMatching(/^[a-f0-9]{64}$/), generatedAt: NOW,
       approvals: [{ missionId: mission.id, planHash: mission.planHash, version: mission.version }],
@@ -458,6 +602,153 @@ describe('command-center truth projection', () => {
       snapshot: { approvals: [] },
     });
     expect(store.listAssignments({ missionId: mission.id })).toEqual([]);
+  });
+
+  it('disposes a persisted Review intent by exact hash without authorizing connector input', async () => {
+    const store = openStore();
+    store.appendEvent({
+      id: 'event-review-api', source: 'telegram', sourceType: SourceType.Connector,
+      sourceEventId: 'telegram:review-api', type: 'telegram.message',
+      occurredAt: '2026-07-11T08:00:00.000Z', ingestedAt: '2026-07-11T08:00:01.000Z',
+      payload: { text: 'Maybe launch the outreach sequence' },
+      provenance: provenance('telegram', 'telegram:review-api'),
+    });
+    const stored = store.saveIntent({
+      ...intent('intent-review-api'),
+      eventId: 'event-review-api',
+      status: LifecycleStatus.PendingApproval,
+      route: IntentRoute.Review,
+      routeRuleId: 'safety:low-confidence',
+      confidence: 0.41,
+      ambiguityReasons: ['Recipient identity is ambiguous'],
+    });
+    const url = await startServer(store, () => 'review-decision-api');
+
+    expect((await fetch(`${url}/api/v1/review-intents/${stored.id}/decisions`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })).status).toBe(401);
+    expect((await api(url, `/api/v1/review-intents/${stored.id}/decisions`, {
+      method: 'POST', body: JSON.stringify({
+        disposition: 'reclassify_project', intentHash: '0'.repeat(64),
+      }),
+    })).status).toBe(409);
+    expect(store.listDecisions()).toEqual([]);
+
+    const response = await api(url, `/api/v1/review-intents/${stored.id}/decisions`, {
+      method: 'POST', body: JSON.stringify({
+        disposition: 'reclassify_project', intentHash: stored.integrityHash,
+        reason: 'Treat as a project, but require a bounded plan approval',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      decision: {
+        id: 'review-decision-api', intentId: stored.id, intentHash: stored.integrityHash,
+        outcome: DecisionOutcome.Superseded,
+      },
+      originalIntent: { id: stored.id, route: IntentRoute.Review, confidence: 0.41 },
+      derivedIntent: {
+        route: IntentRoute.Project, status: LifecycleStatus.Active,
+        confidence: 0.41, payload: expect.objectContaining({ reviewDecisionId: 'review-decision-api' }),
+      },
+      mission: {
+        status: LifecycleStatus.PendingApproval,
+        planHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+        version: 1,
+      },
+      snapshot: { reviewIntents: [], approvals: [expect.any(Object)] },
+    });
+    expect(store.getIntent(stored.id)).toMatchObject({
+      route: IntentRoute.Review, confidence: 0.41, ambiguityReasons: ['Recipient identity is ambiguous'],
+    });
+    expect(store.listMissions()).toEqual([
+      expect.objectContaining({ status: LifecycleStatus.PendingApproval, version: 1 }),
+    ]);
+    expect(store.listAssignments()).toEqual([]);
+  });
+
+  it('dismisses an exact Review intent without creating derived work', async () => {
+    const store = openStore();
+    const stored = store.saveIntent({
+      ...intent('intent-review-dismiss'),
+      status: LifecycleStatus.PendingApproval,
+      route: IntentRoute.Review,
+      routeRuleId: 'safety:ambiguous',
+      confidence: 0.33,
+    });
+    const url = await startServer(store, () => 'review-dismiss-decision');
+
+    const response = await api(url, `/api/v1/review-intents/${stored.id}/decisions`, {
+      method: 'POST', body: JSON.stringify({
+        disposition: 'dismiss', intentHash: stored.integrityHash,
+        reason: 'No action is intended',
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      decision: {
+        id: 'review-dismiss-decision', intentId: stored.id,
+        intentHash: stored.integrityHash, outcome: DecisionOutcome.Rejected,
+      },
+      originalIntent: { id: stored.id, confidence: 0.33 },
+      snapshot: { reviewIntents: [] },
+    });
+    expect(store.listIntents({ route: IntentRoute.Project })).toEqual([]);
+    expect(store.listMissions()).toEqual([]);
+  });
+
+  it('rejects a bound non-resumable checkpoint and never expands the approved plan', async () => {
+    const store = openStore();
+    store.registerAgentCapability(capability());
+    store.saveIntent(intent('intent-checkpoint-api'));
+    const mission = plan('mission-checkpoint-api', 'intent-checkpoint-api', [task('checkpoint-task', 0, [])]);
+    store.createMissionPlan(mission);
+    store.approveMission(mission.id, mission.planHash, {
+      ...decision('checkpoint-plan-approval', DecisionOutcome.Approved),
+      missionId: mission.id,
+    });
+    store.enqueueAssignment(assignment('checkpoint-assignment', mission, mission.taskGraph[0]));
+    const [leased] = store.leaseReadyAssignments({
+      workerId: 'checkpoint-worker', now: '2026-07-11T08:10:00.000Z', leaseMs: 60_000, limit: 1,
+    });
+    store.pauseAssignmentForCheckpoint(
+      leased.id, leased.leaseToken!, [EscalationReason.RuntimeBudget], '2026-07-11T08:10:01.000Z',
+    );
+    const checkpoint = store.listProposals()[0]!;
+    expect(checkpoint).toMatchObject({
+      status: LifecycleStatus.PendingApproval,
+      body: { resumable: false, requiresNewPlan: true },
+    });
+    const url = await startServer(store, () => 'checkpoint-decision-api');
+
+    expect((await api(url, `/api/v1/checkpoints/${checkpoint.id}/decisions`, {
+      method: 'POST', body: JSON.stringify({
+        outcome: DecisionOutcome.Approved, planHash: mission.planHash, version: mission.version,
+      }),
+    })).status).toBe(409);
+    expect(store.getProposal(checkpoint.id)?.status).toBe(LifecycleStatus.PendingApproval);
+    expect(store.getAssignment(leased.id)?.status).toBe(LifecycleStatus.Paused);
+
+    const rejected = await api(url, `/api/v1/checkpoints/${checkpoint.id}/decisions`, {
+      method: 'POST', body: JSON.stringify({
+        outcome: DecisionOutcome.Rejected, planHash: mission.planHash, version: mission.version,
+        reason: 'A new immutable plan is required',
+      }),
+    });
+    expect(rejected.status).toBe(200);
+    expect(await rejected.json()).toMatchObject({
+      proposal: { id: checkpoint.id, status: LifecycleStatus.Rejected },
+      assignment: { id: leased.id, status: LifecycleStatus.Cancelled },
+      requiresNewPlan: true,
+    });
+    expect(store.getMission(mission.id)).toMatchObject({
+      planHash: mission.planHash, version: mission.version, status: LifecycleStatus.Cancelled,
+    });
+    expect(store.getMissionTask(leased.missionTaskId)?.status).toBe(LifecycleStatus.Cancelled);
+    expect(store.listProposals(LifecycleStatus.PendingApproval)).toEqual([]);
+    expect(store.listAssignments()).toHaveLength(1);
   });
 });
 

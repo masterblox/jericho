@@ -8,15 +8,19 @@ import {
   CommandCenterActionKind,
   CommandCenterMissionStage,
   CommandCenterTimelineKind,
+  CommandCenterVerification,
   ConnectorHealthStatus,
   DecisionOutcome,
   EntityType,
   EscalationReason,
+  IntentKind,
+  IntentRoute,
   LifecycleStatus,
   MissionTaskKind,
   MutationClass,
   NucleusNodeKind,
   ReceiptStatus,
+  ProposalKind,
   RiskLevel,
   RouteType,
   SourceType,
@@ -171,6 +175,71 @@ describe('CommandCenterApp', () => {
     expect(screen.queryByText('Jericho')).toBeNull();
   });
 
+  it('renders exact replay bindings and an evidence-anchored capture pulse', () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    const mission = snapshot.missions[0];
+    mission.timeline = [{
+      id: 'capture-source', kind: CommandCenterTimelineKind.Capture,
+      occurredAt: snapshot.generatedAt, title: 'telegram.message', recordType: 'event',
+      recordId: 'event-source', missionId: mission.id, evidenceEventIds: ['event-source'],
+      provenance: [], verified: true, verification: CommandCenterVerification.Integrity,
+    }, {
+      id: 'route-source', kind: CommandCenterTimelineKind.Route,
+      occurredAt: snapshot.generatedAt, title: 'Routed to project', recordType: 'intent',
+      recordId: 'intent-source', missionId: mission.id, route: IntentRoute.Project,
+      routeRuleId: 'project:multi-step', confidence: 0.91, evidenceEventIds: ['event-source'],
+      provenance: [], verified: true, verification: CommandCenterVerification.Integrity,
+    }, {
+      id: 'approve-source', kind: CommandCenterTimelineKind.Approve,
+      occurredAt: snapshot.generatedAt, title: 'Mission approved', recordType: 'decision',
+      recordId: 'decision-source', missionId: mission.id, actor: 'carlos',
+      reason: 'Approved exact scope', planHash: mission.planHash, planVersion: mission.version,
+      evidenceEventIds: ['event-source'], provenance: [], verified: true,
+      verification: CommandCenterVerification.Integrity,
+    }, {
+      id: 'outcome-source', kind: CommandCenterTimelineKind.Outcome,
+      occurredAt: snapshot.generatedAt, title: 'Assignment succeeded', recordType: 'assignment',
+      recordId: 'assignment-source', missionId: mission.id, artifactRecorded: true,
+      evidenceEventIds: ['event-source'], provenance: [], verified: true,
+      verification: CommandCenterVerification.Outcome,
+    }, {
+      id: 'receipt-source', kind: CommandCenterTimelineKind.Receipt,
+      occurredAt: snapshot.generatedAt, title: 'send_message: succeeded', recordType: 'receipt',
+      recordId: 'receipt-source', missionId: mission.id, evidenceEventIds: ['event-source'],
+      provenance: [], verified: true, verification: CommandCenterVerification.Destination,
+    }];
+    snapshot.nucleus.nodes.push({
+      id: 'evidence:event-source', kind: NucleusNodeKind.Evidence,
+      recordType: 'event', recordId: 'event-source', label: 'telegram.message',
+      updatedAt: snapshot.generatedAt, evidenceEventIds: ['event-source'], verified: true,
+    });
+    snapshot.nucleus.edges.push({
+      id: 'evidence-mission', fromNodeId: 'evidence:event-source', toNodeId: 'node-mission',
+      relation: 'supports', evidenceEventIds: ['event-source'], verified: true,
+    });
+    snapshot.nucleus.activityPulses.push({
+      id: 'pulse:capture-source', kind: CommandCenterTimelineKind.Capture,
+      occurredAt: snapshot.generatedAt, nodeId: 'evidence:event-source',
+      label: 'telegram.message captured', evidenceEventIds: ['event-source'], verified: true,
+    });
+    store.replace(snapshot);
+
+    const { container } = render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn() }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByText('Capture · Integrity verified')).toBeTruthy();
+    expect(screen.getByText('Route project · Rule project:multi-step · Confidence 91%')).toBeTruthy();
+    expect(screen.getByText(`Plan V${mission.version} · ${mission.planHash}`)).toBeTruthy();
+    expect(screen.getByText('Artifact recorded · Outcome verified')).toBeTruthy();
+    expect(screen.getByText('Receipt · Destination verified')).toBeTruthy();
+    expect([...container.querySelectorAll('.jericho-activity-pulse title')]
+      .some((title) => title.textContent === 'telegram.message captured')).toBe(true);
+  });
+
   it('applies semantic BFS depth and camera controls only to the local Nucleus view', () => {
     const store = new CommandCenterStore();
     const snapshot = populatedSnapshot();
@@ -322,6 +391,79 @@ describe('CommandCenterApp', () => {
 
     await waitFor(() => expect(retainMission).toHaveBeenCalledWith('mission-1'));
     expect(screen.getByText('Retained in Jericho/Missions/mission-1.md · created')).toBeTruthy();
+  });
+
+  it('renders persisted Review evidence and submits only an exact safe disposition', async () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    snapshot.reviewIntents = [{
+      id: 'intent-review', eventId: 'event-review', source: 'telegram', sourceType: SourceType.Connector,
+      kind: IntentKind.Command, summary: 'Maybe launch the outreach sequence', payload: {},
+      status: LifecycleStatus.PendingApproval, route: IntentRoute.Review, routeRuleId: 'safety:low-confidence',
+      entityIds: ['person-michael'], commitments: [], claims: [], assumptions: [], deadlines: [],
+      affectedPartyIds: ['person-michael'], requiredEvidence: [{ eventId: 'event-review', selector: 'message' }],
+      requiredCapabilities: ['sales.outreach'], ambiguityReasons: ['Recipient identity is ambiguous'],
+      contradictoryEvidenceEventIds: ['event-conflict'], risk: RiskLevel.High, confidence: 0.42,
+      provenance: [{ source: 'telegram', sourceType: SourceType.Connector, sourceEventId: 'tg-44', observedAt: snapshot.generatedAt }],
+      createdAt: snapshot.generatedAt, updatedAt: snapshot.generatedAt, integrityHash: 'b'.repeat(64),
+    }];
+    store.replace(snapshot);
+    const decideReviewIntent = vi.fn().mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), decideReviewIntent }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByRole('heading', { name: 'Review queue' })).toBeTruthy();
+    expect(screen.getByText('Maybe launch the outreach sequence')).toBeTruthy();
+    expect(screen.getByText('Confidence 42%')).toBeTruthy();
+    expect(screen.getByText('Recipient identity is ambiguous')).toBeTruthy();
+    expect(screen.getByText(/event-review.*message/)).toBeTruthy();
+    expect(screen.getByText('event-conflict')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Reclassify as project' }));
+
+    await waitFor(() => expect(decideReviewIntent).toHaveBeenCalledWith({
+      intentId: 'intent-review', intentHash: 'b'.repeat(64), disposition: 'reclassify_project',
+      reason: 'Reclassified as project from Jericho Review queue; still requires a new bounded mission approval',
+    }));
+  });
+
+  it('renders checkpoint truth and never offers resume when a new immutable plan is required', async () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    snapshot.proposals.push({
+      id: 'checkpoint-1', assignmentId: 'assignment-1', missionTaskId: 'task-plan',
+      proposedByAgentId: 'jericho:mission-runner', kind: ProposalKind.Action, summary: 'Mission paused: runtime budget',
+      body: {
+        checkpoint: true, missionId: 'mission-1', assignmentId: 'assignment-1',
+        planHash: 'a'.repeat(64), planVersion: 3, reasons: ['runtime_budget'],
+        resumable: false, requiresNewPlan: true,
+      },
+      status: LifecycleStatus.PendingApproval, route: RouteType.HumanApproval,
+      risk: RiskLevel.High, createdAt: snapshot.generatedAt,
+      provenance: [{ source: 'local:mission-runner', sourceType: SourceType.System, observedAt: snapshot.generatedAt }],
+    });
+    store.replace(snapshot);
+    const decideCheckpoint = vi.fn().mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), decideCheckpoint }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByText('NEW IMMUTABLE PLAN REQUIRED')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Resume exact approved plan' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Reject checkpoint' }));
+    await waitFor(() => expect(decideCheckpoint).toHaveBeenCalledWith({
+      proposalId: 'checkpoint-1', planHash: 'a'.repeat(64), version: 3,
+      outcome: DecisionOutcome.Rejected,
+      reason: 'Rejected checkpoint from Jericho; mission cancellation recorded',
+    }));
   });
 
   it('renders honest loading, unavailable, disconnected, and empty states without fabricated fallback data', () => {

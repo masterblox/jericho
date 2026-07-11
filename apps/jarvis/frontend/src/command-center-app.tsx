@@ -10,22 +10,28 @@ import {
 
 import {
   CommandCenterMissionStage,
+  CommandCenterVerification,
   DecisionOutcome,
   LifecycleStatus,
   RelationType,
+  ReviewIntentDisposition,
   type ActionDescriptor,
   type CommandCenterApproval,
   type CommandCenterEntityCard,
   type CommandCenterMission,
   type CommandCenterSnapshot,
   type CommandCenterTimelineEntry,
+  type IntentEnvelope,
+  type Proposal,
 } from '@jericho/shared';
 
 import type { CommandCenterStore } from './command-center-store';
 import type {
+  CheckpointDecisionInput,
   MissionCancellationInput,
   MissionDecisionInput,
   RelationshipProposalInput,
+  ReviewIntentDecisionInput,
   RetentionResult,
 } from './core-client';
 import {
@@ -46,6 +52,8 @@ export interface CommandCenterClientPort {
   cancelMission?(input: MissionCancellationInput): Promise<unknown>;
   retainMission?(missionId: string): Promise<RetentionResult>;
   proposeRelationship?(input: RelationshipProposalInput): Promise<unknown>;
+  decideReviewIntent?(input: ReviewIntentDecisionInput): Promise<unknown>;
+  decideCheckpoint?(input: CheckpointDecisionInput): Promise<unknown>;
 }
 
 export interface CommandCenterAppProps {
@@ -229,6 +237,63 @@ export function CommandCenterApp({
     }
   }, [client]);
 
+  const decideReviewIntent = useCallback(async (
+    intent: IntentEnvelope,
+    disposition: ReviewIntentDisposition,
+  ) => {
+    if (!client.decideReviewIntent || operationInFlight.current || !intent.integrityHash) return;
+    const label = disposition === ReviewIntentDisposition.ReclassifyProject
+      ? 'Reclassify as project'
+      : 'Dismiss review';
+    if (!window.confirm(`${label}: ${intent.summary}?`)) return;
+    operationInFlight.current = true;
+    setDecisionError(undefined);
+    try {
+      await client.decideReviewIntent({
+        intentId: intent.id,
+        intentHash: intent.integrityHash,
+        disposition,
+        reason: disposition === ReviewIntentDisposition.ReclassifyProject
+          ? 'Reclassified as project from Jericho Review queue; still requires a new bounded mission approval'
+          : 'Dismissed from Jericho Review queue',
+      });
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Review intent decision failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client]);
+
+  const decideCheckpoint = useCallback(async (
+    proposal: Proposal,
+    outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected,
+  ) => {
+    const binding = checkpointBinding(proposal);
+    if (!client.decideCheckpoint || !binding || operationInFlight.current) return;
+    if (outcome === DecisionOutcome.Approved && (!binding.resumable || binding.requiresNewPlan)) return;
+    const label = outcome === DecisionOutcome.Approved
+      ? 'Resume exact approved plan'
+      : 'Reject checkpoint';
+    if (!window.confirm(`${label}: ${proposal.summary}?`)) return;
+    operationInFlight.current = true;
+    setDecisionError(undefined);
+    try {
+      await client.decideCheckpoint({
+        proposalId: proposal.id,
+        planHash: binding.planHash,
+        version: binding.planVersion,
+        outcome,
+        reason: outcome === DecisionOutcome.Approved
+          ? 'Resumed exact approved plan from Jericho checkpoint; no scope expansion'
+          : 'Rejected checkpoint from Jericho; mission cancellation recorded',
+      });
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Checkpoint decision failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client]);
+
   if (!snapshot) {
     return (
       <main className="jericho-shell jericho-shell--waiting" id="main">
@@ -326,12 +391,32 @@ export function CommandCenterApp({
         </section>
 
         <aside className="jericho-bay jericho-bay--right jericho-mobile-panel">
+          <Section title="Review queue" count={(snapshot.reviewIntents ?? []).length} priority>
+            {(snapshot.reviewIntents ?? []).length ? (snapshot.reviewIntents ?? []).map((intent) => (
+              <ReviewIntentCard
+                key={intent.id}
+                intent={intent}
+                enabled={Boolean(client.decideReviewIntent && intent.integrityHash)}
+                onDecision={(disposition) => void decideReviewIntent(intent, disposition)}
+              />
+            )) : <EmptyState />}
+          </Section>
+
           <Section title="Proposals" count={snapshot.proposals.length}>
             {snapshot.proposals.length ? snapshot.proposals.map((proposal) => (
-              <article className="jericho-proposal-row" key={proposal.id}>
-                <div><strong>{proposal.summary}</strong><span>{proposal.proposedByAgentId} · {proposal.kind}</span></div>
-                <div><span>{proposal.route}</span><span>{proposal.risk} risk</span><Status value={proposal.status} /></div>
-              </article>
+              checkpointBinding(proposal) ? (
+                <CheckpointCard
+                  key={proposal.id}
+                  proposal={proposal}
+                  enabled={Boolean(client.decideCheckpoint)}
+                  onDecision={(outcome) => void decideCheckpoint(proposal, outcome)}
+                />
+              ) : (
+                <article className="jericho-proposal-row" key={proposal.id}>
+                  <div><strong>{proposal.summary}</strong><span>{proposal.proposedByAgentId} · {proposal.kind}</span></div>
+                  <div><span>{proposal.route}</span><span>{proposal.risk} risk</span><Status value={proposal.status} /></div>
+                </article>
+              )
             )) : <EmptyState />}
           </Section>
 
@@ -405,6 +490,131 @@ function Section({
 
 function Subsection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="jericho-subsection"><h3>{title}</h3>{children}</section>;
+}
+
+function ReviewIntentCard({
+  intent,
+  enabled,
+  onDecision,
+}: {
+  intent: IntentEnvelope;
+  enabled: boolean;
+  onDecision: (disposition: ReviewIntentDisposition) => void;
+}) {
+  return (
+    <article className="jericho-review-card">
+      <div className="jericho-review-title">
+        <strong>{intent.summary}</strong>
+        <span>Confidence {Math.round(intent.confidence * 100)}%</span>
+      </div>
+      <p>{intent.routeRuleId} · {intent.risk} risk · {intent.source}</p>
+      <ul className="jericho-review-reasons">
+        {intent.ambiguityReasons.map((reason) => <li key={reason}>{reason}</li>)}
+      </ul>
+      <div className="jericho-evidence">
+        {intent.requiredEvidence.map((evidence) => (
+          <code key={`${evidence.eventId}:${evidence.selector ?? ''}`}>
+            {evidence.eventId} · {evidence.selector ?? 'whole event'}
+          </code>
+        ))}
+        {intent.contradictoryEvidenceEventIds.map((eventId) => (
+          <code key={eventId}>{eventId}</code>
+        ))}
+      </div>
+      {!intent.integrityHash && <p className="jericho-error">Missing integrity binding; disposition disabled</p>}
+      <div className="jericho-action-row">
+        <button
+          type="button"
+          disabled={!enabled}
+          onClick={() => onDecision(ReviewIntentDisposition.Dismiss)}
+        >
+          Dismiss review
+        </button>
+        <button
+          type="button"
+          disabled={!enabled}
+          onClick={() => onDecision(ReviewIntentDisposition.ReclassifyProject)}
+        >
+          Reclassify as project
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function CheckpointCard({
+  proposal,
+  enabled,
+  onDecision,
+}: {
+  proposal: Proposal;
+  enabled: boolean;
+  onDecision: (outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected) => void;
+}) {
+  const binding = checkpointBinding(proposal)!;
+  const pending = proposal.status === LifecycleStatus.PendingApproval;
+  return (
+    <article className="jericho-checkpoint-card">
+      <div className="jericho-review-title">
+        <strong>{proposal.summary}</strong>
+        <Status value={proposal.status} />
+      </div>
+      <p>{binding.reasons.map((reason) => titleCase(reason)).join(' · ')}</p>
+      <p>Plan V{binding.planVersion} · <code>{binding.planHash}</code></p>
+      {binding.requiresNewPlan && (
+        <strong className="jericho-checkpoint-warning">NEW IMMUTABLE PLAN REQUIRED</strong>
+      )}
+      {pending && (
+        <div className="jericho-action-row">
+          {binding.resumable && !binding.requiresNewPlan && (
+            <button
+              type="button"
+              disabled={!enabled}
+              onClick={() => onDecision(DecisionOutcome.Approved)}
+            >
+              Resume exact approved plan
+            </button>
+          )}
+          <button
+            type="button"
+            disabled={!enabled}
+            onClick={() => onDecision(DecisionOutcome.Rejected)}
+          >
+            Reject checkpoint
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
+interface CheckpointBinding {
+  planHash: string;
+  planVersion: number;
+  reasons: string[];
+  resumable: boolean;
+  requiresNewPlan: boolean;
+}
+
+function checkpointBinding(proposal: Proposal): CheckpointBinding | undefined {
+  const body = proposal.body;
+  if (
+    body.checkpoint !== true ||
+    typeof body.planHash !== 'string' ||
+    !/^[a-f0-9]{64}$/.test(body.planHash) ||
+    !Number.isInteger(body.planVersion) ||
+    !Array.isArray(body.reasons) ||
+    !body.reasons.every((reason) => typeof reason === 'string') ||
+    typeof body.resumable !== 'boolean' ||
+    typeof body.requiresNewPlan !== 'boolean'
+  ) return undefined;
+  return {
+    planHash: body.planHash,
+    planVersion: body.planVersion as number,
+    reasons: body.reasons as string[],
+    resumable: body.resumable,
+    requiresNewPlan: body.requiresNewPlan,
+  };
 }
 
 function EntityList({ items, empty }: { items: CommandCenterEntityCard[]; empty: string }) {
@@ -710,6 +920,24 @@ function MissionTimeline({ mission }: { mission?: CommandCenterMission }) {
             <li key={entry.id}>
               <time dateTime={entry.occurredAt}>{compactTime(entry.occurredAt)}</time>
               <div><strong>{entry.title}</strong><span>{entry.actor ?? 'Unknown actor'}</span></div>
+              <p className="jericho-timeline-binding">
+                {titleCase(entry.kind)}{entry.verification ? ` · ${verificationLabel(entry.verification)}` : ''}
+              </p>
+              {entry.route && (
+                <p className="jericho-timeline-binding">
+                  {`Route ${entry.route}`}
+                  {entry.routeRuleId ? ` · Rule ${entry.routeRuleId}` : ''}
+                  {entry.confidence !== undefined ? ` · Confidence ${Math.round(entry.confidence * 100)}%` : ''}
+                </p>
+              )}
+              {entry.planHash && entry.planVersion !== undefined && (
+                <p className="jericho-timeline-binding">{`Plan V${entry.planVersion} · ${entry.planHash}`}</p>
+              )}
+              {entry.artifactRecorded && (
+                <p className="jericho-timeline-binding">
+                  Artifact recorded{entry.verification ? ` · ${verificationLabel(entry.verification)}` : ''}
+                </p>
+              )}
               <p>{entry.reason ?? 'Unknown reason'}</p>
               <p className="jericho-provenance">
                 {entry.provenance.length
@@ -941,4 +1169,13 @@ function formatProvenance(item: CommandCenterTimelineEntry['provenance'][number]
   const actor = item.actorId ? ` · actor ${item.actorId}` : '';
   const event = item.sourceEventId ? ` · event ${item.sourceEventId}` : '';
   return `${item.source} (${item.sourceType})${actor}${event}`;
+}
+
+function verificationLabel(verification: CommandCenterVerification) {
+  switch (verification) {
+    case CommandCenterVerification.Integrity: return 'Integrity verified';
+    case CommandCenterVerification.Outcome: return 'Outcome verified';
+    case CommandCenterVerification.Destination: return 'Destination verified';
+    case CommandCenterVerification.NotVerified: return 'Not verified';
+  }
 }

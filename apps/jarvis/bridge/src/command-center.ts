@@ -4,6 +4,8 @@ import {
   CommandCenterActionKind,
   CommandCenterMissionStage,
   CommandCenterTimelineKind,
+  CommandCenterVerification,
+  ChangeLogKind,
   DecisionOutcome,
   EntityType,
   IntentRoute,
@@ -22,8 +24,10 @@ import {
   type CommandCenterOutcome,
   type CommandCenterSnapshot,
   type CommandCenterTimelineEntry,
+  type ChangeLog,
   type Entity,
   type EventEnvelope,
+  type IntentEnvelope,
   type MissionPlan,
   type MissionTask,
   type NucleusNode,
@@ -64,9 +68,15 @@ export function buildCommandCenterSnapshot(
   const receipts = store.listReceipts();
   const proposals = store.listProposals();
   const decisions = store.listDecisions();
+  const intents = store.listIntents();
+  const changes = store.listChangeLog({ limit: 10_000 });
   const connectors = store.listConnectorHealth();
   const captureFailures = store.listCaptureFailures();
-  const reviewIntents = store.listIntents({ route: IntentRoute.Review });
+  const disposedReviewIntentIds = new Set(
+    decisions.flatMap((decision) => decision.intentId ? [decision.intentId] : []),
+  );
+  const reviewIntents = intents.filter((intent) => intent.route === IntentRoute.Review)
+    .filter((intent) => !disposedReviewIntentIds.has(intent.id));
   const costs = new Map(missions.map((mission) => [mission.id, store.listCosts(mission.id)]));
   const knownEventIds = new Set(events.map((event) => event.id));
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
@@ -89,7 +99,7 @@ export function buildCommandCenterSnapshot(
     knownEventIds,
   );
 
-  const history = buildHistory(events, missions, assignments, receipts, decisions);
+  const history = buildHistory(events, intents, missions, assignments, receipts, decisions, changes);
   const projectedMissions = missions.map((mission) => projectMission(
     mission,
     missionTasks.get(mission.id) ?? [],
@@ -113,6 +123,8 @@ export function buildCommandCenterSnapshot(
   const nucleus = buildNucleus(
     entities,
     relations,
+    events,
+    intents,
     missions,
     capabilities,
     assignments,
@@ -132,6 +144,8 @@ export function buildCommandCenterSnapshot(
     receipts,
     proposals,
     decisions,
+    intents,
+    changes,
     connectors,
     captureFailures,
     reviewIntents,
@@ -398,44 +412,156 @@ function buildOutcomes(
 
 function buildHistory(
   events: EventEnvelope[],
+  intents: IntentEnvelope[],
   missions: MissionPlan[],
   assignments: Assignment[],
   receipts: ReturnType<JerichoStore['listReceipts']>,
   decisions: ReturnType<JerichoStore['listDecisions']>,
+  changes: ChangeLog[],
 ): CommandCenterTimelineEntry[] {
-  const entries: CommandCenterTimelineEntry[] = events.map((event) => ({
-    id: `capture:${event.id}`,
-    kind: CommandCenterTimelineKind.Capture,
-    occurredAt: event.occurredAt,
-    title: event.type,
-    recordType: 'event',
-    recordId: event.id,
-    ...(event.status ? { status: event.status } : {}),
-    ...(actorFromProvenance(event.provenance) ? { actor: actorFromProvenance(event.provenance) } : {}),
-    evidenceEventIds: [event.id],
-    provenance: event.provenance,
-    verified: Boolean(event.integrityHash),
-  }));
+  const entries: CommandCenterTimelineEntry[] = [];
+  const missionById = new Map(missions.map((mission) => [mission.id, mission]));
+  const intentById = new Map(intents.map((intent) => [intent.id, intent]));
+  const assignmentById = new Map(assignments.map((assignment) => [assignment.id, assignment]));
+  const receiptById = new Map(receipts.map((receipt) => [receipt.id, receipt]));
+  const missionsByIntent = groupBy(missions, (mission) => mission.intentId);
+  const missionsByEvidence = new Map<string, Set<string>>();
   for (const mission of missions) {
+    const intent = intentById.get(mission.intentId);
+    for (const eventId of unique([
+      ...mission.evidenceEventIds,
+      ...(intent?.eventId ? [intent.eventId] : []),
+      ...(intent?.requiredEvidence.map((evidence) => evidence.eventId) ?? []),
+      ...(intent?.contradictoryEvidenceEventIds ?? []),
+    ])) {
+      const linked = missionsByEvidence.get(eventId) ?? new Set<string>();
+      linked.add(mission.id);
+      missionsByEvidence.set(eventId, linked);
+    }
+  }
+  for (const event of events) {
+    const linkedMissionIds = new Set(missionsByEvidence.get(event.id) ?? []);
+    const payloadMissionId = missionIdFromPayload(event.payload);
+    if (payloadMissionId && missionById.has(payloadMissionId)) linkedMissionIds.add(payloadMissionId);
+    const scopes: Array<string | undefined> = linkedMissionIds.size
+      ? [...linkedMissionIds].sort()
+      : [undefined];
+    const retained = event.type === 'jericho.retention.completed' && Boolean(payloadMissionId);
+    for (const missionId of scopes) {
+      const actor = actorFromProvenance(event.provenance);
+      entries.push({
+        id: `${retained ? 'retain' : 'capture'}:${event.id}${missionId ? `:mission:${missionId}` : ''}`,
+        kind: retained ? CommandCenterTimelineKind.Retain : CommandCenterTimelineKind.Capture,
+        occurredAt: event.occurredAt,
+        title: retained ? 'Mission retained' : event.type,
+        recordType: 'event',
+        recordId: event.id,
+        ...(missionId ? { missionId } : {}),
+        ...(event.status ? { status: event.status } : {}),
+        ...(actor ? { actor } : {}),
+        evidenceEventIds: [event.id],
+        provenance: event.provenance,
+        verified: Boolean(event.integrityHash),
+        verification: event.integrityHash
+          ? CommandCenterVerification.Integrity
+          : CommandCenterVerification.NotVerified,
+      });
+    }
+  }
+  for (const intent of intents) {
+    const linkedMissions = missionsByIntent.get(intent.id) ?? [];
+    const scopes: Array<MissionPlan | undefined> = linkedMissions.length
+      ? linkedMissions
+      : [undefined];
+    const evidenceEventIds = intentEvidenceEventIds(intent);
+    const actor = actorFromProvenance(intent.provenance);
+    for (const mission of scopes) {
+      const suffix = mission ? `:mission:${mission.id}` : '';
+      const common = {
+        recordType: 'intent',
+        recordId: intent.id,
+        ...(mission ? { missionId: mission.id } : {}),
+        ...(actor ? { actor } : {}),
+        summary: intent.summary,
+        risk: intent.risk,
+        confidence: intent.confidence,
+        evidenceEventIds,
+        provenance: intent.provenance,
+        verified: Boolean(intent.integrityHash),
+        verification: intent.integrityHash
+          ? CommandCenterVerification.Integrity
+          : CommandCenterVerification.NotVerified,
+      } as const;
+      entries.push({
+        ...common,
+        id: `understand:${intent.id}${suffix}`,
+        kind: CommandCenterTimelineKind.Understand,
+        occurredAt: intent.createdAt,
+        title: 'Intent classified',
+      });
+      entries.push({
+        ...common,
+        id: `route:${intent.id}${suffix}`,
+        kind: CommandCenterTimelineKind.Route,
+        occurredAt: intent.updatedAt,
+        title: `Routed to ${intent.route}`,
+        route: intent.route,
+        routeRuleId: intent.routeRuleId,
+      });
+    }
+  }
+  for (const mission of missions) {
+    const actor = actorFromProvenance(mission.provenance);
     entries.push({
       id: `mission:${mission.id}:planned`,
-      kind: CommandCenterTimelineKind.Mission,
+      kind: CommandCenterTimelineKind.Plan,
       occurredAt: mission.createdAt,
       title: mission.title,
       recordType: 'mission',
       recordId: mission.id,
       missionId: mission.id,
       status: LifecycleStatus.PendingApproval,
-      ...(actorFromProvenance(mission.provenance) ? { actor: actorFromProvenance(mission.provenance) } : {}),
+      ...(actor ? { actor } : {}),
+      planHash: mission.planHash,
+      planVersion: mission.version,
       evidenceEventIds: mission.evidenceEventIds,
       provenance: mission.provenance,
       verified: Boolean(mission.integrityHash),
+      verification: mission.integrityHash
+        ? CommandCenterVerification.Integrity
+        : CommandCenterVerification.NotVerified,
     });
+    if (mission.status === LifecycleStatus.Succeeded && mission.completedAt) {
+      entries.push({
+        id: `mission:${mission.id}:present`,
+        kind: CommandCenterTimelineKind.Present,
+        occurredAt: mission.completedAt,
+        title: `Mission ${mission.status}`,
+        recordType: 'mission',
+        recordId: mission.id,
+        missionId: mission.id,
+        status: mission.status,
+        planHash: mission.planHash,
+        planVersion: mission.version,
+        evidenceEventIds: mission.evidenceEventIds,
+        provenance: [],
+        verified: Boolean(mission.integrityHash),
+        verification: mission.integrityHash
+          ? CommandCenterVerification.Integrity
+          : CommandCenterVerification.NotVerified,
+      });
+    }
   }
   for (const decision of decisions) {
+    const mission = decision.missionId ? missionById.get(decision.missionId) : undefined;
+    const planDecision = Boolean(
+      mission && !decision.proposalId &&
+      (decision.outcome === DecisionOutcome.Approved || decision.outcome === DecisionOutcome.Rejected) &&
+      decision.planHash === mission.planHash && decision.planVersion === mission.version,
+    );
     entries.push({
       id: `decision:${decision.id}`,
-      kind: CommandCenterTimelineKind.Decision,
+      kind: planDecision ? CommandCenterTimelineKind.Approve : CommandCenterTimelineKind.Decision,
       occurredAt: decision.decidedAt,
       title: `Mission ${decision.outcome}`,
       recordType: 'decision',
@@ -443,56 +569,116 @@ function buildHistory(
       ...(decision.missionId ? { missionId: decision.missionId } : {}),
       actor: decision.decidedBy,
       reason: decision.rationale,
+      ...(decision.planHash ? { planHash: decision.planHash } : {}),
+      ...(decision.planVersion ? { planVersion: decision.planVersion } : {}),
       evidenceEventIds: decision.evidenceEventIds,
       provenance: decision.provenance,
       verified: Boolean(decision.integrityHash),
+      verification: decision.integrityHash
+        ? CommandCenterVerification.Integrity
+        : CommandCenterVerification.NotVerified,
     });
   }
+  const assignmentChanges = groupBy(
+    changes.filter((change) =>
+      change.kind === ChangeLogKind.AssignmentChanged && assignmentById.has(change.recordId)),
+    (change) => change.recordId,
+  );
   for (const assignment of assignments) {
-    const outcome = TERMINAL_ASSIGNMENT_STATUSES.has(assignment.status);
-    entries.push({
-      id: `${outcome ? 'outcome' : 'assignment'}:${assignment.id}`,
-      kind: outcome ? CommandCenterTimelineKind.Outcome : CommandCenterTimelineKind.Assignment,
-      occurredAt: assignment.completedAt ?? assignment.acceptedAt ?? assignment.assignedAt,
-      title: `${assignment.agentId}: ${assignment.status}`,
-      recordType: 'assignment',
-      recordId: assignment.id,
-      missionId: assignment.missionId,
-      status: assignment.status,
-      actor: assignment.agentId,
-      ...(assignment.cancelReason ? { reason: assignment.cancelReason } : {}),
-      evidenceEventIds: assignment.evidenceEventIds,
-      provenance: assignment.provenance,
-      verified: outcome
-        ? verifiedOutcome(assignment, receiptsForAssignment(receipts, assignment))
-        : Boolean(assignment.integrityHash),
-    });
+    const lifecycle = assignmentChanges.get(assignment.id) ?? [];
+    if (!lifecycle.length) {
+      entries.push(projectCurrentAssignment(assignment, receipts));
+      continue;
+    }
+    for (const change of lifecycle) {
+      const status = lifecycleStatusFromChange(change);
+      if (!status) continue;
+      const terminal = TERMINAL_ASSIGNMENT_STATUSES.has(status);
+      const currentTerminal = terminal && assignment.status === status;
+      const outcomeVerified = currentTerminal && verifiedOutcome(
+        assignment,
+        receiptsForAssignment(receipts, assignment),
+      );
+      entries.push({
+        id: currentTerminal
+          ? `outcome:${assignment.id}`
+          : `assignment:${assignment.id}:change:${change.sequence}`,
+        kind: terminal ? CommandCenterTimelineKind.Outcome : CommandCenterTimelineKind.Execute,
+        occurredAt: change.changedAt,
+        title: `Assignment ${status}`,
+        recordType: 'assignment',
+        recordId: assignment.id,
+        missionId: assignment.missionId,
+        status,
+        agentId: assignment.agentId,
+        ...(currentTerminal && assignment.cancelReason ? { reason: assignment.cancelReason } : {}),
+        ...(currentTerminal && assignment.artifact !== undefined ? { artifactRecorded: true } : {}),
+        evidenceEventIds: assignment.evidenceEventIds,
+        provenance: [],
+        verified: terminal ? outcomeVerified : Boolean(change.integrityHash),
+        verification: terminal
+          ? outcomeVerified
+            ? CommandCenterVerification.Outcome
+            : CommandCenterVerification.NotVerified
+          : change.integrityHash
+            ? CommandCenterVerification.Integrity
+            : CommandCenterVerification.NotVerified,
+      });
+    }
   }
+  const receiptChanges = groupBy(
+    changes.filter((change) =>
+      change.kind === ChangeLogKind.ReceiptChanged && receiptById.has(change.recordId)),
+    (change) => change.recordId,
+  );
   for (const receipt of receipts) {
-    entries.push({
-      id: `receipt:${receipt.id}`,
-      kind: CommandCenterTimelineKind.Receipt,
-      occurredAt: receipt.completedAt ?? receipt.requestedAt,
-      title: `${receipt.action}: ${receipt.status}`,
+    const lifecycle = receiptChanges.get(receipt.id) ?? [];
+    if (!lifecycle.length) lifecycle.push({
+      id: `fallback:${receipt.id}`,
+      sequence: 0,
+      kind: ChangeLogKind.ReceiptChanged,
       recordType: 'receipt',
       recordId: receipt.id,
-      ...(assignmentMissionId(assignments, receipt.assignmentId) ? {
-        missionId: assignmentMissionId(assignments, receipt.assignmentId),
-      } : {}),
-      status: receipt.status,
-      ...(actorFromProvenance(receipt.provenance) ? { actor: actorFromProvenance(receipt.provenance) } : {}),
-      evidenceEventIds: receipt.evidenceEventIds,
-      provenance: receipt.provenance,
-      verified: isDestinationVerifiedReceipt(receipt),
+      changedAt: receipt.completedAt ?? receipt.startedAt ?? receipt.requestedAt,
+      payload: { status: receipt.status },
     });
+    for (const change of lifecycle) {
+      const status = receiptStatusFromChange(change);
+      if (!status) continue;
+      const current = status === receipt.status &&
+        change.changedAt === (receipt.completedAt ?? receipt.startedAt ?? receipt.requestedAt);
+      const destinationVerified = current && isDestinationVerifiedReceipt(receipt);
+      entries.push({
+        id: current ? `receipt:${receipt.id}` : `receipt:${receipt.id}:change:${change.sequence}`,
+        kind: CommandCenterTimelineKind.Receipt,
+        occurredAt: change.changedAt,
+        title: `${receipt.action}: ${status}`,
+        recordType: 'receipt',
+        recordId: receipt.id,
+        ...(assignmentMissionId(assignments, receipt.assignmentId) ? {
+          missionId: assignmentMissionId(assignments, receipt.assignmentId),
+        } : {}),
+        status,
+        evidenceEventIds: receipt.evidenceEventIds,
+        provenance: receipt.provenance,
+        verified: destinationVerified,
+        verification: destinationVerified
+          ? CommandCenterVerification.Destination
+          : CommandCenterVerification.NotVerified,
+      });
+    }
   }
   return entries.sort((left, right) =>
-    left.occurredAt.localeCompare(right.occurredAt) || left.id.localeCompare(right.id));
+    left.occurredAt.localeCompare(right.occurredAt) ||
+    timelineKindOrder(left.kind) - timelineKindOrder(right.kind) ||
+    left.id.localeCompare(right.id));
 }
 
 function buildNucleus(
   entities: Entity[],
   relations: ReturnType<JerichoStore['listRelations']>,
+  events: EventEnvelope[],
+  intents: IntentEnvelope[],
   missions: MissionPlan[],
   capabilities: AgentCapability[],
   assignments: Assignment[],
@@ -509,6 +695,24 @@ function buildNucleus(
       entityType: entity.type, ...(entity.status ? { status: entity.status } : {}),
       ...(entity.risk ? { risk: entity.risk } : {}), updatedAt: entity.updatedAt,
       evidenceEventIds: evidenceFromProvenance(entity.provenance, knownEventIds), verified: true,
+    });
+  }
+  for (const event of events.filter(hasVerifiedIntegrity)) {
+    nodes.push({
+      id: `evidence:${event.id}`, kind: NucleusNodeKind.Evidence,
+      recordType: 'event', recordId: event.id,
+      label: event.type === 'jericho.retention.completed' ? 'Mission retained' : event.type,
+      ...(event.status ? { status: event.status } : {}),
+      ...(event.risk ? { risk: event.risk } : {}),
+      updatedAt: event.occurredAt, evidenceEventIds: [event.id], verified: true,
+    });
+  }
+  for (const intent of intents.filter(hasVerifiedIntegrity)) {
+    nodes.push({
+      id: `intent:${intent.id}`, kind: NucleusNodeKind.Intent,
+      recordType: 'intent', recordId: intent.id, label: intent.summary,
+      status: intent.status, risk: intent.risk, updatedAt: intent.updatedAt,
+      evidenceEventIds: intentEvidenceEventIds(intent), verified: true,
     });
   }
   for (const mission of missions.filter(hasVerifiedIntegrity)) {
@@ -567,6 +771,57 @@ function buildNucleus(
       evidenceEventIds: evidenceFromProvenance(relation.provenance, knownEventIds),
       verified: true,
     }));
+  for (const intent of intents.filter(hasVerifiedIntegrity)) {
+    for (const eventId of intentEvidenceEventIds(intent)) {
+      if (nodeIds.has(`evidence:${eventId}`) && nodeIds.has(`intent:${intent.id}`)) {
+        edges.push({
+          id: `evidence-intent:${eventId}:${intent.id}`,
+          fromNodeId: `evidence:${eventId}`,
+          toNodeId: `intent:${intent.id}`,
+          relation: RelationType.Supports,
+          evidenceEventIds: [eventId],
+          verified: true,
+        });
+      }
+    }
+  }
+  for (const mission of missions.filter(hasVerifiedIntegrity)) {
+    if (nodeIds.has(`intent:${mission.intentId}`)) {
+      edges.push({
+        id: `intent-mission:${mission.intentId}:${mission.id}`,
+        fromNodeId: `intent:${mission.intentId}`,
+        toNodeId: `mission:${mission.id}`,
+        relation: RelationType.Supports,
+        evidenceEventIds: mission.evidenceEventIds,
+        verified: true,
+      });
+    }
+    for (const eventId of mission.evidenceEventIds) {
+      if (nodeIds.has(`evidence:${eventId}`)) {
+        edges.push({
+          id: `evidence-mission:${eventId}:${mission.id}`,
+          fromNodeId: `evidence:${eventId}`,
+          toNodeId: `mission:${mission.id}`,
+          relation: RelationType.Supports,
+          evidenceEventIds: [eventId],
+          verified: true,
+        });
+      }
+    }
+  }
+  for (const event of events.filter(hasVerifiedIntegrity)) {
+    const missionId = missionIdFromPayload(event.payload);
+    if (missionId && nodeIds.has(`mission:${missionId}`)) {
+      edges.push({
+        id: `evidence-mission:${event.id}:${missionId}`,
+        fromNodeId: `evidence:${event.id}`,
+        toNodeId: `mission:${missionId}`,
+        relation: RelationType.Supports,
+        evidenceEventIds: [event.id],
+        verified: true,
+      });
+    }
+  }
   for (const mission of missions) {
     for (const agentId of unique(mission.selectedAgents.map((agent) => agent.agentId))) {
       if (nodeIds.has(`mission:${mission.id}`) && nodeIds.has(`agent:${agentId}`)) {
@@ -606,15 +861,18 @@ function buildNucleus(
       });
     }
   }
-  const activityPulses = history.filter((entry) => entry.verified).map((entry) => ({
-    id: `pulse:${entry.id}`,
-    kind: entry.kind,
-    occurredAt: entry.occurredAt,
-    ...(timelineNodeId(entry, nodeIds) ? { nodeId: timelineNodeId(entry, nodeIds) } : {}),
-    label: entry.title,
-    evidenceEventIds: entry.evidenceEventIds,
-    verified: true as const,
-  }));
+  const activityPulses = history.filter((entry) => entry.verified).flatMap((entry) => {
+    const nodeId = timelineNodeId(entry, nodeIds);
+    return nodeId ? [{
+      id: `pulse:${entry.id}`,
+      kind: entry.kind,
+      occurredAt: entry.occurredAt,
+      nodeId,
+      label: entry.title,
+      evidenceEventIds: entry.evidenceEventIds,
+      verified: true as const,
+    }] : [];
+  });
   return { nodes, edges, activityPulses };
 }
 
@@ -634,6 +892,10 @@ function timelineNodeId(
 ): string | undefined {
   const candidate = entry.recordType === 'mission'
     ? `mission:${entry.recordId}`
+    : entry.recordType === 'event'
+      ? `evidence:${entry.recordId}`
+      : entry.recordType === 'intent'
+        ? `intent:${entry.recordId}`
     : entry.recordType === 'assignment'
       ? `assignment:${entry.recordId}`
       : entry.recordType === 'receipt'
@@ -642,6 +904,97 @@ function timelineNodeId(
           ? `mission:${entry.missionId}`
           : undefined;
   return candidate && nodeIds.has(candidate) ? candidate : undefined;
+}
+
+function projectCurrentAssignment(
+  assignment: Assignment,
+  receipts: ActionReceipt[],
+): CommandCenterTimelineEntry {
+  const terminal = TERMINAL_ASSIGNMENT_STATUSES.has(assignment.status);
+  const outcomeVerified = terminal && verifiedOutcome(
+    assignment,
+    receiptsForAssignment(receipts, assignment),
+  );
+  return {
+    id: `${terminal ? 'outcome' : 'assignment'}:${assignment.id}`,
+    kind: terminal ? CommandCenterTimelineKind.Outcome : CommandCenterTimelineKind.Execute,
+    occurredAt: assignment.completedAt ?? assignment.acceptedAt ?? assignment.assignedAt,
+    title: `Assignment ${assignment.status}`,
+    recordType: 'assignment',
+    recordId: assignment.id,
+    missionId: assignment.missionId,
+    status: assignment.status,
+    agentId: assignment.agentId,
+    ...(assignment.cancelReason ? { reason: assignment.cancelReason } : {}),
+    ...(terminal && assignment.artifact !== undefined ? { artifactRecorded: true } : {}),
+    evidenceEventIds: assignment.evidenceEventIds,
+    provenance: assignment.provenance,
+    verified: terminal ? outcomeVerified : Boolean(assignment.integrityHash),
+    verification: terminal
+      ? outcomeVerified
+        ? CommandCenterVerification.Outcome
+        : CommandCenterVerification.NotVerified
+      : assignment.integrityHash
+        ? CommandCenterVerification.Integrity
+        : CommandCenterVerification.NotVerified,
+  };
+}
+
+function intentEvidenceEventIds(intent: IntentEnvelope): string[] {
+  return unique([
+    ...(intent.eventId ? [intent.eventId] : []),
+    ...intent.requiredEvidence.map((evidence) => evidence.eventId),
+    ...intent.contradictoryEvidenceEventIds,
+  ]);
+}
+
+function missionIdFromPayload(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const missionId = (payload as Record<string, unknown>).missionId;
+  return typeof missionId === 'string' && missionId.trim() ? missionId : undefined;
+}
+
+function lifecycleStatusFromChange(change: ChangeLog): LifecycleStatus | undefined {
+  const status = change.payload.status;
+  return typeof status === 'string' && Object.values(LifecycleStatus).includes(status as LifecycleStatus)
+    ? status as LifecycleStatus
+    : undefined;
+}
+
+function receiptStatusFromChange(change: ChangeLog): ReceiptStatus | undefined {
+  const status = change.payload.status;
+  return typeof status === 'string' && Object.values(ReceiptStatus).includes(status as ReceiptStatus)
+    ? status as ReceiptStatus
+    : undefined;
+}
+
+function groupBy<T>(items: T[], key: (item: T) => string): Map<string, T[]> {
+  const grouped = new Map<string, T[]>();
+  for (const item of items) {
+    const id = key(item);
+    const group = grouped.get(id) ?? [];
+    group.push(item);
+    grouped.set(id, group);
+  }
+  return grouped;
+}
+
+function timelineKindOrder(kind: CommandCenterTimelineKind): number {
+  return {
+    [CommandCenterTimelineKind.Capture]: 0,
+    [CommandCenterTimelineKind.Understand]: 1,
+    [CommandCenterTimelineKind.Route]: 2,
+    [CommandCenterTimelineKind.Plan]: 3,
+    [CommandCenterTimelineKind.Mission]: 3,
+    [CommandCenterTimelineKind.Approve]: 4,
+    [CommandCenterTimelineKind.Decision]: 4,
+    [CommandCenterTimelineKind.Execute]: 5,
+    [CommandCenterTimelineKind.Assignment]: 5,
+    [CommandCenterTimelineKind.Outcome]: 6,
+    [CommandCenterTimelineKind.Receipt]: 6,
+    [CommandCenterTimelineKind.Retain]: 7,
+    [CommandCenterTimelineKind.Present]: 8,
+  }[kind];
 }
 
 function evidenceFromProvenance(

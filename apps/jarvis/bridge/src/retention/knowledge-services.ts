@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import {
   LifecycleStatus,
   ProposalKind,
@@ -6,6 +8,7 @@ import {
   SourceType,
   type ActionReceipt,
   type DecisionRecord,
+  type EventEnvelope,
   type IntentEnvelope,
   type JsonObject,
   type MissionPlan,
@@ -28,6 +31,8 @@ export interface MissionKnowledgeStore {
   listMissionTasks(missionId: string): MissionTask[];
   listReceipts(): ActionReceipt[];
   listDecisions(missionId?: string): DecisionRecord[];
+  appendEvent(event: EventEnvelope): unknown;
+  getEvent(id: string): EventEnvelope | undefined;
 }
 
 /** Builds the narrow verified projection accepted by ObsidianRetentionWriter. */
@@ -35,6 +40,7 @@ export class MissionKnowledgeRetentionService {
   constructor(
     private readonly store: MissionKnowledgeStore,
     private readonly writer: ObsidianRetentionWriter,
+    private readonly clock: () => string = () => new Date().toISOString(),
   ) {}
 
   retainMission(missionId: string): RetentionWriteResult {
@@ -104,7 +110,32 @@ export class MissionKnowledgeRetentionService {
       })),
       evidenceEventIds,
     };
-    return this.writer.write(knowledge);
+    const retained = this.writer.write(knowledge);
+    const retainedAt = new Date(this.clock()).toISOString();
+    const sourceEventId = `retention:${mission.id}:${mission.planHash}`;
+    const eventId = `retention-${createHash('sha256').update(sourceEventId).digest('hex')}`;
+    if (!this.store.getEvent(eventId)) this.store.appendEvent({
+      id: eventId,
+      source: 'jericho:retention',
+      sourceType: SourceType.System,
+      sourceEventId,
+      type: 'jericho.retention.completed',
+      occurredAt: retainedAt,
+      ingestedAt: retainedAt,
+      payload: {
+        missionId: mission.id,
+        planHash: mission.planHash,
+        relativePath: retained.relativePath,
+        status: retained.status,
+      },
+      provenance: [{
+        source: 'jericho:retention',
+        sourceType: SourceType.System,
+        sourceEventId,
+        observedAt: retainedAt,
+      }],
+    });
+    return retained;
   }
 }
 

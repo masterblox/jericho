@@ -191,6 +191,11 @@ export enum DecisionOutcome {
   Superseded = 'superseded',
 }
 
+export enum ReviewIntentDisposition {
+  Dismiss = 'dismiss',
+  ReclassifyProject = 'reclassify_project',
+}
+
 export enum ConnectorHealthStatus {
   Unknown = 'unknown',
   Healthy = 'healthy',
@@ -261,15 +266,34 @@ export enum CommandCenterMissionStage {
 
 export enum CommandCenterTimelineKind {
   Capture = 'capture',
+  Understand = 'understand',
+  Route = 'route',
+  Plan = 'plan',
+  Approve = 'approve',
+  Execute = 'execute',
+  Retain = 'retain',
+  Present = 'present',
+  /** @deprecated Retained for snapshots produced before lifecycle replay. */
   Mission = 'mission',
+  /** @deprecated Retained for non-plan decisions and legacy snapshots. */
   Decision = 'decision',
+  /** @deprecated Retained for legacy assignment snapshots. */
   Assignment = 'assignment',
   Outcome = 'outcome',
   Receipt = 'receipt',
 }
 
+export enum CommandCenterVerification {
+  Integrity = 'integrity_verified',
+  Outcome = 'outcome_verified',
+  Destination = 'destination_verified',
+  NotVerified = 'not_verified',
+}
+
 export enum NucleusNodeKind {
   Entity = 'entity',
+  Evidence = 'evidence',
+  Intent = 'intent',
   Mission = 'mission',
   Agent = 'agent',
   Assignment = 'assignment',
@@ -833,6 +857,8 @@ export interface DecisionRecord {
   outcome: DecisionOutcome;
   planHash?: string;
   planVersion?: number;
+  /** Integrity binding for a human disposition of an immutable classifier intent. */
+  intentHash?: string;
   rationale: string;
   assumptions: string[];
   evidenceEventIds: string[];
@@ -919,6 +945,16 @@ export interface CommandCenterTimelineEntry {
   status?: LifecycleStatus | ReceiptStatus;
   actor?: string;
   reason?: string;
+  summary?: string;
+  route?: IntentRoute | RouteType;
+  routeRuleId?: string;
+  risk?: RiskLevel;
+  confidence?: number;
+  planHash?: string;
+  planVersion?: number;
+  agentId?: string;
+  artifactRecorded?: boolean;
+  verification?: CommandCenterVerification;
   evidenceEventIds: string[];
   provenance: Provenance[];
   verified: boolean;
@@ -1022,7 +1058,7 @@ export interface NucleusActivityPulse {
   id: string;
   kind: CommandCenterTimelineKind;
   occurredAt: IsoTimestamp;
-  nodeId?: string;
+  nodeId: string;
   edgeId?: string;
   label: string;
   evidenceEventIds: string[];
@@ -1068,6 +1104,38 @@ export interface MissionDecisionRequest {
 export interface MissionDecisionResponse {
   decision: DecisionRecord;
   mission: CommandCenterMission;
+  snapshot: CommandCenterSnapshot;
+}
+
+export interface ReviewIntentDecisionRequest {
+  disposition: ReviewIntentDisposition;
+  intentHash: string;
+  reason?: string;
+}
+
+export interface ReviewIntentDecisionResponse {
+  decision: DecisionRecord;
+  originalIntent: IntentEnvelope;
+  derivedIntent?: IntentEnvelope;
+  /** A reclassification creates a fresh bounded plan, never queued work. */
+  mission?: CommandCenterMission;
+  snapshot: CommandCenterSnapshot;
+}
+
+export interface CheckpointDecisionRequest {
+  outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected;
+  planHash: string;
+  version: number;
+  reason?: string;
+}
+
+export interface CheckpointDecisionResponse {
+  decision: DecisionRecord;
+  proposal: Proposal;
+  assignment: Assignment;
+  mission: CommandCenterMission;
+  resumed: boolean;
+  requiresNewPlan: boolean;
   snapshot: CommandCenterSnapshot;
 }
 
@@ -1603,6 +1671,7 @@ export function assertDecisionRecord(value: unknown): asserts value is DecisionR
   for (const field of ['intentId', 'missionId', 'missionTaskId', 'proposalId', 'preferenceChangeId']) if (field in value) assertNonEmptyString(value[field], `Decision ${field}`);
   if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
   if ('planVersion' in value) assertPositiveInteger(value.planVersion, 'Decision planVersion');
+  if ('intentHash' in value) assertDigest(value.intentHash, 'Decision intentHash');
   assertEnum(value.outcome, DecisionOutcome, 'Decision outcome');
   assertDenseStringArray(value.assumptions, 'Decision assumptions');
   assertDenseStringArray(value.evidenceEventIds, 'Decision evidenceEventIds');

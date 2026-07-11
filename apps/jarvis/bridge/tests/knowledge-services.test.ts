@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DecisionOutcome,
@@ -42,9 +42,14 @@ describe('mission knowledge retention service', () => {
   it('projects only verified summaries into Obsidian and excludes artifact bodies', () => {
     const vault = temporaryDirectory();
     const mission = completedMission();
+    const retainedEvents = new Map<string, Parameters<MissionKnowledgeStore['appendEvent']>[0]>();
+    const appendEvent = vi.fn((event: Parameters<MissionKnowledgeStore['appendEvent']>[0]) => {
+      retainedEvents.set(event.id, event);
+    });
     const service = new MissionKnowledgeRetentionService(
-      knowledgeStore(mission),
+      { ...knowledgeStore(mission), appendEvent, getEvent: (id) => retainedEvents.get(id) },
       new ObsidianRetentionWriter({ vaultPath: vault }),
+      () => '2026-07-11T07:05:00.000Z',
     );
 
     const retained = service.retainMission(mission.id);
@@ -54,6 +59,18 @@ describe('mission knowledge retention service', () => {
     expect(note).toContain('Verified report');
     expect(note).toContain('telegram:message → person-paula');
     expect(note).not.toContain('private artifact body');
+    expect(appendEvent).toHaveBeenCalledWith(expect.objectContaining({
+      source: 'jericho:retention', sourceType: SourceType.System,
+      sourceEventId: `retention:${mission.id}:${mission.planHash}`,
+      type: 'jericho.retention.completed',
+      occurredAt: '2026-07-11T07:05:00.000Z',
+      payload: {
+        missionId: mission.id, planHash: mission.planHash,
+        relativePath: retained.relativePath, status: retained.status,
+      },
+    }));
+    expect(service.retainMission(mission.id).status).toBe('unchanged');
+    expect(appendEvent).toHaveBeenCalledTimes(1);
   });
 
   it('rejects incomplete tasks and unverified external receipts', () => {
@@ -138,6 +155,8 @@ function knowledgeStore(
     listMissionTasks: () => tasks,
     listReceipts: () => receipts,
     listDecisions: () => [decision()],
+    appendEvent: () => undefined,
+    getEvent: () => undefined,
   };
 }
 

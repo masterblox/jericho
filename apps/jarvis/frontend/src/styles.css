@@ -848,6 +848,38 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
+.jericho-review-card,
+.jericho-checkpoint-card {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 7px;
+  padding: 9px;
+  border: 1px solid var(--jericho-rule);
+  border-left: 2px solid var(--jericho-amber);
+  background: rgba(228, 179, 106, 0.04);
+  color: var(--jericho-muted);
+  font-size: 8px;
+}
+
+.jericho-review-title {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--jericho-text);
+}
+
+.jericho-review-reasons {
+  margin: 0;
+  padding-left: 16px;
+}
+
+.jericho-checkpoint-warning {
+  color: var(--jericho-red);
+  font-size: 8px;
+  letter-spacing: 0.08em;
+}
+
 .jericho-action-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(118px, 1fr));

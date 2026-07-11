@@ -9,26 +9,35 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   DecisionOutcome,
+  IntentRoute,
   LifecycleStatus,
   ProposalKind,
   RelationType,
+  ReviewIntentDisposition,
   RiskLevel,
   SourceType,
   RouteType,
   type DecisionRecord,
+  type CheckpointDecisionRequest,
   type EventEnvelope,
+  type IntentEnvelope,
   type JsonValue,
   type MissionDecisionRequest,
   type MissionDecisionResponse,
+  type MissionPlan,
   type Proposal,
+  type ReviewIntentDecisionRequest,
+  type ReviewIntentDecisionResponse,
 } from '@jericho/shared';
 
 import { buildCommandCenterSnapshot } from './command-center.js';
 import { loadConfig } from './config.js';
 import {
   EventConflictError,
+  CheckpointDecisionConflictError,
   JerichoStore,
   MissionDecisionConflictError,
+  ReviewIntentDecisionConflictError,
 } from './core/store.js';
 import {
   IntakeProcessor,
@@ -54,6 +63,7 @@ export interface ObsidianSearchPort {
 
 export interface IntakePort {
   processEvent(eventId: string): IntakeProcessingResult;
+  prepareReviewedProject(intent: IntentEnvelope): MissionPlan;
   queueApprovedMission(missionId: string): MissionQueueResult;
   recover(): IntakeRecoveryResult;
 }
@@ -127,7 +137,7 @@ export interface JerichoServer {
 }
 
 const SECURITY_HEADERS = {
-  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; media-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; media-src 'self' blob:; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
@@ -343,6 +353,139 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       sendJson(response, 200, { proposals });
       return;
     }
+    const reviewDecisionMatch = url.pathname.match(/^\/api\/v1\/review-intents\/([^/]+)\/decisions$/);
+    if (request.method === 'POST' && reviewDecisionMatch) {
+      const intentId = decodedPathSegment(reviewDecisionMatch[1], 'invalid_review_intent_id');
+      const intent = options.store.getIntent(intentId);
+      if (!intent) throw new HttpError(404, 'review_intent_not_found');
+      const input = reviewIntentDecisionRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      const decisionId = validDecisionId(decisionIdFactory());
+      const reclassify = input.disposition === ReviewIntentDisposition.ReclassifyProject;
+      if (reclassify && !options.intake) {
+        throw new HttpError(503, 'review_project_planner_unavailable');
+      }
+      const provenance = {
+        source: 'local:command-center',
+        sourceType: SourceType.User,
+        sourceEventId: decisionId,
+        observedAt: decidedAt,
+      } as const;
+      const decision: DecisionRecord = {
+        id: decisionId,
+        intentId,
+        intentHash: input.intentHash,
+        decidedBy: 'carlos',
+        outcome: reclassify ? DecisionOutcome.Superseded : DecisionOutcome.Rejected,
+        rationale: input.reason ?? (reclassify
+          ? 'Reclassified Review intent as a project requiring a new bounded mission approval'
+          : 'Dismissed Review intent'),
+        assumptions: intent.assumptions.map((assumption) => assumption.text),
+        evidenceEventIds: [...new Set([
+          ...intent.requiredEvidence.map((evidence) => evidence.eventId),
+          ...intent.contradictoryEvidenceEventIds,
+        ])],
+        route: RouteType.HumanApproval,
+        risk: intent.risk,
+        confidence: intent.confidence,
+        decidedAt,
+        provenance: [provenance],
+      };
+      const { integrityHash: _originalIntegrityHash, ...derivedIntentBase } = intent;
+      const derivedIntent = reclassify ? {
+        ...derivedIntentBase,
+        id: `reviewed-project-${createHash('sha256').update(`${intent.id}:${decisionId}`).digest('hex').slice(0, 32)}`,
+        source: 'local:review',
+        sourceType: SourceType.User,
+        payload: {
+          ...intent.payload,
+          reviewedParentIntentId: intent.id,
+          reviewDecisionId: decisionId,
+        },
+        status: LifecycleStatus.Active,
+        route: IntentRoute.Project,
+        routeRuleId: 'human-review:reclassify-project',
+        provenance: [...intent.provenance, provenance],
+        createdAt: decidedAt,
+        updatedAt: decidedAt,
+      } : undefined;
+      const derivedMission = derivedIntent
+        ? options.intake!.prepareReviewedProject(derivedIntent)
+        : undefined;
+      const resolved = options.store.resolveReviewIntent({
+        intentId,
+        intentHash: input.intentHash,
+        decision,
+        ...(derivedIntent ? { derivedIntent } : {}),
+        ...(derivedMission ? { derivedMission } : {}),
+      });
+      const snapshot = buildCommandCenterSnapshot(options.store, now());
+      const mission = resolved.mission
+        ? snapshot.missions.find((candidate) => candidate.id === resolved.mission!.id)
+        : undefined;
+      if (resolved.mission && !mission) {
+        throw new Error(`Reviewed mission ${resolved.mission.id} is not projectable`);
+      }
+      const result: ReviewIntentDecisionResponse = {
+        decision: resolved.decision,
+        originalIntent: resolved.originalIntent,
+        ...(resolved.derivedIntent ? { derivedIntent: resolved.derivedIntent } : {}),
+        ...(mission ? { mission } : {}),
+        snapshot,
+      };
+      sendJson(response, 200, result);
+      return;
+    }
+    const checkpointDecisionMatch = url.pathname.match(/^\/api\/v1\/checkpoints\/([^/]+)\/decisions$/);
+    if (request.method === 'POST' && checkpointDecisionMatch) {
+      const proposalId = decodedPathSegment(checkpointDecisionMatch[1], 'invalid_checkpoint_id');
+      const proposal = options.store.getProposal(proposalId);
+      if (!proposal) throw new HttpError(404, 'checkpoint_not_found');
+      const input = checkpointDecisionRequest(await readJsonBody(request, 64 * 1024));
+      const missionId = typeof proposal.body.missionId === 'string' ? proposal.body.missionId : '';
+      const mission = options.store.getMission(missionId);
+      if (!mission) throw new HttpError(409, 'checkpoint_context_missing');
+      const decidedAt = now();
+      const decisionId = validDecisionId(decisionIdFactory());
+      const resolved = options.store.resolveCheckpoint({
+        proposalId,
+        planHash: input.planHash,
+        planVersion: input.version,
+        resume: input.outcome === DecisionOutcome.Approved,
+        decision: {
+          id: decisionId,
+          proposalId,
+          missionId,
+          decidedBy: 'carlos',
+          outcome: input.outcome,
+          planHash: input.planHash,
+          planVersion: input.version,
+          rationale: input.reason ?? (input.outcome === DecisionOutcome.Approved
+            ? 'Resume the exact approved plan without expanding scope'
+            : 'Reject checkpoint; mission cancellation recorded'),
+          assumptions: [],
+          evidenceEventIds: [...mission.evidenceEventIds],
+          route: RouteType.HumanApproval,
+          risk: proposal.risk,
+          decidedAt,
+          provenance: [{
+            source: 'local:command-center',
+            sourceType: SourceType.User,
+            sourceEventId: decisionId,
+            observedAt: decidedAt,
+          }],
+        },
+      });
+      const snapshot = buildCommandCenterSnapshot(options.store, now());
+      const projectedMission = snapshot.missions.find((candidate) => candidate.id === resolved.mission.id);
+      if (!projectedMission) throw new Error(`Checkpoint mission ${resolved.mission.id} is not projectable`);
+      sendJson(response, 200, {
+        ...resolved,
+        mission: projectedMission,
+        snapshot,
+      });
+      return;
+    }
     const missionDecisionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/decisions$/);
     if (request.method === 'POST' && missionDecisionMatch) {
       let missionId: string;
@@ -358,10 +501,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       if (!mission) throw new HttpError(404, 'mission_not_found');
       const input = missionDecisionRequest(await readJsonBody(request, 64 * 1024));
       const decidedAt = now();
-      const decisionId = decisionIdFactory();
-      if (!decisionId.trim() || decisionId.length > 512) {
-        throw new Error('Mission decision ID factory returned an invalid ID');
-      }
+      const decisionId = validDecisionId(decisionIdFactory());
       const intent = options.store.getIntent(mission.intentId);
       const decision: DecisionRecord = {
         id: decisionId,
@@ -1006,6 +1146,12 @@ function httpFailure(error: unknown): { status: number; code: string } {
   if (error instanceof MissionDecisionConflictError) {
     return { status: 409, code: 'mission_decision_conflict' };
   }
+  if (error instanceof ReviewIntentDecisionConflictError) {
+    return { status: 409, code: 'review_intent_decision_conflict' };
+  }
+  if (error instanceof CheckpointDecisionConflictError) {
+    return { status: 409, code: 'checkpoint_decision_conflict' };
+  }
   if (error instanceof TypeError) return { status: 400, code: 'invalid_request' };
   return { status: 500, code: 'internal_error' };
 }
@@ -1057,6 +1203,66 @@ function missionDecisionRequest(body: Record<string, unknown>): MissionDecisionR
     version: body.version as number,
     ...(typeof body.reason === 'string' ? { reason: body.reason.trim() } : {}),
   };
+}
+
+function reviewIntentDecisionRequest(body: Record<string, unknown>): ReviewIntentDecisionRequest {
+  const allowedFields = new Set(['disposition', 'intentHash', 'reason']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'review_intent_decision_field_not_allowed');
+  }
+  if (
+    body.disposition !== ReviewIntentDisposition.Dismiss &&
+    body.disposition !== ReviewIntentDisposition.ReclassifyProject
+  ) {
+    throw new HttpError(400, 'invalid_review_intent_disposition');
+  }
+  if (typeof body.intentHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.intentHash)) {
+    throw new HttpError(400, 'invalid_review_intent_hash');
+  }
+  const reason = optionalDecisionReason(body.reason, 'invalid_review_intent_reason');
+  return {
+    disposition: body.disposition,
+    intentHash: body.intentHash,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function checkpointDecisionRequest(body: Record<string, unknown>): CheckpointDecisionRequest {
+  const allowedFields = new Set(['outcome', 'planHash', 'version', 'reason']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'checkpoint_decision_field_not_allowed');
+  }
+  if (body.outcome !== DecisionOutcome.Approved && body.outcome !== DecisionOutcome.Rejected) {
+    throw new HttpError(400, 'invalid_checkpoint_decision_outcome');
+  }
+  if (typeof body.planHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.planHash)) {
+    throw new HttpError(400, 'invalid_checkpoint_plan_hash');
+  }
+  if (!Number.isInteger(body.version) || (body.version as number) < 1) {
+    throw new HttpError(400, 'invalid_checkpoint_plan_version');
+  }
+  const reason = optionalDecisionReason(body.reason, 'invalid_checkpoint_decision_reason');
+  return {
+    outcome: body.outcome,
+    planHash: body.planHash,
+    version: body.version as number,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function optionalDecisionReason(value: unknown, errorCode: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== 'string' || !value.trim() || value.length > 2_000) {
+    throw new HttpError(400, errorCode);
+  }
+  return value.trim();
+}
+
+function validDecisionId(value: string): string {
+  if (!value.trim() || value.length > 512) {
+    throw new Error('Decision ID factory returned an invalid ID');
+  }
+  return value;
 }
 
 function missionCancellationRequest(body: Record<string, unknown>): {

@@ -144,6 +144,17 @@ export class IntakeProcessor {
     }
   }
 
+  prepareReviewedProject(intent: IntentEnvelope): MissionPlan {
+    if (intent.route !== IntentRoute.Project || intent.status !== LifecycleStatus.Active) {
+      throw new Error(`Reviewed intent ${intent.id} is not an active project`);
+    }
+    if (!intent.eventId) throw new Error(`Reviewed intent ${intent.id} has no immutable source event`);
+    const event = this.#store.getEvent(intent.eventId);
+    if (!event) throw new Error(`Reviewed intent source event ${intent.eventId} does not exist`);
+    const missionId = deterministicId('mission', intent.id);
+    return this.#preparePlan(event, intent, missionId);
+  }
+
   queueApprovedMission(missionId: string): MissionQueueResult {
     const mission = this.#store.getMission(missionId);
     if (!mission) throw new Error(`Mission ${missionId} does not exist`);
@@ -242,6 +253,10 @@ export class IntakeProcessor {
   }
 
   #plan(event: EventEnvelope, intent: IntentEnvelope, missionId: string): MissionPlan {
+    return this.#store.createMissionPlan(this.#preparePlan(event, intent, missionId));
+  }
+
+  #preparePlan(event: EventEnvelope, intent: IntentEnvelope, missionId: string): MissionPlan {
     const repositorySelection = captureRepositorySelection(event);
     const selectedGrant = repositorySelection.repository
       ? this.#repositoryGrants.get(repositorySelection.repository)
@@ -255,11 +270,11 @@ export class IntakeProcessor {
       missionId,
       permissions,
     );
-    return this.#store.createMissionPlan(createMissionPlan(
+    return createMissionPlan(
       plan,
       new CapabilityRegistry(this.#store.listAgentCapabilities()),
       event.ingestedAt,
-    ));
+    );
   }
 
   #seedBuiltInCapabilities(): void {
