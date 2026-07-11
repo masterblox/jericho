@@ -11,7 +11,7 @@ import {
   type NormalizedCapture,
 } from '@jericho/shared';
 
-import { loadConfig } from '../src/config.js';
+import { loadApiToken, loadConfig } from '../src/config.js';
 import { JerichoStore } from '../src/core/store.js';
 import { createJerichoServer } from '../src/server.js';
 
@@ -64,6 +64,60 @@ describe('runtime config', () => {
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',
     }, [])).toThrow(/JERICHO_GIT_REPOSITORIES/);
+  });
+});
+
+describe('local API credential', () => {
+  it('prefers an explicit environment token without consulting Keychain', () => {
+    const runSecurityCommand = vi.fn();
+
+    expect(loadApiToken({
+      environment: { JERICHO_API_TOKEN: TOKEN },
+      platform: 'darwin',
+      runSecurityCommand,
+    })).toBe(TOKEN);
+    expect(runSecurityCommand).not.toHaveBeenCalled();
+  });
+
+  it('generates a missing macOS Keychain token and passes it only over stdin', () => {
+    const generated = Buffer.alloc(32, 89).toString('base64url');
+    const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    let persisted: string | undefined;
+
+    const token = loadApiToken({
+      environment: {},
+      platform: 'darwin',
+      username: 'test-user',
+      generateToken: () => generated,
+      runSecurityCommand: (args, input) => {
+        calls.push({ args, input });
+        if (args[0] === 'find-generic-password') {
+          if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
+          return `${persisted}\n`;
+        }
+        persisted = input?.trim();
+        return '';
+      },
+    });
+
+    expect(token).toBe(generated);
+    expect(calls[1]).toEqual({
+      args: [
+        'add-generic-password',
+        '-s',
+        'jericho-core-api',
+        '-a',
+        'test-user',
+        '-w',
+      ],
+      input: `${generated}\n`,
+    });
+    expect(calls[1].args).not.toContain(generated);
+  });
+
+  it('fails closed off macOS when no token is configured', () => {
+    expect(() => loadApiToken({ environment: {}, platform: 'linux' }))
+      .toThrow('Set JERICHO_API_TOKEN');
   });
 });
 

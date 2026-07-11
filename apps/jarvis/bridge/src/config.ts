@@ -1,4 +1,7 @@
 import dotenv from 'dotenv';
+import { randomBytes } from 'node:crypto';
+import { execFileSync } from 'node:child_process';
+import { userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -31,14 +34,78 @@ export interface NamedPath {
   path: string;
 }
 
+export interface ApiTokenOptions {
+  environment?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  username?: string;
+  runSecurityCommand?: (args: readonly string[], input?: string) => string;
+  generateToken?: () => string;
+}
+
+/**
+ * Resolve the loopback Core bearer token without ever putting a generated
+ * credential in argv. On macOS the first boot creates one Keychain item and
+ * every subsequent process reads the persisted winner.
+ */
+export function loadApiToken(options: ApiTokenOptions = {}): string {
+  const environment = options.environment ?? process.env;
+  const configured = optionalString(environment.JERICHO_API_TOKEN);
+  if (configured) return configured;
+
+  const platform = options.platform ?? process.platform;
+  if (platform !== 'darwin') {
+    throw new Error('No Jericho API token is available. Set JERICHO_API_TOKEN.');
+  }
+  const username = options.username ?? userInfo().username;
+  const runSecurityCommand = options.runSecurityCommand ?? defaultSecurityCommand;
+  const readPersistedToken = () => validateApiToken(runSecurityCommand([
+    'find-generic-password',
+    '-s',
+    'jericho-core-api',
+    '-a',
+    username,
+    '-w',
+  ]), 'macOS Keychain item jericho-core-api');
+
+  try {
+    return readPersistedToken();
+  } catch (cause) {
+    if (!isSecurityStatus(cause, 44)) {
+      throw new Error('Unable to read Jericho API token from macOS Keychain', { cause });
+    }
+  }
+
+  const generated = validateApiToken(
+    (options.generateToken ?? (() => randomBytes(32).toString('base64url')))(),
+    'Generated Jericho API token',
+  );
+  try {
+    runSecurityCommand([
+      'add-generic-password',
+      '-s',
+      'jericho-core-api',
+      '-a',
+      username,
+      '-w',
+    ], `${generated}\n`);
+  } catch (cause) {
+    if (!isSecurityStatus(cause, 45)) {
+      throw new Error('Unable to persist Jericho API token in macOS Keychain', { cause });
+    }
+  }
+
+  try {
+    return readPersistedToken();
+  } catch (cause) {
+    throw new Error('Unable to read Jericho API token after Keychain initialization', { cause });
+  }
+}
+
 export function loadConfig(
   environment: Record<string, string | undefined> = process.env,
   argv: string[] = process.argv.slice(2),
 ): JerichoConfig {
-  const apiToken = environment.JERICHO_API_TOKEN;
-  if (!apiToken) {
-    throw new Error('JERICHO_API_TOKEN is required (env or a Keychain-backed launcher)');
-  }
+  const apiToken = loadApiToken({ environment });
   const cliPort = commandLinePort(argv);
   const port = parsePort(
     cliPort ?? environment.CONDUCTOR_PORT ?? environment.PORT ?? '8787',
@@ -78,6 +145,26 @@ export function loadConfig(
       'JERICHO_CONNECTOR_POLL_INTERVAL_MS',
     ),
   };
+}
+
+function validateApiToken(value: string, source: string): string {
+  const token = value.trim();
+  if (!token || /[\u0000-\u001f\u007f\s]/u.test(token)) {
+    throw new Error(`${source} must be a non-empty token without whitespace or control characters`);
+  }
+  return token;
+}
+
+function isSecurityStatus(cause: unknown, status: number): boolean {
+  return typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === status;
+}
+
+function defaultSecurityCommand(args: readonly string[], input?: string): string {
+  return execFileSync('security', [...args], {
+    encoding: 'utf8',
+    input,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
 }
 
 const DEFAULT_SYSTEM_INSTRUCTION = [

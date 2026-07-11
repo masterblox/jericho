@@ -1,0 +1,16 @@
+"$schema" = "https://conductor.build/schemas/settings.repo.schema.json"
+
+[scripts]
+setup = "corepack pnpm --dir apps/jarvis install --frozen-lockfile && corepack pnpm --dir apps/jarvis build"
+run_mode = "nonconcurrent"
+
+[scripts.run.jericho]
+command = "corepack pnpm --dir apps/jarvis start"
+default = true
+icon = "monitor"
+available_in = [ "local" ]
+
+[scripts.run.verify]
+command = "corepack pnpm --dir apps/jarvis test && corepack pnpm --dir apps/jarvis typecheck"
+icon = "test-tube"
+available_in = [ "local" ]
