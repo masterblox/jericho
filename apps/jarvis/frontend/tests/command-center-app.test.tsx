@@ -13,6 +13,7 @@ import {
   EntityType,
   EscalationReason,
   LifecycleStatus,
+  MissionTaskKind,
   MutationClass,
   NucleusNodeKind,
   ReceiptStatus,
@@ -57,6 +58,16 @@ describe('CommandCenterApp', () => {
     expect(screen.getByText(/telegram:send_message → Michael \[reversible\]/)).toBeTruthy();
     expect(screen.getByText(/Revert commit/)).toBeTruthy();
     expect(screen.getByText(/automatic; evidence: build/)).toBeTruthy();
+    expect(screen.getByText('Release artifact')).toBeTruthy();
+    expect(screen.getByText(/Verify and prepare.*depends on: none/i)).toBeTruthy();
+    expect(screen.getAllByText(/tools: git, telegram\.send/i)).toHaveLength(2);
+    expect(screen.getByText(/concurrency 2.*retries 1/i)).toBeTruthy();
+    expect(screen.getAllByText(/jericho.*apps\/jarvis/i)).toHaveLength(2);
+    expect(screen.getAllByText(/channels.*telegram/i)).toHaveLength(2);
+    expect(screen.getAllByText(/credentials.*telegram-primary/i)).toHaveLength(2);
+    expect(screen.getByText(/data scopes.*telegram:selected/i)).toBeTruthy();
+    expect(screen.getAllByText(/mutations.*read only.*reversible/i)).toHaveLength(2);
+    expect(screen.getByText(/escalations.*cost budget.*new recipient/i)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve bounded mission' }));
     expect(decideMission).toHaveBeenCalledWith({
@@ -66,6 +77,22 @@ describe('CommandCenterApp', () => {
       version: 3,
       reason: 'Approved from Jericho command center',
     });
+  });
+
+  it('renders missing timeline attribution explicitly without inventing an actor', () => {
+    const store = new CommandCenterStore();
+    store.replace(populatedSnapshot());
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn() }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByText('Unknown actor')).toBeTruthy();
+    expect(screen.getByText('Unknown reason')).toBeTruthy();
+    expect(screen.getByText('Unknown provenance')).toBeTruthy();
+    expect(screen.queryByText('Jericho')).toBeNull();
   });
 
   it('renders honest loading, unavailable, disconnected, and empty states without fabricated fallback data', () => {
@@ -150,7 +177,12 @@ function populatedSnapshot(): CommandCenterSnapshot {
         title: 'Plan proposed', recordType: 'mission', recordId: 'mission-1', missionId: 'mission-1',
         status: LifecycleStatus.PendingApproval, evidenceEventIds: ['event-plan-1'], verified: true,
         actor: 'Carlos', reason: 'Scope checked against approved evidence',
-      } as never],
+        provenance,
+      }, {
+        id: 'timeline-receipt', kind: CommandCenterTimelineKind.Receipt, occurredAt: at,
+        title: 'Receipt pending', recordType: 'receipt', recordId: 'receipt-pending', missionId: 'mission-1',
+        status: ReceiptStatus.Pending, evidenceEventIds: [], verified: false, provenance: [],
+      }],
       createdAt: at, updatedAt: at,
     }],
     approvals: [{
@@ -167,6 +199,39 @@ function populatedSnapshot(): CommandCenterSnapshot {
       time: { maximumRuntimeMs: 900_000, elapsedRuntimeMs: 0 },
       acceptanceTests: [{ id: 'tests', description: 'All tests pass', verification: 'automatic', requiredEvidence: ['build'] }],
       rollback: { strategy: 'revert', steps: ['Revert commit'], verification: 'Tests pass' },
+      deliverables: [{ id: 'release', description: 'Release artifact', artifactType: 'bundle', required: true }],
+      taskGraph: [{
+        id: 'task-plan', kind: MissionTaskKind.Execute, title: 'Verify and prepare', sequence: 0,
+        lane: AgentLane.Dev, selectedAgentId: 'dev', capabilityIds: ['cap-dev'],
+        requiredActions: ['code.test'], requiredTools: ['git', 'telegram.send'], model: 'local', maxTokens: 5_000,
+        writableScope: {
+          allowedTools: ['git'], allowedSystems: ['github'],
+          allowedRepositories: [{
+            repository: 'jericho', writablePaths: ['apps/jarvis'],
+            mutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+          }],
+          allowedChannels: ['telegram'], allowedRecipients: ['person-michael'],
+          allowedCredentialRefs: ['telegram-primary'], allowedDataScopes: ['telegram:selected'],
+          allowedMutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+        },
+        dependsOn: [], evidenceEventIds: ['event-plan-1'],
+        expectedArtifact: {
+          type: 'report', description: 'Verified build', verification: ['tests'], requiredEvidence: ['build'],
+        },
+        input: {}, estimatedCostMicroUsd: 500, route: RouteType.Agent, risk: RiskLevel.Low,
+      }],
+      budget: { maxCostMicroUsd: 2_000, maxRuntimeMs: 900_000, maxConcurrency: 2, maxRetriesPerAssignment: 1 },
+      permissions: {
+        allowedTools: ['git', 'telegram.send'], allowedSystems: ['github'],
+        allowedRepositories: [{
+          repository: 'jericho', writablePaths: ['apps/jarvis'],
+          mutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+        }],
+        allowedChannels: ['telegram'], allowedRecipients: ['person-michael'],
+        allowedCredentialRefs: ['telegram-primary'], allowedDataScopes: ['telegram:selected'],
+        allowedMutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+      },
+      escalationConditions: [EscalationReason.CostBudget, EscalationReason.NewRecipient],
       actions: [{
         id: 'approve-mission-1', kind: CommandCenterActionKind.ApproveMission,
         label: 'Approve bounded mission', targetType: 'mission', targetId: 'mission-1',

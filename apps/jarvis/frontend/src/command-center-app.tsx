@@ -377,17 +377,19 @@ function MissionTimeline({ mission }: { mission?: CommandCenterMission }) {
       <div className="jericho-section-heading"><h2>Mission timeline</h2><span>{mission?.timeline.length ?? 0}</span></div>
       {!mission?.timeline.length ? <EmptyState /> : (
         <ol>
-          {mission.timeline.map((entry) => {
-            const detail = entry as CommandCenterTimelineEntry & { actor?: string; reason?: string };
-            return (
-              <li key={entry.id}>
-                <time dateTime={entry.occurredAt}>{compactTime(entry.occurredAt)}</time>
-                <div><strong>{entry.title}</strong><span>{detail.actor ?? 'Jericho'}</span></div>
-                {detail.reason && <p>{detail.reason}</p>}
-                <div className="jericho-evidence">{entry.evidenceEventIds.map((id) => <code key={id}>{id}</code>)}</div>
-              </li>
-            );
-          })}
+          {mission.timeline.map((entry: CommandCenterTimelineEntry) => (
+            <li key={entry.id}>
+              <time dateTime={entry.occurredAt}>{compactTime(entry.occurredAt)}</time>
+              <div><strong>{entry.title}</strong><span>{entry.actor ?? 'Unknown actor'}</span></div>
+              <p>{entry.reason ?? 'Unknown reason'}</p>
+              <p className="jericho-provenance">
+                {entry.provenance.length
+                  ? entry.provenance.map(formatProvenance).join('; ')
+                  : 'Unknown provenance'}
+              </p>
+              <div className="jericho-evidence">{entry.evidenceEventIds.map((id) => <code key={id}>{id}</code>)}</div>
+            </li>
+          ))}
         </ol>
       )}
     </section>
@@ -415,6 +417,27 @@ function ApprovalCard({
         <div><dt>Agents</dt><dd>{approval.agents.map((agent) => `${agent.agentId} / ${agent.lane} / ${agent.capabilityIds.join('+')}`).join('; ') || 'None'}</dd></div>
         <div><dt>Cost</dt><dd>max {formatCost(approval.cost.maximumMicroUsd)} · planned {formatCost(approval.cost.plannedMicroUsd)} · actual {formatCost(approval.cost.actualMicroUsd)}</dd></div>
         <div><dt>Runtime</dt><dd>max {formatDuration(approval.time.maximumRuntimeMs)} · elapsed {formatDuration(approval.time.elapsedRuntimeMs)}</dd></div>
+        <div><dt>Bounds</dt><dd>concurrency {approval.budget.maxConcurrency} · retries {approval.budget.maxRetriesPerAssignment}</dd></div>
+        <div><dt>Deliverables</dt><dd><ul>{approval.deliverables.map((deliverable) => (
+          <li key={deliverable.id}><strong>{deliverable.description}</strong><span>{deliverable.artifactType} · {deliverable.required ? 'required' : 'optional'}</span></li>
+        ))}</ul></dd></div>
+        <div><dt>Task graph</dt><dd><ol>{approval.taskGraph.map((task) => (
+          <li key={task.id}>
+            <p>{task.title} · depends on: {task.dependsOn.join(', ') || 'none'}</p>
+            <p>actions: {task.requiredActions.join(', ') || 'none'} · tools: {task.requiredTools.join(', ') || 'none'} · model: {task.model} · max tokens: {task.maxTokens}</p>
+            <p>writable scope: {formatPermissionScope(task.writableScope)}</p>
+          </li>
+        ))}</ol></dd></div>
+        <div><dt>Permissions</dt><dd>
+          <p>Tools: {approval.permissions.allowedTools.join(', ') || 'None'}</p>
+          <p>Repositories: {formatRepositories(approval.permissions.allowedRepositories)}</p>
+          <p>Channels: {approval.permissions.allowedChannels.join(', ') || 'None'}</p>
+          <p>Recipients: {approval.permissions.allowedRecipients.join(', ') || 'None'}</p>
+          <p>Credentials: {approval.permissions.allowedCredentialRefs.join(', ') || 'None'}</p>
+          <p>Data scopes: {approval.permissions.allowedDataScopes.join(', ') || 'None'}</p>
+          <p>Mutations: {formatEnumList(approval.permissions.allowedMutationClasses)}</p>
+        </dd></div>
+        <div><dt>Escalations</dt><dd>Escalations: {formatEnumList(approval.escalationConditions)}</dd></div>
         <div><dt>Rollback</dt><dd>{approval.rollback.strategy} · {approval.rollback.steps.join(' → ') || 'No steps'} · verify: {approval.rollback.verification}</dd></div>
         <div><dt>Acceptance</dt><dd>{approval.acceptanceTests.map((test) => `${test.description} [${test.verification}; evidence: ${test.requiredEvidence.join(', ') || 'none'}]`).join('; ') || 'None'}</dd></div>
       </dl>
@@ -494,4 +517,32 @@ function formatDuration(value: number) {
 function formatExternalAction(action: CommandCenterApproval['externalActions'][number]) {
   const scope = action.recipient ?? action.repository ?? action.destination;
   return `${action.connectorId}:${action.action} → ${scope} [${action.mutationClass}]`;
+}
+
+function formatRepositories(repositories: CommandCenterApproval['permissions']['allowedRepositories']) {
+  return repositories.map((grant) =>
+    `${grant.repository}: ${grant.writablePaths.join(', ') || 'no writable paths'} [${formatEnumList(grant.mutationClasses)}]`,
+  ).join('; ') || 'None';
+}
+
+function formatPermissionScope(scope: CommandCenterApproval['permissions']) {
+  return [
+    `tools ${scope.allowedTools.join(', ') || 'none'}`,
+    `repositories ${formatRepositories(scope.allowedRepositories)}`,
+    `channels ${scope.allowedChannels.join(', ') || 'none'}`,
+    `recipients ${scope.allowedRecipients.join(', ') || 'none'}`,
+    `credentials ${scope.allowedCredentialRefs.join(', ') || 'none'}`,
+    `data ${scope.allowedDataScopes.join(', ') || 'none'}`,
+    `mutations ${formatEnumList(scope.allowedMutationClasses)}`,
+  ].join(' · ');
+}
+
+function formatEnumList(values: readonly string[]) {
+  return values.map((value) => value.replaceAll('_', ' ')).join(', ') || 'None';
+}
+
+function formatProvenance(item: CommandCenterTimelineEntry['provenance'][number]) {
+  const actor = item.actorId ? ` · actor ${item.actorId}` : '';
+  const event = item.sourceEventId ? ` · event ${item.sourceEventId}` : '';
+  return `${item.source} (${item.sourceType})${actor}${event}`;
 }

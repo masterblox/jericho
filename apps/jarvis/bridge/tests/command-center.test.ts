@@ -142,6 +142,20 @@ describe('command-center truth projection', () => {
       time: { maximumRuntimeMs: 3_600_000, elapsedRuntimeMs: 0 },
       acceptanceTests: [{ id: 'acceptance', description: 'Tests pass' }],
       rollback: { strategy: 'revert', steps: ['Revert commit'] },
+      deliverables: [{
+        id: 'deliverable', description: 'Verified result', artifactType: 'report', required: true,
+      }],
+      taskGraph: [{
+        id: 'pending-task', dependsOn: [], requiredActions: ['send_message'],
+        requiredTools: ['telegram.send'], model: 'local', maxTokens: 5_000,
+        writableScope: permissions(),
+      }],
+      budget: {
+        maxCostMicroUsd: 5_000, maxRuntimeMs: 3_600_000,
+        maxConcurrency: 2, maxRetriesPerAssignment: 1,
+      },
+      permissions: permissions(),
+      escalationConditions: [EscalationReason.CostBudget, EscalationReason.NewRecipient],
       risk: RiskLevel.Medium,
     });
     expect(snapshot.approvals[0].actions).toEqual([
@@ -198,6 +212,56 @@ describe('command-center truth projection', () => {
     expect(snapshot.nucleus.activityPulses.length).toBeGreaterThan(0);
     expect(buildCommandCenterSnapshot(store, '2026-07-11T08:31:00.000Z').revision)
       .toBe(snapshot.revision);
+  });
+
+  it('keeps encrypted receipt integrity distinct from destination verification', () => {
+    const store = openStore();
+    seedTruth(store);
+    store.reserveReceipt({
+      ...receipt(),
+      id: 'receipt-pending',
+      assignmentId: 'assignment-a',
+      missionTaskId: 'active-task-a',
+      idempotencyKey: 'receipt-pending-key',
+    });
+
+    const snapshot = buildCommandCenterSnapshot(store, NOW);
+
+    expect(store.getReceipt('receipt-pending')?.integrityHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(snapshot.outcomes.find((outcome) => outcome.assignmentId === 'assignment-a')).toMatchObject({
+      verified: false,
+    });
+    expect(snapshot.history.find((entry) => entry.recordId === 'assignment-a')).toMatchObject({
+      kind: 'outcome', verified: false,
+    });
+    expect(snapshot.history.find((entry) => entry.recordId === 'receipt-pending')).toMatchObject({
+      kind: 'receipt', verified: false,
+    });
+    expect(snapshot.nucleus.nodes).not.toContainEqual(expect.objectContaining({
+      id: 'receipt:receipt-pending',
+    }));
+    expect(snapshot.nucleus.activityPulses).not.toContainEqual(expect.objectContaining({
+      id: 'pulse:receipt:receipt-pending',
+    }));
+    expect(snapshot.nucleus.activityPulses).not.toContainEqual(expect.objectContaining({
+      id: 'pulse:outcome:assignment-a',
+    }));
+  });
+
+  it('projects exact record provenance without synthesizing actor or reason', () => {
+    const store = openStore();
+    seedTruth(store);
+
+    const snapshot = buildCommandCenterSnapshot(store, NOW);
+    const capture = snapshot.history.find((entry) => entry.recordId === 'event-command')!;
+    const receiptEntry = snapshot.history.find((entry) => entry.recordId === 'receipt-a')!;
+
+    expect(capture.actor).toBeUndefined();
+    expect(capture.reason).toBeUndefined();
+    expect(capture.provenance).toEqual(provenance('telegram', 'event-command'));
+    expect(receiptEntry.actor).toBeUndefined();
+    expect(receiptEntry.reason).toBeUndefined();
+    expect(receiptEntry.provenance).toEqual(provenance('runner'));
   });
 
   it('binds mission decisions to the exact pending plan hash and version', () => {

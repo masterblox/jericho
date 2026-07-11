@@ -913,6 +913,7 @@ export interface CommandCenterTimelineEntry {
   actor?: string;
   reason?: string;
   evidenceEventIds: string[];
+  provenance: Provenance[];
   verified: boolean;
 }
 
@@ -954,7 +955,12 @@ export interface CommandCenterApproval {
   affectedParties: CommandCenterAffectedParty[];
   affectedSystems: string[];
   externalActions: ExternalActionSpec[];
+  deliverables: MissionDeliverable[];
+  taskGraph: MissionTaskDefinition[];
   agents: AgentSelection[];
+  budget: MissionBudget;
+  permissions: MissionPermissions;
+  escalationConditions: EscalationReason[];
   cost: {
     maximumMicroUsd: number;
     plannedMicroUsd: number;

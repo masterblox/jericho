@@ -11,6 +11,7 @@ import {
   ReceiptStatus,
   RelationType,
   type ActionDescriptor,
+  type ActionReceipt,
   type AgentCapability,
   type Assignment,
   type CommandCenterApproval,
@@ -307,7 +308,12 @@ function projectApproval(
     }),
     affectedSystems: [...affectedSystems].sort(),
     externalActions,
+    deliverables: mission.deliverables,
+    taskGraph: mission.taskGraph,
     agents: mission.selectedAgents,
+    budget: mission.budget,
+    permissions: mission.permissions,
+    escalationConditions: mission.escalationConditions,
     cost: {
       maximumMicroUsd: mission.budget.maxCostMicroUsd,
       plannedMicroUsd: projected.budget.plannedCostMicroUsd,
@@ -367,8 +373,7 @@ function buildOutcomes(
 ): CommandCenterOutcome[] {
   return assignments.filter((assignment) => TERMINAL_ASSIGNMENT_STATUSES.has(assignment.status))
     .map((assignment) => {
-      const relatedReceipts = receipts.filter((receipt) =>
-        receipt.assignmentId === assignment.id || receipt.missionTaskId === assignment.missionTaskId);
+      const relatedReceipts = receiptsForAssignment(receipts, assignment);
       return {
         id: `outcome:${assignment.id}`,
         missionId: assignment.missionId,
@@ -382,10 +387,7 @@ function buildOutcomes(
           ...relatedReceipts.flatMap((receipt) => receipt.evidenceEventIds),
         ]),
         receiptIds: relatedReceipts.map((receipt) => receipt.id),
-        verified: assignment.status === LifecycleStatus.Succeeded &&
-          assignment.artifact !== undefined &&
-          relatedReceipts.every((receipt) =>
-            receipt.status === ReceiptStatus.Succeeded && receipt.verified),
+        verified: verifiedOutcome(assignment, relatedReceipts),
       };
     });
 }
@@ -405,7 +407,9 @@ function buildHistory(
     recordType: 'event',
     recordId: event.id,
     ...(event.status ? { status: event.status } : {}),
+    ...(actorFromProvenance(event.provenance) ? { actor: actorFromProvenance(event.provenance) } : {}),
     evidenceEventIds: [event.id],
+    provenance: event.provenance,
     verified: Boolean(event.integrityHash),
   }));
   for (const mission of missions) {
@@ -418,7 +422,9 @@ function buildHistory(
       recordId: mission.id,
       missionId: mission.id,
       status: LifecycleStatus.PendingApproval,
+      ...(actorFromProvenance(mission.provenance) ? { actor: actorFromProvenance(mission.provenance) } : {}),
       evidenceEventIds: mission.evidenceEventIds,
+      provenance: mission.provenance,
       verified: Boolean(mission.integrityHash),
     });
   }
@@ -434,6 +440,7 @@ function buildHistory(
       actor: decision.decidedBy,
       reason: decision.rationale,
       evidenceEventIds: decision.evidenceEventIds,
+      provenance: decision.provenance,
       verified: Boolean(decision.integrityHash),
     });
   }
@@ -449,8 +456,12 @@ function buildHistory(
       missionId: assignment.missionId,
       status: assignment.status,
       actor: assignment.agentId,
+      ...(assignment.cancelReason ? { reason: assignment.cancelReason } : {}),
       evidenceEventIds: assignment.evidenceEventIds,
-      verified: Boolean(assignment.integrityHash),
+      provenance: assignment.provenance,
+      verified: outcome
+        ? verifiedOutcome(assignment, receiptsForAssignment(receipts, assignment))
+        : Boolean(assignment.integrityHash),
     });
   }
   for (const receipt of receipts) {
@@ -465,8 +476,10 @@ function buildHistory(
         missionId: assignmentMissionId(assignments, receipt.assignmentId),
       } : {}),
       status: receipt.status,
+      ...(actorFromProvenance(receipt.provenance) ? { actor: actorFromProvenance(receipt.provenance) } : {}),
       evidenceEventIds: receipt.evidenceEventIds,
-      verified: Boolean(receipt.integrityHash),
+      provenance: receipt.provenance,
+      verified: isDestinationVerifiedReceipt(receipt),
     });
   }
   return entries.sort((left, right) =>
@@ -528,7 +541,8 @@ function buildNucleus(
       evidenceEventIds: assignment.evidenceEventIds, verified: true,
     });
   }
-  for (const receipt of receipts.filter(hasVerifiedIntegrity)) {
+  for (const receipt of receipts.filter((item) =>
+    hasVerifiedIntegrity(item) && isDestinationVerifiedReceipt(item))) {
     nodes.push({
       id: `receipt:${receipt.id}`, kind: NucleusNodeKind.Receipt,
       recordType: 'receipt', recordId: receipt.id,
@@ -632,6 +646,30 @@ function evidenceFromProvenance(
 ): string[] {
   return unique(provenance.flatMap((item) =>
     item.sourceEventId && knownEventIds.has(item.sourceEventId) ? [item.sourceEventId] : []));
+}
+
+function receiptsForAssignment(
+  receipts: ActionReceipt[],
+  assignment: Assignment,
+): ActionReceipt[] {
+  return receipts.filter((receipt) =>
+    receipt.assignmentId === assignment.id || receipt.missionTaskId === assignment.missionTaskId);
+}
+
+function isDestinationVerifiedReceipt(receipt: ActionReceipt): boolean {
+  return receipt.status === ReceiptStatus.Succeeded &&
+    receipt.verified &&
+    Boolean(receipt.externalId && receipt.verifiedAt && receipt.completedAt);
+}
+
+function verifiedOutcome(assignment: Assignment, receipts: ActionReceipt[]): boolean {
+  return assignment.status === LifecycleStatus.Succeeded &&
+    assignment.artifact !== undefined &&
+    receipts.every(isDestinationVerifiedReceipt);
+}
+
+function actorFromProvenance(provenance: Provenance[]): string | undefined {
+  return provenance.find((item) => item.actorId)?.actorId;
 }
 
 function hasVerifiedIntegrity<T extends { integrityHash?: string }>(
