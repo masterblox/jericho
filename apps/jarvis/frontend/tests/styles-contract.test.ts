@@ -14,4 +14,11 @@ describe('command-center layout contract', () => {
     expect(styles).toContain('/plates/operator-bay.jpg');
     expect(styles).toContain('@media (prefers-reduced-motion: reduce)');
   });
+
+  it('keeps local calibration and sanitized diagnostics usable above the React bays', () => {
+    expect(styles).toContain('.jericho-runtime-controls');
+    expect(styles).toContain('.jericho-runtime-controls button:focus-visible');
+    expect(styles).toContain('.jericho-runtime-calibration');
+    expect(styles).toContain('.jericho-runtime-diagnostics');
+  });
 });

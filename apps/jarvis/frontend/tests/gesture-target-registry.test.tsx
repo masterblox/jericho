@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   GestureTargetRegistry,
+  observeDomGestureTargets,
   useGestureTarget,
 } from '../src/gesture-target-registry';
 
@@ -53,6 +54,42 @@ describe('GestureTargetRegistry', () => {
     expect(registry.resolveAt({ x: 30, y: 30 })?.id).toBe('lower');
   });
 
+  it('automatically keeps a pre-pinch draggable target through release-boundary jitter', () => {
+    const registry = new GestureTargetRegistry(document);
+    const card = document.createElement('article');
+    const other = document.createElement('article');
+    document.body.append(card, other);
+    rect(card, 100, 80, 270, 160);
+    rect(other, 390, 80, 270, 160);
+    registry.register({ id: 'card', element: card, draggable: true });
+    registry.register({ id: 'other', element: other, draggable: true });
+    const elements = elementsFromPoint([card]);
+
+    expect(registry.resolveAt({ x: 375, y: 150 })?.id).toBe('card');
+    elements.mockReturnValue([other]);
+    expect(registry.resolveAt({ x: 420, y: 150 })?.id).toBe('card');
+    registry.releaseSticky();
+    expect(registry.resolveAt({ x: 420, y: 150 })?.id).toBe('other');
+  });
+
+  it('chooses the nearest registered ancestor for nested topmost content', () => {
+    const registry = new GestureTargetRegistry(document);
+    const parent = document.createElement('article');
+    const child = document.createElement('button');
+    const label = document.createElement('span');
+    child.append(label);
+    parent.append(child);
+    document.body.append(parent);
+    rect(parent, 0, 0, 200, 100);
+    rect(child, 20, 20, 120, 50);
+    rect(label, 30, 30, 80, 20);
+    registry.register({ id: 'parent', element: parent });
+    registry.register({ id: 'child', element: child });
+    elementsFromPoint([label, child, parent]);
+
+    expect(registry.resolveAt({ x: 40, y: 40 })?.id).toBe('child');
+  });
+
   it('survives React StrictMode ref replay and invokes the current semantic target', () => {
     const registry = new GestureTargetRegistry(document);
     const invoked = vi.fn();
@@ -75,6 +112,44 @@ describe('GestureTargetRegistry', () => {
     registry.resolveAt({ x: 10, y: 10 })?.invokeTap();
     expect(invoked).toHaveBeenCalledTimes(1);
     expect(view.getByRole('button').textContent).toBe('second');
+  });
+
+  it('emits semantic drag events for declarative draggable targets without mutating layout', () => {
+    const registry = new GestureTargetRegistry(document);
+    const root = document.createElement('main');
+    const card = document.createElement('article');
+    card.dataset.gestureTarget = 'relationship-card';
+    card.dataset.gestureDraggable = 'true';
+    card.style.left = '40px';
+    card.style.top = '50px';
+    root.append(card);
+    document.body.append(root);
+    rect(card, 40, 50, 200, 100);
+    const start = vi.fn();
+    const move = vi.fn();
+    const end = vi.fn();
+    card.addEventListener('jericho:drag-start', start);
+    card.addEventListener('jericho:drag-move', move);
+    card.addEventListener('jericho:drag-end', end);
+    const stop = observeDomGestureTargets(root, registry);
+
+    const target = registry.get('relationship-card')!;
+    target.dragStart({ x: 60, y: 70 });
+    target.dragMove({ x: 90, y: 100 }, { x: 30, y: 30 });
+    target.dragEnd({ x: 90, y: 100 }, false);
+
+    expect((start.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      targetId: 'relationship-card', point: { x: 60, y: 70 },
+    });
+    expect((move.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      targetId: 'relationship-card', point: { x: 90, y: 100 }, delta: { x: 30, y: 30 },
+    });
+    expect((end.mock.calls[0]?.[0] as CustomEvent).detail).toEqual({
+      targetId: 'relationship-card', point: { x: 90, y: 100 }, cancelled: false,
+    });
+    expect(card.style.left).toBe('40px');
+    expect(card.style.top).toBe('50px');
+    stop();
   });
 });
 

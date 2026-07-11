@@ -55,4 +55,34 @@ describe('ContextHoldController', () => {
       { type: 'cancel', targetId: draggable.id },
     ]);
   });
+
+  it('latches an off-target pinch until release instead of acquiring mid-hold', () => {
+    const controller = new ContextHoldController();
+
+    expect(controller.update({
+      point: { x: 1, y: 1 }, pinching: true, now: 0, target: null,
+    })).toEqual([]);
+    expect(controller.update({
+      point: { x: 10, y: 10 }, pinching: true, now: 40, target: draggable,
+    })).toEqual([]);
+    expect(controller.update({
+      point: { x: 10, y: 10 }, pinching: false, now: 80, target: draggable,
+    })).toEqual([]);
+    expect(controller.update({
+      point: { x: 10, y: 10 }, pinching: true, now: 100, target: draggable,
+    })).toEqual([{ type: 'press-start', targetId: draggable.id }]);
+  });
+
+  it('keeps the off-target latch across tracking cancellation until an observed release', () => {
+    const controller = new ContextHoldController();
+    controller.update({ point: { x: 1, y: 1 }, pinching: true, now: 0, target: null });
+    expect(controller.cancel()).toEqual([]);
+    expect(controller.update({
+      point: { x: 10, y: 10 }, pinching: true, now: 100, target: draggable,
+    })).toEqual([]);
+    controller.update({ point: { x: 10, y: 10 }, pinching: false, now: 120, target: draggable });
+    expect(controller.update({
+      point: { x: 10, y: 10 }, pinching: true, now: 140, target: draggable,
+    })).toEqual([{ type: 'press-start', targetId: draggable.id }]);
+  });
 });

@@ -1,6 +1,19 @@
 import { BridgeClient, type BridgeEvents } from './bridge-client';
+import {
+  CALIBRATION_ORDER,
+  TARGET_POINTS,
+  StableSampleBuffer,
+  applyCalibration,
+  createCalibrationProfile,
+  loadCalibration,
+  resetCalibrations,
+  saveCalibration,
+  type CalibrationProfile,
+  type CalibrationSample,
+} from './calibration';
 import { ContextHoldController, type ContextHoldAction } from './context-hold-controller';
 import { mapHandToScreen } from './coords';
+import { DiagnosticRecorder, type DiagnosticActionInput } from './diagnostics';
 import { GestureCoordinator } from './gesture-coordinator';
 import {
   GestureSurfaceRenderer,
@@ -14,7 +27,8 @@ import {
 } from './gesture-target-registry';
 import { GestureEngine, type GestureFrame } from './gestures';
 import type { TrackedHandFrame } from './hand-tracks';
-import type { Point } from './tracking';
+import { pointInsideTarget } from './hit-testing';
+import type { Handedness, Point } from './tracking';
 
 export type { GestureSurfacePort } from './gesture-surface-renderer';
 
@@ -24,12 +38,15 @@ export interface RuntimeVideoPort {
   playsInline: boolean;
   play(): Promise<void>;
   pause(): void;
+  videoWidth?: number;
+  videoHeight?: number;
 }
 
 export interface GestureEngineRuntimePort {
   start(onFrame: (frame: GestureFrame) => void): void;
   stop(): void;
   dispose(): void | Promise<void>;
+  setSwapHands?(swapped: boolean): void;
 }
 
 export interface BridgeRuntimePort {
@@ -47,6 +64,12 @@ export interface RuntimeEventTarget {
   removeEventListener(type: string, listener: EventListener): void;
 }
 
+export interface RuntimeStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+  removeItem(key: string): void;
+}
+
 export interface JarvisRuntimeOptions {
   root: HTMLElement;
   registry: GestureTargetRegistry;
@@ -58,6 +81,8 @@ export interface JarvisRuntimeOptions {
   eventTarget?: RuntimeEventTarget;
   viewport?: () => { width: number; height: number };
   observeTargets?: (root: ParentNode, registry: GestureTargetRegistry) => () => void;
+  storage?: RuntimeStorage;
+  diagnosticsExporter?: (contents: string) => void;
 }
 
 /**
@@ -75,10 +100,14 @@ export class JarvisRuntime {
   private readonly eventTarget: RuntimeEventTarget;
   private readonly viewport: () => { width: number; height: number };
   private readonly observeTargets: (root: ParentNode, registry: GestureTargetRegistry) => () => void;
+  private readonly storage: RuntimeStorage;
+  private readonly diagnosticsExporter: (contents: string) => void;
   private readonly coordinator = new GestureCoordinator();
   private readonly context = new ContextHoldController();
+  private readonly recorder = new DiagnosticRecorder();
 
   private engagePromise: Promise<void> | null = null;
+  private disposePromise: Promise<void> | null = null;
   private stream: MediaStream | null = null;
   private video: RuntimeVideoPort | null = null;
   private engine: GestureEngineRuntimePort | null = null;
@@ -89,6 +118,17 @@ export class JarvisRuntime {
   private disposed = false;
   private keyListenerAttached = false;
   private status = 'gesture runtime standby';
+  private cameraId = 'default';
+  private cameraAspectRatio = 16 / 9;
+  private readonly profiles = new Map<Handedness, CalibrationProfile>();
+  private readonly suppressUntilPalm = new Set<Handedness>();
+  private swapped = false;
+  private diagnosticsEnabled = false;
+  private calibrationHand: Handedness | null = null;
+  private calibrationIndex = 0;
+  private calibrationSamples: CalibrationSample[] = [];
+  private calibrationPreviousPinch = false;
+  private readonly calibrationBuffer = new StableSampleBuffer();
 
   constructor(options: JarvisRuntimeOptions) {
     this.root = options.root;
@@ -102,6 +142,18 @@ export class JarvisRuntime {
     this.eventTarget = options.eventTarget ?? options.root.ownerDocument;
     this.viewport = options.viewport ?? (() => ({ width: window.innerWidth, height: window.innerHeight }));
     this.observeTargets = options.observeTargets ?? observeDomGestureTargets;
+    this.storage = options.storage ?? browserStorage(options.root.ownerDocument);
+    this.diagnosticsExporter = options.diagnosticsExporter ?? ((contents) =>
+      downloadDiagnostics(options.root.ownerDocument, contents));
+    this.swapped = safeGet(this.storage, 'jericho.swap-hands') === 'true';
+    this.renderer.configureControls({
+      calibrate: (handedness) => this.startCalibration(handedness),
+      reset: () => this.resetCalibration(),
+      swap: () => this.toggleSwap(),
+      diagnostics: () => this.toggleDiagnostics(),
+      exportDiagnostics: () => this.diagnosticsExporter(this.recorder.export()),
+    });
+    this.updateControlState();
   }
 
   engage(): Promise<void> {
@@ -135,9 +187,15 @@ export class JarvisRuntime {
     this.bridge?.wake();
   }
 
-  async dispose(): Promise<void> {
-    if (this.disposed) return;
+  dispose(): Promise<void> {
+    if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.disposePromise = this.disposeInternal();
+    return this.disposePromise;
+  }
+
+  private async disposeInternal(): Promise<void> {
+    await this.engagePromise?.catch(() => undefined);
     if (this.keyListenerAttached) {
       this.eventTarget.removeEventListener('keydown', this.onKeyDown);
       this.keyListenerAttached = false;
@@ -165,18 +223,23 @@ export class JarvisRuntime {
 
   private async engageInternal(): Promise<void> {
     this.setStatus('requesting local camera');
-    this.stopObserving = this.observeTargets(this.root, this.registry);
+    this.stopObserving = this.observeTargets(this.root.ownerDocument, this.registry);
     try {
       this.stream = await this.mediaDevices.getUserMedia({
         video: { width: 1280, height: 720, facingMode: 'user' },
         audio: false,
       });
+      this.assertNotDisposed();
       this.video = this.createVideo();
       this.video.muted = true;
       this.video.playsInline = true;
       this.video.srcObject = this.stream;
       await this.video.play();
+      this.assertNotDisposed();
+      this.configureCamera();
       this.engine = await this.createGestureEngine(this.video);
+      this.assertNotDisposed();
+      this.engine.setSwapHands?.(this.swapped);
       this.bridge = this.createBridge({
         onReady: () => this.setStatus('voice and gestures online'),
         onStatus: (value) => this.setStatus(`voice ${value}`),
@@ -184,8 +247,10 @@ export class JarvisRuntime {
         onToolResult: (name) => this.setStatus(`agent action complete · ${name}`),
         onError: (message) => this.setStatus(`voice unavailable · ${message}`),
       });
+      this.assertNotDisposed();
       this.engine.start(this.onFrame);
       await this.bridge.start();
+      this.assertNotDisposed();
       this.eventTarget.addEventListener('keydown', this.onKeyDown);
       this.keyListenerAttached = true;
       this.engaged = true;
@@ -204,7 +269,7 @@ export class JarvisRuntime {
       }
       this.releaseVideoAndStream();
       this.registry.releaseSticky();
-      this.setStatus('camera unavailable · keyboard mode remains active');
+      if (!this.disposed) this.setStatus('camera unavailable · keyboard mode remains active');
       throw error;
     }
   }
@@ -212,13 +277,36 @@ export class JarvisRuntime {
   private readonly onFrame = (frame: GestureFrame) => {
     if (this.disposed || this.paused) return;
     const viewport = this.viewport();
-    const leftPoint = frame.left ? screenPoint(frame.left, viewport) : undefined;
-    const rightPoint = frame.right ? screenPoint(frame.right, viewport) : undefined;
+    if (this.calibrationHand) {
+      const hand = this.calibrationHand === 'Left' ? frame.left : frame.right;
+      if (hand?.fresh) this.handleCalibration(hand);
+      this.dispatchContextActions(this.context.cancel());
+      this.coordinator.cancelAll();
+      this.registry.releaseSticky();
+      this.recordDiagnostics(frame, [], null, null);
+      this.renderer.render({
+        right: cursorView(), left: cursorView(), status: this.status,
+      });
+      this.updateDiagnosticsPanel();
+      return;
+    }
+
+    const leftPoint = frame.left ? this.screenPoint(frame.left, viewport) : undefined;
+    const rightPoint = frame.right ? this.screenPoint(frame.right, viewport) : undefined;
+    const leftSuppressed = this.consumeSuppression(frame.left);
+    const rightSuppressed = this.consumeSuppression(frame.right);
     const leftTarget = leftPoint ? this.registry.resolveAt(leftPoint) : null;
     const rightTarget = rightPoint ? this.registry.resolveAt(rightPoint) : null;
+    const rightCursorPoint = rightPoint && rightTarget?.draggable && frame.right?.state !== 'pinch'
+      ? pointInsideTarget(rightPoint, rightTarget)
+      : rightPoint;
 
     const coordinated = this.coordinator.update(
-      { hand: frame.left, point: leftPoint, targetId: leftTarget?.id },
+      {
+        hand: leftSuppressed ? undefined : frame.left,
+        point: leftPoint ? { x: leftPoint.x, y: leftPoint.y / viewport.height } : undefined,
+        targetId: leftTarget?.id,
+      },
       { hand: frame.right, point: rightPoint, target: null },
       frame.timestamp,
     );
@@ -232,6 +320,7 @@ export class JarvisRuntime {
     }
 
     const contextActions = frame.right?.fresh && rightPoint
+      && !rightSuppressed
       ? this.context.update({
         point: rightPoint,
         pinching: frame.right.state === 'pinch',
@@ -240,9 +329,19 @@ export class JarvisRuntime {
       })
       : this.context.cancel();
     this.dispatchContextActions(contextActions);
+    this.recordDiagnostics(
+      frame,
+      [
+        ...coordinated,
+        ...contextActions.map((action) => ({ channel: 'right' as const, action })),
+      ],
+      leftTarget?.id ?? null,
+      rightTarget?.id ?? null,
+    );
+    this.updateDiagnosticsPanel();
 
     const view: GestureSurfaceView = {
-      right: cursorView(frame.right, rightPoint),
+      right: cursorView(frame.right, rightCursorPoint),
       left: cursorView(frame.left, leftPoint),
       status: this.status,
     };
@@ -304,6 +403,189 @@ export class JarvisRuntime {
     for (const track of this.stream?.getTracks() ?? []) track.stop();
     this.stream = null;
   }
+
+  private assertNotDisposed(): void {
+    if (this.disposed) throw new Error('Jarvis runtime was disposed during engage');
+  }
+
+  private configureCamera(): void {
+    const videoTrack = typeof this.stream?.getVideoTracks === 'function'
+      ? this.stream.getVideoTracks()[0]
+      : undefined;
+    let settings: MediaTrackSettings = {};
+    try {
+      settings = videoTrack?.getSettings?.() ?? {};
+    } catch {
+      settings = {};
+    }
+    this.cameraId = settings.deviceId?.trim() || 'default';
+    const width = positive(settings.width) ?? positive(this.video?.videoWidth) ?? 1280;
+    const height = positive(settings.height) ?? positive(this.video?.videoHeight) ?? 720;
+    this.cameraAspectRatio = width / height;
+    this.profiles.clear();
+    for (const handedness of ['Left', 'Right'] as const) {
+      const profile = loadCalibration(
+        this.storage,
+        this.cameraId,
+        this.cameraAspectRatio,
+        handedness,
+      );
+      if (profile) this.profiles.set(handedness, profile);
+    }
+    this.updateControlState();
+  }
+
+  private screenPoint(
+    hand: TrackedHandFrame,
+    viewport: { width: number; height: number },
+  ): Point {
+    const profile = this.profiles.get(hand.handedness);
+    if (profile) {
+      const normalized = applyCalibration(profile.matrix, hand.smoothedAnchor);
+      return { x: normalized.x * viewport.width, y: normalized.y * viewport.height };
+    }
+    return fallbackScreenPoint(hand, viewport);
+  }
+
+  private consumeSuppression(hand: TrackedHandFrame | undefined): boolean {
+    if (!hand || !this.suppressUntilPalm.has(hand.handedness)) return false;
+    if (hand.fresh && hand.state === 'palm') this.suppressUntilPalm.delete(hand.handedness);
+    return true;
+  }
+
+  private startCalibration(handedness: Handedness): void {
+    if (this.disposed) return;
+    this.dispatchContextActions(this.context.cancel());
+    this.coordinator.cancelAll();
+    this.registry.releaseSticky();
+    this.calibrationHand = handedness;
+    this.calibrationIndex = 0;
+    this.calibrationSamples = [];
+    this.calibrationPreviousPinch = false;
+    this.calibrationBuffer.clear();
+    this.renderCalibration(`Hold ${handedness.toLowerCase()} palm at center, then pinch`);
+  }
+
+  private handleCalibration(hand: TrackedHandFrame): void {
+    if (hand.handedness !== this.calibrationHand) return;
+    if (hand.state === 'palm') this.calibrationBuffer.push(hand.palmAnchor);
+    const pinchStarted = hand.state === 'pinch' && !this.calibrationPreviousPinch;
+    if (pinchStarted) {
+      const point = this.calibrationBuffer.median();
+      if (!point) {
+        this.renderCalibration('Hold the open palm steady longer, then pinch');
+      } else {
+        this.calibrationSamples.push({
+          target: CALIBRATION_ORDER[this.calibrationIndex],
+          camera: point,
+        });
+        this.calibrationIndex += 1;
+        this.calibrationBuffer.clear();
+        if (this.calibrationIndex === CALIBRATION_ORDER.length) this.finishCalibration();
+        else this.renderCalibration(
+          `Move ${this.calibrationHand?.toLowerCase()} palm to ${CALIBRATION_ORDER[this.calibrationIndex]}, hold, then pinch`,
+        );
+      }
+    }
+    this.calibrationPreviousPinch = hand.state === 'pinch';
+  }
+
+  private finishCalibration(): void {
+    const handedness = this.calibrationHand;
+    if (!handedness) return;
+    try {
+      const profile = createCalibrationProfile(
+        this.calibrationSamples,
+        this.cameraId,
+        this.cameraAspectRatio,
+        handedness,
+      );
+      saveCalibration(this.storage, profile);
+      this.profiles.set(handedness, profile);
+      this.suppressUntilPalm.add(handedness);
+      this.calibrationHand = null;
+      this.renderer.showCalibration(null);
+      this.updateControlState();
+      this.setStatus(`${handedness.toLowerCase()} hand calibrated`);
+    } catch (error) {
+      this.calibrationIndex = 0;
+      this.calibrationSamples = [];
+      this.calibrationBuffer.clear();
+      this.renderCalibration(`${error instanceof Error ? error.message : 'Calibration failed'}. Repeat from center.`);
+    }
+  }
+
+  private renderCalibration(message: string): void {
+    if (!this.calibrationHand) return;
+    const target = CALIBRATION_ORDER[this.calibrationIndex];
+    this.renderer.showCalibration({
+      handedness: this.calibrationHand,
+      target,
+      point: TARGET_POINTS[target],
+      message,
+    });
+  }
+
+  private resetCalibration(): void {
+    resetCalibrations(this.storage, this.cameraId);
+    this.profiles.clear();
+    this.calibrationHand = null;
+    this.calibrationBuffer.clear();
+    this.renderer.showCalibration(null);
+    this.updateControlState();
+    this.setStatus('hand calibration reset');
+  }
+
+  private toggleSwap(): void {
+    this.dispatchContextActions(this.context.cancel());
+    this.coordinator.cancelAll();
+    this.registry.releaseSticky();
+    this.suppressUntilPalm.add('Left');
+    this.suppressUntilPalm.add('Right');
+    this.swapped = !this.swapped;
+    safeSet(this.storage, 'jericho.swap-hands', String(this.swapped));
+    this.engine?.setSwapHands?.(this.swapped);
+    this.updateControlState();
+  }
+
+  private toggleDiagnostics(): void {
+    this.diagnosticsEnabled = !this.diagnosticsEnabled;
+    this.updateControlState();
+    this.updateDiagnosticsPanel();
+  }
+
+  private updateControlState(): void {
+    this.renderer.updateControlState({
+      calibratedHands: (['Left', 'Right'] as const).filter((handedness) =>
+        this.profiles.has(handedness)),
+      swapped: this.swapped,
+      diagnosticsEnabled: this.diagnosticsEnabled,
+    });
+  }
+
+  private recordDiagnostics(
+    frame: GestureFrame,
+    actions: DiagnosticActionInput[],
+    leftTarget: string | null,
+    rightTarget: string | null,
+  ): void {
+    const leftBay = this.root.querySelector<HTMLElement>('.jericho-bay--left');
+    this.recorder.record({
+      timestamp: frame.timestamp,
+      frame,
+      actions,
+      scrollTop: leftBay?.scrollTop ?? 0,
+      leftTarget,
+      rightTarget,
+    });
+  }
+
+  private updateDiagnosticsPanel(): void {
+    const snapshot = this.recorder.latest();
+    this.renderer.showDiagnostics(
+      this.diagnosticsEnabled && snapshot ? JSON.stringify(snapshot, null, 2) : null,
+    );
+  }
 }
 
 function defaultVideo(ownerDocument: Document): HTMLVideoElement {
@@ -313,7 +595,7 @@ function defaultVideo(ownerDocument: Document): HTMLVideoElement {
   return video;
 }
 
-function screenPoint(hand: TrackedHandFrame, viewport: { width: number; height: number }): Point {
+function fallbackScreenPoint(hand: TrackedHandFrame, viewport: { width: number; height: number }): Point {
   const mapped = mapHandToScreen(
     hand.smoothedAnchor.x,
     hand.smoothedAnchor.y,
@@ -330,4 +612,49 @@ function cursorView(hand?: TrackedHandFrame, point?: Point) {
     y: point?.y ?? 0,
     mode: hand?.state ?? 'idle',
   };
+}
+
+const NOOP_STORAGE: RuntimeStorage = {
+  getItem: () => null,
+  setItem: () => undefined,
+  removeItem: () => undefined,
+};
+
+function browserStorage(ownerDocument: Document): RuntimeStorage {
+  try {
+    return ownerDocument.defaultView?.localStorage ?? NOOP_STORAGE;
+  } catch {
+    return NOOP_STORAGE;
+  }
+}
+
+function safeGet(storage: RuntimeStorage, key: string): string | null {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function safeSet(storage: RuntimeStorage, key: string, value: string): void {
+  try {
+    storage.setItem(key, value);
+  } catch {
+    // Gesture controls remain usable for this session when storage is unavailable.
+  }
+}
+
+function positive(value: number | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function downloadDiagnostics(ownerDocument: Document, contents: string): void {
+  const view = ownerDocument.defaultView;
+  if (!view?.URL?.createObjectURL) return;
+  const url = view.URL.createObjectURL(new Blob([contents], { type: 'application/json' }));
+  const link = ownerDocument.createElement('a');
+  link.href = url;
+  link.download = `jericho-gesture-diagnostics-${new Date().toISOString().replace(/[:.]/g, '-')}.json`;
+  link.click();
+  view.setTimeout(() => view.URL.revokeObjectURL(url), 0);
 }

@@ -38,9 +38,13 @@ interface ActivePress {
 /** Resolves the mutually-exclusive pinch outcomes: tap, hold, drag, cancel. */
 export class ContextHoldController {
   private press: ActivePress | null = null;
+  private previousPinching = false;
 
   update(input: ContextHoldInput): ContextHoldAction[] {
-    if (input.pinching && !this.press) {
+    const pinchStarted = input.pinching && !this.previousPinching;
+    this.previousPinching = input.pinching;
+
+    if (pinchStarted && !this.press) {
       if (!input.target) return [];
       this.press = {
         target: input.target,
@@ -53,6 +57,9 @@ export class ContextHoldController {
       };
       return [{ type: 'press-start', targetId: input.target.id }];
     }
+
+    // A pinch that began off-target is intentionally inert until release.
+    if (input.pinching && !this.press) return [];
 
     if (input.pinching && this.press) {
       this.press.latest = { ...input.point };

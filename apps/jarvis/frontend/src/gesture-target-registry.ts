@@ -91,17 +91,19 @@ export class GestureTargetRegistry {
       ? this.ownerDocument.elementsFromPoint(point.x, point.y)
       : [];
     for (const element of stack) {
-      const topmost = candidates.find(({ entry }) =>
-        entry.target.element === element || entry.target.element.contains(element),
-      );
-      if (topmost) return topmost.resolved;
+      let ancestor: Element | null = element;
+      while (ancestor) {
+        const topmost = candidates.find(({ entry }) => entry.target.element === ancestor);
+        if (topmost) return this.acquire(topmost.resolved);
+        ancestor = ancestor.parentElement;
+      }
     }
 
     candidates.sort((a, b) =>
       a.resolved.boundaryDistance - b.resolved.boundaryDistance
       || b.entry.generation - a.entry.generation,
     );
-    return candidates[0].resolved;
+    return this.acquire(candidates[0].resolved);
   }
 
   get(id: string): ResolvedGestureTarget | null {
@@ -143,6 +145,11 @@ export class GestureTargetRegistry {
       dragEnd: (at, cancelled) => target.onDragEnd?.(at, cancelled),
       contextActions: () => target.actions?.() ?? [],
     };
+  }
+
+  private acquire(target: ResolvedGestureTarget): ResolvedGestureTarget {
+    if (target.draggable) this.stickyId = target.id;
+    return target;
   }
 }
 
@@ -195,15 +202,27 @@ export function observeDomGestureTargets(
     for (const element of current) {
       if (registrations.has(element)) continue;
       const id = element.getAttribute('data-gesture-target')!;
+      const draggable = element.getAttribute('data-gesture-draggable') === 'true';
       registrations.set(element, registry.register({
         id,
         element,
-        draggable: element.getAttribute('data-gesture-draggable') === 'true',
+        draggable,
         onTap: () => activateElement(element),
         onHold: (point) => element.dispatchEvent(new CustomEvent('jericho:context', {
           bubbles: true,
           detail: { targetId: id, point },
         })),
+        ...(draggable ? {
+          onDragStart: (point) => dispatchGestureEvent(element, 'jericho:drag-start', {
+            targetId: id, point: { ...point },
+          }),
+          onDragMove: (point, delta) => dispatchGestureEvent(element, 'jericho:drag-move', {
+            targetId: id, point: { ...point }, delta: { ...delta },
+          }),
+          onDragEnd: (point, cancelled) => dispatchGestureEvent(element, 'jericho:drag-end', {
+            targetId: id, point: { ...point }, cancelled,
+          }),
+        } : {}),
         actions: () => actionsFor(element, id),
       }));
     }
@@ -218,6 +237,14 @@ export function observeDomGestureTargets(
     for (const unregister of registrations.values()) unregister();
     registrations.clear();
   };
+}
+
+function dispatchGestureEvent(
+  element: Element,
+  type: string,
+  detail: Record<string, unknown>,
+): void {
+  element.dispatchEvent(new CustomEvent(type, { bubbles: true, detail }));
 }
 
 function actionsFor(element: Element, targetId: string): GestureContextAction[] {
