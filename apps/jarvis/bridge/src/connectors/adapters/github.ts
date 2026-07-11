@@ -46,19 +46,35 @@ export class GitHubConnector implements CaptureConnector {
     this.#transport = options.transport ?? new GhApiTransport();
   }
 
-  async probe(_signal: AbortSignal): Promise<ConnectorProbe> {
-    return this.options.repositories.length
-      ? { status: ConnectorHealthStatus.Healthy, details: { mode: 'gh_api_read_only' } }
-      : { status: ConnectorHealthStatus.Unavailable, details: { reason: 'no_repositories' } };
+  async probe(signal: AbortSignal): Promise<ConnectorProbe> {
+    if (!this.options.repositories.length) {
+      return { status: ConnectorHealthStatus.Unavailable, details: { reason: 'no_repositories' } };
+    }
+    try {
+      const response = await this.#transport.request({ path: 'user', query: {}, signal });
+      if (response.status === 401) {
+        return { status: ConnectorHealthStatus.Unauthorized, details: { mode: 'gh_api_read_only' } };
+      }
+      return response.status >= 200 && response.status < 300
+        ? { status: ConnectorHealthStatus.Healthy, details: { mode: 'gh_api_read_only' } }
+        : { status: ConnectorHealthStatus.Unavailable, details: { status: response.status } };
+    } catch {
+      return { status: ConnectorHealthStatus.Unavailable, details: { reason: 'probe_failed' } };
+    }
   }
 
   async capture(request: ConnectorCaptureRequest): Promise<ConnectorCapturePage> {
     if (!this.options.repositories.includes(request.partition)) {
       throw new ConnectorUnavailableError(`GitHub repository ${request.partition} is unavailable`);
     }
+    const page = request.cursor?.pageToken ? Number(request.cursor.pageToken) : 1;
+    if (!Number.isSafeInteger(page) || page < 1) {
+      throw new ConnectorUnavailableError('GitHub pagination cursor is invalid');
+    }
+    const perPage = Math.min(request.limit, 100);
     const response = await this.#transport.request({
       path: `repos/${request.partition}/pulls`,
-      query: { state: 'all', per_page: Math.min(request.limit, 100) },
+      query: { state: 'all', per_page: perPage, page },
       signal: request.signal,
     });
     if (response.status === 401) throw new ConnectorUnauthorizedError('GitHub unauthorized');
@@ -74,14 +90,16 @@ export class GitHubConnector implements CaptureConnector {
         ? capture.event.occurredAt
         : latest,
     request.cursor?.watermark);
+    const hasMore = response.data.length === perPage;
     return {
       captures, failures: [],
       progress: {
         epoch: request.cursor?.epoch ?? 1,
         sequence: (request.cursor?.sequence ?? 0) + captures.length,
+        ...(hasMore ? { pageToken: String(page + 1) } : {}),
         ...(watermark ? { watermark } : {}),
       },
-      hasMore: false,
+      hasMore,
     };
   }
 }

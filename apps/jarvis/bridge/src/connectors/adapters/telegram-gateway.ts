@@ -133,6 +133,8 @@ export class TelegramGatewayAdapter implements CaptureConnector {
       assignment.externalAction?.connectorId !== this.descriptor.id ||
       assignment.externalAction.recipient !== input.recipient ||
       assignment.externalAction.destination !== input.recipient ||
+      !input.text.trim() ||
+      assignment.instructions.text !== input.text ||
       !receipt ||
       receipt.assignmentId !== assignment.id ||
       receipt.missionTaskId !== assignment.missionTaskId ||

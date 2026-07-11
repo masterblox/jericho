@@ -37,7 +37,23 @@ interface NoteSnapshot {
   content: string;
 }
 
-type Manifest = Record<string, { hash: string; modifiedAt: string }>;
+interface NoteManifestEntry {
+  hash: string;
+  modifiedAt: string;
+  frontmatter: JsonObject;
+  tags: string[];
+  wikilinks: string[];
+  title: string;
+}
+
+type Manifest = Record<string, NoteManifestEntry>;
+
+interface ObsidianCursorState {
+  version: 2;
+  baseline: Manifest;
+  snapshot?: Manifest;
+  offset?: number;
+}
 
 export class ObsidianConnector implements CaptureConnector {
   readonly descriptor = {
@@ -55,41 +71,25 @@ export class ObsidianConnector implements CaptureConnector {
   }
 
   async capture(request: ConnectorCaptureRequest): Promise<ConnectorCapturePage> {
-    const notes = this.scan();
-    const previous = decodeManifest(request.cursor?.pageToken);
-    const current: Manifest = Object.fromEntries(notes.map((note) => [note.path, {
-      hash: note.hash, modifiedAt: note.modifiedAt,
-    }]));
-    const captures: NormalizedCapture[] = [];
-    const removed = Object.entries(previous).filter(([path]) => !current[path]);
-    const added = notes.filter((note) => !previous[note.path]);
-    const renamedNew = new Set<string>();
-    const renamedOld = new Set<string>();
-    for (const [oldPath, oldValue] of removed) {
-      const renamed = added.find((note) => note.hash === oldValue.hash && !renamedNew.has(note.path));
-      if (!renamed) continue;
-      captures.push(noteRenameCapture(oldPath, renamed));
-      renamedOld.add(oldPath);
-      renamedNew.add(renamed.path);
-    }
-    for (const note of notes) {
-      if (renamedNew.has(note.path)) continue;
-      if (!previous[note.path] || previous[note.path].hash !== note.hash) {
-        captures.push(noteSnapshotCapture(note));
-      }
-    }
-    for (const [path, value] of removed) {
-      if (!renamedOld.has(path)) captures.push(noteDeleteCapture(path, value));
-    }
+    const state = decodeCursor(request.cursor?.pageToken);
+    const current = state.snapshot ?? manifest(this.scan());
+    const offset = state.snapshot ? state.offset ?? 0 : 0;
+    const captures = diffNotes(state.baseline, current);
+    const page = captures.slice(offset, offset + request.limit);
+    const nextOffset = offset + page.length;
+    const hasMore = nextOffset < captures.length;
+    const nextState: ObsidianCursorState = hasMore
+      ? { version: 2, baseline: state.baseline, snapshot: current, offset: nextOffset }
+      : { version: 2, baseline: current };
     return {
-      captures: captures.slice(0, request.limit),
+      captures: page,
       failures: [],
       progress: {
         epoch: request.cursor?.epoch ?? 1,
-        sequence: (request.cursor?.sequence ?? 0) + captures.length,
-        pageToken: encodeManifest(current),
+        sequence: (request.cursor?.sequence ?? 0) + page.length,
+        pageToken: encodeCursor(nextState),
       },
-      hasMore: captures.length > request.limit,
+      hasMore,
     };
   }
 
@@ -132,6 +132,47 @@ export class ObsidianConnector implements CaptureConnector {
   }
 }
 
+function manifest(notes: NoteSnapshot[]): Manifest {
+  return Object.fromEntries(notes.map((note) => {
+    const parsed = parseMarkdown(note.content);
+    return [note.path, {
+      hash: note.hash,
+      modifiedAt: note.modifiedAt,
+      frontmatter: parsed.frontmatter,
+      tags: parsed.tags,
+      wikilinks: parsed.wikilinks,
+      title: typeof parsed.frontmatter.title === 'string'
+        ? parsed.frontmatter.title
+        : note.path.replace(/\.md$/i, ''),
+    }];
+  }));
+}
+
+function diffNotes(previous: Manifest, current: Manifest): NormalizedCapture[] {
+  const captures: NormalizedCapture[] = [];
+  const removed = Object.entries(previous).filter(([path]) => !current[path]);
+  const added = Object.entries(current).filter(([path]) => !previous[path]);
+  const renamedNew = new Set<string>();
+  const renamedOld = new Set<string>();
+  for (const [oldPath, oldValue] of removed) {
+    const renamed = added.find(([path, note]) => note.hash === oldValue.hash && !renamedNew.has(path));
+    if (!renamed) continue;
+    captures.push(noteRenameCapture(oldPath, renamed[0], renamed[1]));
+    renamedOld.add(oldPath);
+    renamedNew.add(renamed[0]);
+  }
+  for (const [path, note] of Object.entries(current)) {
+    if (renamedNew.has(path)) continue;
+    if (!previous[path] || previous[path].hash !== note.hash) {
+      captures.push(noteSnapshotCapture(path, note));
+    }
+  }
+  for (const [path, value] of removed) {
+    if (!renamedOld.has(path)) captures.push(noteDeleteCapture(path, value));
+  }
+  return captures;
+}
+
 function markdownFiles(root: string, directory: string): string[] {
   const resolved = realpathSync(directory);
   if (resolved !== root && !resolved.startsWith(`${root}${sep}`)) return [];
@@ -145,33 +186,30 @@ function markdownFiles(root: string, directory: string): string[] {
   return files.sort();
 }
 
-function noteSnapshotCapture(note: NoteSnapshot): NormalizedCapture {
-  const parsed = parseMarkdown(note.content);
+function noteSnapshotCapture(path: string, note: NoteManifestEntry): NormalizedCapture {
   const event = stableConnectorEvent({
-    source: 'obsidian', sourceEventId: `${note.path}:${note.hash}`,
+    source: 'obsidian', sourceEventId: `${path}:${note.hash}`,
     type: 'obsidian.note.snapshot', occurredAt: note.modifiedAt,
     payload: {
-      path: note.path, hash: note.hash, frontmatter: parsed.frontmatter,
-      tags: parsed.tags, wikilinks: parsed.wikilinks,
+      path, hash: note.hash, frontmatter: note.frontmatter,
+      tags: note.tags, wikilinks: note.wikilinks,
     },
   });
   event.freshness = { observedAt: note.modifiedAt };
   const identities: NormalizedCapture['identities'] = [{
-    connectorId: 'obsidian', namespace: 'note', externalId: note.path,
+    connectorId: 'obsidian', namespace: 'note', externalId: path,
     entityType: EntityType.Note,
-    displayName: typeof parsed.frontmatter.title === 'string'
-      ? parsed.frontmatter.title
-      : note.path.replace(/\.md$/i, ''),
+    displayName: note.title,
     attributes: { hash: note.hash }, observedAt: note.modifiedAt,
     confidence: 1, evidenceEventId: event.id,
   }];
-  for (const link of parsed.wikilinks) identities.push({
+  for (const link of note.wikilinks) identities.push({
     connectorId: 'obsidian', namespace: 'note_title', externalId: link,
     entityType: EntityType.Note, displayName: link, attributes: { referenced: true },
     observedAt: note.modifiedAt, confidence: 0.8, evidenceEventId: event.id,
   });
-  const relations = parsed.wikilinks.map((link) => ({
-    from: { connectorId: 'obsidian', namespace: 'note', externalId: note.path },
+  const relations = note.wikilinks.map((link) => ({
+    from: { connectorId: 'obsidian', namespace: 'note', externalId: path },
     to: { connectorId: 'obsidian', namespace: 'note_title', externalId: link },
     type: RelationType.RelatedTo,
     attributes: { kind: 'wikilink' },
@@ -181,17 +219,17 @@ function noteSnapshotCapture(note: NoteSnapshot): NormalizedCapture {
   return { event, identities, relations };
 }
 
-function noteRenameCapture(oldPath: string, note: NoteSnapshot): NormalizedCapture {
+function noteRenameCapture(oldPath: string, path: string, note: NoteManifestEntry): NormalizedCapture {
   const event = stableConnectorEvent({
-    source: 'obsidian', sourceEventId: `rename:${oldPath}:${note.path}:${note.hash}`,
+    source: 'obsidian', sourceEventId: `rename:${oldPath}:${path}:${note.hash}`,
     type: 'obsidian.note.renamed', occurredAt: note.modifiedAt,
-    payload: { fromPath: oldPath, path: note.path, hash: note.hash },
+    payload: { fromPath: oldPath, path, hash: note.hash },
   });
   return {
     event,
     identities: [{
-      connectorId: 'obsidian', namespace: 'note', externalId: note.path,
-      entityType: EntityType.Note, displayName: note.path.replace(/\.md$/i, ''),
+      connectorId: 'obsidian', namespace: 'note', externalId: path,
+      entityType: EntityType.Note, displayName: note.title,
       attributes: { previousPath: oldPath, hash: note.hash }, observedAt: note.modifiedAt,
       confidence: 1, evidenceEventId: event.id,
     }],
@@ -199,7 +237,7 @@ function noteRenameCapture(oldPath: string, note: NoteSnapshot): NormalizedCaptu
   };
 }
 
-function noteDeleteCapture(path: string, value: { hash: string; modifiedAt: string }): NormalizedCapture {
+function noteDeleteCapture(path: string, value: NoteManifestEntry): NormalizedCapture {
   return {
     event: stableConnectorEvent({
       source: 'obsidian', sourceEventId: `delete:${path}:${value.hash}`,
@@ -254,16 +292,23 @@ function parseFrontmatterValue(value: string) {
   return value.replace(/^['"]|['"]$/g, '');
 }
 
-function encodeManifest(manifest: Manifest): string {
-  return Buffer.from(JSON.stringify(manifest)).toString('base64url');
+function encodeCursor(state: ObsidianCursorState): string {
+  return Buffer.from(JSON.stringify(state)).toString('base64url');
 }
 
-function decodeManifest(value: string | undefined): Manifest {
-  if (!value) return {};
+function decodeCursor(value: string | undefined): ObsidianCursorState {
+  if (!value) return { version: 2, baseline: {} };
   try {
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as unknown;
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Manifest : {};
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { version: 2, baseline: {} };
+    }
+    const record = parsed as Record<string, unknown>;
+    if (record.version === 2 && record.baseline && typeof record.baseline === 'object') {
+      return parsed as ObsidianCursorState;
+    }
+    return { version: 2, baseline: parsed as Manifest };
   } catch {
-    return {};
+    return { version: 2, baseline: {} };
   }
 }

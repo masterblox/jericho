@@ -38,6 +38,7 @@ import {
 const KEY = Buffer.alloc(32, 52);
 const T0 = '2026-07-11T00:00:00.000Z';
 const T1 = '2026-07-11T00:01:00.000Z';
+const T2 = '2026-07-11T00:02:00.000Z';
 const stores: JerichoStore[] = [];
 
 afterEach(() => {
@@ -146,14 +147,140 @@ describe('TelegramGatewayAdapter', () => {
       assignmentId: 'assignment-1',
       missionPlanHash: uncertainStore.getMission('mission-v1')!.planHash,
       receiptId: 'receipt-uncertain', recipient: 'person-carlos',
-      text: 'Do not resend', now: T1, signal: new AbortController().signal,
+      text: 'Approved message', now: T1, signal: new AbortController().signal,
     })).rejects.toThrow(/uncertain|started|resend/i);
     expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects send text that is not exactly the approved assignment instruction', async () => {
+    const store = approvedTelegramStore();
+    const transport = telegramTransport();
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+
+    await expect(adapter.sendApproved(store, {
+      assignmentId: 'assignment-1',
+      missionPlanHash: store.getMission('mission-v1')!.planHash,
+      receiptId: 'receipt-1', recipient: 'person-carlos',
+      text: 'Modified after approval', now: T1,
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/text|instruction|approved/i);
+
+    expect(transport.sendMessage).not.toHaveBeenCalled();
+    expect(store.getReceipt('receipt-1')).toMatchObject({ status: ReceiptStatus.Pending });
+    expect(store.getReceipt('receipt-1')).not.toHaveProperty('startedAt');
   });
 });
 
 describe('LinearAdapter', () => {
-  it('uses read-only paginated GraphQL with watermark overlap and stable dedupe IDs', async () => {
+  it('declares stable read-only partitions for every captured Linear surface', () => {
+    const adapter = new LinearAdapter({ apiKey: 'linear-key', transport: linearTransport() });
+
+    expect(adapter.descriptor.partitions).toEqual([
+      'issues', 'comments', 'teams', 'users', 'projects', 'workflow-states',
+    ]);
+  });
+
+  it('captures issues, comments, teams, users, projects, and workflow states read-only', async () => {
+    const records = {
+      issues: {
+        id: 'issue-1', identifier: 'JER-1', title: 'Build core', state: 'Todo', updatedAt: T0,
+        project: { id: 'project-1', name: 'Jericho' }, assignee: { id: 'user-1', name: 'Carlos' },
+      },
+      comments: {
+        id: 'comment-1', body: 'Looks good', updatedAt: T0,
+        issue: { id: 'issue-1', identifier: 'JER-1', title: 'Build core' },
+        user: { id: 'user-1', name: 'Carlos' },
+      },
+      teams: { id: 'team-1', key: 'JER', name: 'Jericho', updatedAt: T0 },
+      users: { id: 'user-1', name: 'Carlos', email: 'c@example.test', updatedAt: T0 },
+      projects: { id: 'project-1', name: 'Jericho', state: 'started', updatedAt: T0 },
+      'workflow-states': {
+        id: 'state-1', name: 'Todo', type: 'unstarted', updatedAt: T0,
+        team: { id: 'team-1', name: 'Jericho' },
+      },
+    } as const;
+    const query = vi.fn().mockImplementation(async ({ surface }: { surface: keyof typeof records }) => ({
+      status: 200, records: [records[surface]], pageInfo: { hasNextPage: false },
+    }));
+    const legacy = vi.fn().mockResolvedValue({
+      status: 200, issues: [records.issues], pageInfo: { hasNextPage: false },
+    });
+    const adapter = new LinearAdapter({
+      apiKey: 'linear-key', transport: { query, queryIssues: legacy } as unknown as LinearTransport,
+    });
+
+    const pages = await Promise.all(adapter.descriptor.partitions.map((partition) =>
+      adapter.capture(request({ partition })),
+    ));
+
+    expect(pages.map((page) => page.captures[0].event.type)).toEqual([
+      'linear.issue.updated',
+      'linear.comment.updated',
+      'linear.team.updated',
+      'linear.user.updated',
+      'linear.project.updated',
+      'linear.workflow_state.updated',
+    ]);
+    expect(query.mock.calls.map(([input]) => input.surface)).toEqual(adapter.descriptor.partitions);
+    expect(legacy).not.toHaveBeenCalled();
+    expect(JSON.stringify(query.mock.calls)).not.toMatch(/mutation|POST|PATCH/i);
+  });
+
+  it('holds one overlap filter across restart and advances the watermark only on the final page', async () => {
+    const query = vi.fn()
+      .mockResolvedValueOnce({
+        status: 200,
+        records: [{
+          id: 'issue-1', identifier: 'JER-1', title: 'First', state: 'Todo', updatedAt: T1,
+        }],
+        pageInfo: { hasNextPage: true, endCursor: 'api-page-2' },
+      })
+      .mockResolvedValueOnce({
+        status: 200,
+        records: [{
+          id: 'issue-2', identifier: 'JER-2', title: 'Second', state: 'Todo', updatedAt: T2,
+        }],
+        pageInfo: { hasNextPage: false },
+      });
+    const transport = {
+      query,
+      queryIssues: vi.fn<LinearTransport['queryIssues']>(),
+    } as unknown as LinearTransport;
+    const initialCursor = {
+      connectorId: 'linear', capability: 'capture' as never, partition: 'issues',
+      epoch: 1, sequence: 10, version: 1, watermark: T0, updatedAt: T0,
+    };
+    const firstAdapter = new LinearAdapter({ apiKey: 'linear-key', transport, overlapMs: 60_000 });
+
+    const first = await firstAdapter.capture(request({ partition: 'issues', cursor: initialCursor }));
+    const restarted = new LinearAdapter({ apiKey: 'linear-key', transport, overlapMs: 60_000 });
+    const second = await restarted.capture(request({
+      partition: 'issues',
+      cursor: { ...initialCursor, ...first.progress, version: 2, updatedAt: T1 },
+    }));
+
+    expect(first).toMatchObject({
+      hasMore: true,
+      progress: { sequence: 11, watermark: T0, overlapFrom: '2026-07-10T23:59:00.000Z' },
+    });
+    expect(first.progress.pageToken).toBeTruthy();
+    expect(first.progress.pageToken).not.toBe('api-page-2');
+    expect(second).toMatchObject({
+      hasMore: false,
+      progress: { sequence: 12, watermark: T2, overlapFrom: '2026-07-10T23:59:00.000Z' },
+    });
+    expect(second.progress).not.toHaveProperty('pageToken');
+    expect(query).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      surface: 'issues', updatedAfter: '2026-07-10T23:59:00.000Z',
+    }));
+    expect(query).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      surface: 'issues', after: 'api-page-2', updatedAfter: '2026-07-10T23:59:00.000Z',
+    }));
+  });
+
+  it('keeps stable issue IDs across read-only legacy transport pagination', async () => {
     const transport = linearTransport();
     transport.queryIssues
       .mockResolvedValueOnce({
@@ -168,37 +295,47 @@ describe('LinearAdapter', () => {
       })
       .mockResolvedValueOnce({
         status: 200,
-        issues: [],
+        issues: [{
+          id: 'LIN-1', identifier: 'JER-1', title: 'Build core',
+          state: 'Todo', updatedAt: T0,
+          project: { id: 'project-1', name: 'Jericho' },
+          assignee: { id: 'user-1', name: 'Carlos' },
+        }],
         pageInfo: { hasNextPage: false },
       });
     const adapter = new LinearAdapter({ apiKey: 'linear-key', transport, overlapMs: 60_000 });
-    const first = await adapter.capture(request());
+    const first = await adapter.capture(request({ partition: 'issues' }));
     const second = await adapter.capture(request({
       cursor: {
-        connectorId: 'linear', capability: 'capture' as never, partition: 'primary',
-        epoch: 1, sequence: 1, version: 1, pageToken: 'page-2',
-        watermark: T0, updatedAt: T1,
+        connectorId: 'linear', capability: 'capture' as never, partition: 'issues',
+        ...first.progress, version: 1, updatedAt: T1,
       },
+      partition: 'issues',
     }));
 
     expect(first.captures[0].event.sourceEventId).toBe('LIN-1:2026-07-11T00:00:00.000Z');
     expect(first.captures[0].event.type).toBe('linear.issue.updated');
-    expect(first.progress).toMatchObject({ pageToken: 'page-2', watermark: T0 });
+    expect(first.progress.pageToken).toBeTruthy();
+    expect(first.progress).not.toHaveProperty('watermark');
     expect(second.hasMore).toBe(false);
+    expect(second.progress).toMatchObject({ watermark: T0, sequence: 2 });
+    expect(second.captures[0].event.id).toBe(first.captures[0].event.id);
     expect(transport.queryIssues).toHaveBeenNthCalledWith(2, expect.objectContaining({
       after: 'page-2',
-      updatedAfter: '2026-07-10T23:59:00.000Z',
     }));
     expect(Object.hasOwn(transport, 'mutate')).toBe(false);
   });
 
-  it('maps Linear 401 to Unauthorized without producing captures', async () => {
-    const transport = linearTransport();
-    transport.queryIssues.mockResolvedValue({
-      status: 401, issues: [], pageInfo: { hasNextPage: false },
-    });
+  it('maps a generic Linear surface 401 to Unauthorized without producing captures', async () => {
+    const transport = {
+      query: vi.fn().mockResolvedValue({
+        status: 401, records: [], pageInfo: { hasNextPage: false },
+      }),
+      queryIssues: vi.fn<LinearTransport['queryIssues']>(),
+    } as unknown as LinearTransport;
     const adapter = new LinearAdapter({ apiKey: 'bad', transport });
-    await expect(adapter.capture(request())).rejects.toBeInstanceOf(ConnectorUnauthorizedError);
+    await expect(adapter.capture(request({ partition: 'comments' })))
+      .rejects.toBeInstanceOf(ConnectorUnauthorizedError);
   });
 });
 

@@ -95,6 +95,18 @@ describe('GitConnector', () => {
 });
 
 describe('GitHubConnector', () => {
+  it('probes authentication through the configured transport and maps 401', async () => {
+    const request = vi.fn<GitHubTransport['request']>().mockResolvedValue({ status: 401, data: {} });
+    const adapter = new GitHubConnector({
+      repositories: ['owner/jericho'], transport: { request },
+    });
+
+    await expect(adapter.probe(new AbortController().signal)).resolves.toMatchObject({
+      status: 'unauthorized',
+    });
+    expect(request).toHaveBeenCalledWith(expect.objectContaining({ path: 'user', query: {} }));
+  });
+
   it('uses an injected read-only transport and maps pull requests to repository relations', async () => {
     const transport: GitHubTransport = {
       request: vi.fn<GitHubTransport['request']>().mockResolvedValue({
@@ -111,13 +123,46 @@ describe('GitHubConnector', () => {
 
     expect(transport.request).toHaveBeenCalledWith(expect.objectContaining({
       path: 'repos/owner/jericho/pulls',
-      query: { state: 'all', per_page: 100 },
+      query: { state: 'all', per_page: 100, page: 1 },
     }));
     expect(page.captures[0]).toMatchObject({
       event: { type: 'github.pull_request.updated' },
       relations: [expect.objectContaining({})],
     });
     expect(JSON.stringify((transport.request as ReturnType<typeof vi.fn>).mock.calls)).not.toMatch(/POST|PATCH|mutation/i);
+  });
+
+  it('paginates pull requests with a durable numeric page cursor across restart', async () => {
+    const pull = (id: number) => ({
+      id, number: id, title: `PR ${id}`, state: 'open', updated_at: T0,
+      user: { id: 1, login: 'carlos' },
+    });
+    const requestTransport = vi.fn<GitHubTransport['request']>()
+      .mockResolvedValueOnce({ status: 200, data: [pull(1), pull(2)] })
+      .mockResolvedValueOnce({ status: 200, data: [pull(3)] });
+    const transport: GitHubTransport = { request: requestTransport };
+    const firstAdapter = new GitHubConnector({ repositories: ['owner/jericho'], transport });
+
+    const first = await firstAdapter.capture(request('owner/jericho', undefined, 2));
+    const restarted = new GitHubConnector({ repositories: ['owner/jericho'], transport });
+    const second = await restarted.capture(request(
+      'owner/jericho', cursor('github', 'owner/jericho', first.progress), 2,
+    ));
+
+    expect(first).toMatchObject({ hasMore: true, progress: { pageToken: '2', sequence: 2 } });
+    expect(second).toMatchObject({ hasMore: false, progress: { sequence: 3 } });
+    expect(second.progress).not.toHaveProperty('pageToken');
+    expect(requestTransport).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      query: { state: 'all', per_page: 2, page: 1 },
+    }));
+    expect(requestTransport).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      query: { state: 'all', per_page: 2, page: 2 },
+    }));
+    expect([...first.captures, ...second.captures].map((capture) => capture.event.sourceEventId)).toEqual([
+      `owner/jericho:pull:1:${T0}`,
+      `owner/jericho:pull:2:${T0}`,
+      `owner/jericho:pull:3:${T0}`,
+    ]);
   });
 
   it('maps GitHub 401 to Unauthorized', async () => {
@@ -147,6 +192,36 @@ describe('ConductorConnector', () => {
     expect(page.captures).toHaveLength(1);
     expect(page.captures[0].event.payload).toMatchObject({ relativePath: 'safe-worktree' });
     expect(serialized).not.toMatch(/super-secret|db-secret|sqlite-secret|app-private|private\.db|session\.sqlite|\.env/);
+  });
+
+  it('paginates a stable worktree snapshot across restart and defers mid-scan changes', async () => {
+    const root = tempDirectory('conductor-pages-');
+    for (const name of ['a', 'b', 'c', 'd', 'e']) {
+      mkdirSync(join(root, name, '.git'), { recursive: true });
+      writeFileSync(join(root, name, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+    }
+    const firstAdapter = new ConductorConnector({ roots: [{ id: 'workspace', path: root }] });
+
+    const first = await firstAdapter.capture(request('workspace', undefined, 2));
+    writeFileSync(join(root, 'e', '.git', 'HEAD'), 'ref: refs/heads/changed\n');
+    const second = await firstAdapter.capture(request('workspace', cursor('conductor', 'workspace', first.progress), 2));
+    const restarted = new ConductorConnector({ roots: [{ id: 'workspace', path: root }] });
+    const third = await restarted.capture(request('workspace', cursor('conductor', 'workspace', second.progress), 2));
+
+    expect([first.hasMore, second.hasMore, third.hasMore]).toEqual([true, true, false]);
+    expect([first.progress.sequence, second.progress.sequence, third.progress.sequence]).toEqual([2, 4, 5]);
+    expect([...first.captures, ...second.captures, ...third.captures].map((capture) =>
+      (capture.event.payload as Record<string, unknown>).relativePath,
+    )).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(third.captures[0].event.payload).toMatchObject({ head: 'ref: refs/heads/main' });
+
+    const changed = await restarted.capture(request(
+      'workspace', cursor('conductor', 'workspace', third.progress), 2,
+    ));
+    expect(changed.captures).toHaveLength(1);
+    expect(changed.captures[0].event.payload).toMatchObject({
+      relativePath: 'e', head: 'ref: refs/heads/changed',
+    });
   });
 });
 
@@ -196,16 +271,54 @@ describe('ObsidianConnector', () => {
       'obsidian.note.deleted',
     ]));
   });
+
+  it('paginates a stable vault snapshot across restart and defers mid-scan edits', async () => {
+    const vault = tempDirectory('obsidian-pages-');
+    for (const name of ['A', 'B', 'C', 'D', 'E']) {
+      writeFileSync(join(vault, `${name}.md`), `# ${name}\noriginal ${name}`);
+    }
+    const firstAdapter = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
+
+    const first = await firstAdapter.capture(request('vault', undefined, 2));
+    writeFileSync(join(vault, 'E.md'), '# E\nchanged while paging');
+    const second = await firstAdapter.capture(request('vault', cursor('obsidian', 'vault', first.progress), 2));
+    const restarted = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
+    const third = await restarted.capture(request('vault', cursor('obsidian', 'vault', second.progress), 2));
+
+    expect([first.hasMore, second.hasMore, third.hasMore]).toEqual([true, true, false]);
+    expect([first.progress.sequence, second.progress.sequence, third.progress.sequence]).toEqual([2, 4, 5]);
+    const initialCaptures = [...first.captures, ...second.captures, ...third.captures];
+    expect(initialCaptures.map((capture) =>
+      (capture.event.payload as Record<string, unknown>).path,
+    )).toEqual(['A.md', 'B.md', 'C.md', 'D.md', 'E.md']);
+    expect(new Set(initialCaptures.map((capture) => capture.event.id))).toHaveLength(5);
+
+    const changed = await restarted.capture(request('vault', cursor('obsidian', 'vault', third.progress), 2));
+    expect(changed.captures).toHaveLength(1);
+    expect(changed.captures[0].event.payload).toMatchObject({ path: 'E.md' });
+    expect(changed.captures[0].event.id).not.toBe(third.captures[0].event.id);
+  });
 });
 
-function request(partition: string, cursor?: unknown) {
+function request(partition: string, cursor?: unknown, limit = 100) {
   return {
     partition,
     ...(cursor ? { cursor } : {}),
-    limit: 100,
+    limit,
     observedAt: T0,
     signal: new AbortController().signal,
   } as never;
+}
+
+function cursor(
+  connectorId: string,
+  partition: string,
+  progress: { epoch: number; sequence: number; pageToken?: string; watermark?: string; overlapFrom?: string },
+) {
+  return {
+    connectorId, capability: ConnectorCapability.Capture, partition,
+    ...progress, version: 1, updatedAt: T0,
+  };
 }
 
 function tempDirectory(prefix: string): string {
