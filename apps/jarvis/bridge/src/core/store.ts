@@ -2400,7 +2400,10 @@ export class JerichoStore {
         this.#insertDecision(decision);
       }
       for (const assignment of this.listAssignments({ missionId })) {
-        if (assignment.status === LifecycleStatus.Queued) {
+        if (
+          assignment.status === LifecycleStatus.Queued ||
+          assignment.status === LifecycleStatus.Paused
+        ) {
           this.#writeAssignmentRecord({
             ...assignment,
             status: LifecycleStatus.Cancelled,
@@ -2413,6 +2416,19 @@ export class JerichoStore {
             ...assignment,
             cancelRequestedAt: at,
             cancelReason: reason,
+          });
+        }
+      }
+      for (const task of this.listMissionTasks(missionId)) {
+        if (
+          task.status === LifecycleStatus.Queued ||
+          task.status === LifecycleStatus.Paused
+        ) {
+          this.#writeMissionTaskRecord({
+            ...task,
+            status: LifecycleStatus.Cancelled,
+            updatedAt: at,
+            completedAt: at,
           });
         }
       }

@@ -479,6 +479,14 @@ describe('authenticated local Core HTTP/SSE server', () => {
       },
     });
     expect(runtime.store.listDecisions(planned.id)).toHaveLength(1);
+    expect(runtime.store.listMissionTasks(planned.id)).not.toContainEqual(
+      expect.objectContaining({ status: 'queued' }),
+    );
+    expect(runtime.store.listMissionTasks(planned.id)).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ status: 'cancelled', completedAt: T0 }),
+      ]),
+    );
   });
 
   it('returns typed client errors instead of 500 for malformed, oversized, bounded, and unknown requests', async () => {

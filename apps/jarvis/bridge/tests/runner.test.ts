@@ -362,6 +362,13 @@ describe('MissionRunner external action receipts', () => {
     expect(execute).not.toHaveBeenCalled();
     expect(store.getAssignment('assignment-1')?.status).toBe(LifecycleStatus.Paused);
     expect(store.getAssignment('assignment-1')?.artifact).toBeUndefined();
+
+    store.requestMissionCancellation('mission-v1', 'Carlos cancelled checkpointed work', T2);
+    expect(store.getAssignment('assignment-1')).toMatchObject({
+      status: LifecycleStatus.Cancelled,
+      cancelReason: 'Carlos cancelled checkpointed work',
+    });
+    expect(store.getMissionTask('task-1')?.status).toBe(LifecycleStatus.Cancelled);
   });
 
   it('does not reuse a verified receipt when independent evidence lacks an approved selector', async () => {
