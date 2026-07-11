@@ -128,6 +128,12 @@ describe('MissionRunner capability and artifact enforcement', () => {
       estimatedMicroUsd: 100,
       actualMicroUsd: 83,
     });
+    expect(store.listChangeLog({ afterSequence: 0 }).map((change) => change.kind))
+      .toEqual(expect.arrayContaining([
+        'assignment_changed',
+        'mission_changed',
+        'cost_recorded',
+      ]));
   });
 
   it.each([

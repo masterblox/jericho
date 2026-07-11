@@ -1697,6 +1697,13 @@ export class JerichoStore {
         stored.confidence ?? null, stored.createdAt, stored.expiresAt ?? null,
         sealed.integrityHash, sealed.body,
       );
+      this.#appendChangeLog({
+        kind: ChangeLogKind.ProposalChanged,
+        recordType: 'proposal',
+        recordId: stored.id,
+        changedAt: stored.createdAt,
+        payload: { status: stored.status, kind: stored.kind },
+      });
       return stored;
     });
   }
@@ -1877,6 +1884,13 @@ export class JerichoStore {
         stored.idempotencyKey, stored.destination, stored.externalId ?? null,
         stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt,
       );
+      this.#appendChangeLog({
+        kind: ChangeLogKind.ReceiptChanged,
+        recordType: 'receipt',
+        recordId: stored.id,
+        changedAt: stored.requestedAt,
+        payload: { status: stored.status, verified: stored.verified },
+      });
       return stored;
     });
   }
@@ -1990,6 +2004,13 @@ export class JerichoStore {
         stored.estimatedMicroUsd, stored.actualMicroUsd, stored.idempotencyKey,
         stored.incurredAt, sealed.integrityHash, sealed.body,
       );
+      this.#appendChangeLog({
+        kind: ChangeLogKind.CostRecorded,
+        recordType: 'cost',
+        recordId: stored.id,
+        changedAt: stored.incurredAt,
+        payload: { missionId: stored.missionId, category: stored.category },
+      });
       return stored;
     });
   }
@@ -2111,6 +2132,13 @@ export class JerichoStore {
         stored.leaseOwner ?? null, stored.leaseToken ?? null,
         stored.leaseExpiresAt ?? null, stored.cancelRequestedAt ?? null,
       );
+      this.#appendChangeLog({
+        kind: ChangeLogKind.AssignmentChanged,
+        recordType: 'assignment',
+        recordId: stored.id,
+        changedAt: stored.assignedAt,
+        payload: { missionId: stored.missionId, status: stored.status, attempt: stored.attempt },
+      });
       return stored;
     });
   }
@@ -3071,6 +3099,10 @@ export class JerichoStore {
   #writeAssignmentRecord(assignment: Assignment): void {
     assertAssignment(assignment);
     const normalized = normalizeAssignment(assignment);
+    const previous = this.#database.prepare(`
+      SELECT status, attempt, cancel_requested_at, completed_at
+      FROM assignments WHERE id = ?
+    `).get(normalized.id);
     const sealed = this.#sealRecord('assignments', normalized.id, normalized);
     const stored = sealed.record;
     this.#database.prepare(`
@@ -3092,6 +3124,21 @@ export class JerichoStore {
       stored.leaseToken ?? null, stored.leaseExpiresAt ?? null,
       stored.cancelRequestedAt ?? null, stored.id,
     );
+    if (
+      !previous ||
+      previous.status !== stored.status ||
+      Number(previous.attempt) !== stored.attempt ||
+      (previous.cancel_requested_at ?? null) !== (stored.cancelRequestedAt ?? null) ||
+      (previous.completed_at ?? null) !== (stored.completedAt ?? null)
+    ) {
+      this.#appendChangeLog({
+        kind: ChangeLogKind.AssignmentChanged,
+        recordType: 'assignment',
+        recordId: stored.id,
+        changedAt: stored.completedAt ?? stored.cancelRequestedAt ?? stored.acceptedAt ?? stored.availableAt,
+        payload: { missionId: stored.missionId, status: stored.status, attempt: stored.attempt },
+      });
+    }
   }
 
   #requireAssignmentLease(id: string, leaseToken: string, at?: string): Assignment {
@@ -3192,6 +3239,9 @@ export class JerichoStore {
   #writeMissionTaskRecord(task: MissionTask): void {
     assertMissionTask(task);
     const normalized = normalizeMissionTask(task);
+    const previous = this.#database.prepare(
+      'SELECT status, completed_at FROM mission_tasks WHERE id = ?',
+    ).get(normalized.id);
     const sealed = this.#sealRecord('mission_tasks', normalized.id, normalized);
     const stored = sealed.record;
     this.#database.prepare(`
@@ -3208,6 +3258,19 @@ export class JerichoStore {
       stored.completedAt ?? null, sealed.integrityHash, sealed.body, stored.lane,
       stored.selectedAgentId, stored.id,
     );
+    if (
+      !previous ||
+      previous.status !== stored.status ||
+      (previous.completed_at ?? null) !== (stored.completedAt ?? null)
+    ) {
+      this.#appendChangeLog({
+        kind: ChangeLogKind.MissionChanged,
+        recordType: 'mission_task',
+        recordId: stored.id,
+        changedAt: stored.updatedAt,
+        payload: { missionId: stored.missionId, status: stored.status },
+      });
+    }
   }
 
   #writeMissionRecord(mission: MissionPlan): void {
@@ -3216,6 +3279,9 @@ export class JerichoStore {
       throw new MissionPlanConflictError(mission.id);
     }
     const normalized = normalizeMission(mission);
+    const previous = this.#database.prepare(
+      'SELECT status, completed_at, cancel_requested_at FROM missions WHERE id = ?',
+    ).get(normalized.id);
     const sealed = this.#sealRecord('missions', normalized.id, normalized);
     const stored = sealed.record;
     this.#database.prepare(`
@@ -3235,6 +3301,20 @@ export class JerichoStore {
       stored.startedAt ?? null, stored.completedAt ?? null,
       stored.cancelRequestedAt ?? null, stored.id,
     );
+    if (
+      !previous ||
+      previous.status !== stored.status ||
+      (previous.completed_at ?? null) !== (stored.completedAt ?? null) ||
+      (previous.cancel_requested_at ?? null) !== (stored.cancelRequestedAt ?? null)
+    ) {
+      this.#appendChangeLog({
+        kind: ChangeLogKind.MissionChanged,
+        recordType: 'mission',
+        recordId: stored.id,
+        changedAt: stored.updatedAt,
+        payload: { status: stored.status, version: stored.version },
+      });
+    }
   }
 
   #insertDecision(decision: DecisionRecord): DecisionRecord {
@@ -3260,11 +3340,26 @@ export class JerichoStore {
       stored.route, stored.risk, stored.confidence ?? null, stored.decidedAt,
       sealed.integrityHash, sealed.body, stored.planHash ?? null,
     );
+    this.#appendChangeLog({
+      kind: ChangeLogKind.DecisionRecorded,
+      recordType: 'decision',
+      recordId: stored.id,
+      changedAt: stored.decidedAt,
+      payload: {
+        outcome: stored.outcome,
+        ...(stored.missionId ? { missionId: stored.missionId } : {}),
+        ...(stored.proposalId ? { proposalId: stored.proposalId } : {}),
+      },
+    });
     return stored;
   }
 
   #writeReceiptRecord(receipt: ActionReceipt): void {
     assertActionReceipt(receipt);
+    const previous = this.#database.prepare(`
+      SELECT status, started_at, completed_at, verified, external_id
+      FROM receipts WHERE id = ?
+    `).get(receipt.id);
     const sealed = this.#sealRecord('receipts', receipt.id, receipt);
     const stored = sealed.record;
     this.#database.prepare(`
@@ -3282,6 +3377,22 @@ export class JerichoStore {
       stored.idempotencyKey, stored.destination, stored.externalId ?? null,
       stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt, stored.id,
     );
+    if (
+      !previous ||
+      previous.status !== stored.status ||
+      (previous.started_at ?? null) !== (stored.startedAt ?? null) ||
+      (previous.completed_at ?? null) !== (stored.completedAt ?? null) ||
+      Number(previous.verified ?? 0) !== (stored.verified ? 1 : 0) ||
+      (previous.external_id ?? null) !== (stored.externalId ?? null)
+    ) {
+      this.#appendChangeLog({
+        kind: ChangeLogKind.ReceiptChanged,
+        recordType: 'receipt',
+        recordId: stored.id,
+        changedAt: stored.completedAt ?? stored.startedAt ?? stored.requestedAt,
+        payload: { status: stored.status, verified: stored.verified },
+      });
+    }
   }
 
   #writeProposalRecord(proposal: Proposal): void {
@@ -3301,6 +3412,13 @@ export class JerichoStore {
       stored.createdAt, stored.expiresAt ?? null, sealed.integrityHash,
       sealed.body, stored.id,
     );
+    this.#appendChangeLog({
+      kind: ChangeLogKind.ProposalChanged,
+      recordType: 'proposal',
+      recordId: stored.id,
+      changedAt: stored.createdAt,
+      payload: { status: stored.status, kind: stored.kind },
+    });
   }
 
   #writePreferenceRecord(preference: PreferenceChange): void {

@@ -95,6 +95,11 @@ describe('reflection review publication', () => {
       body: { autoResolution: false, kind: 'contradictory_evidence' },
     });
     expect(store.listDecisions()).toEqual([]);
+    expect(store.listChangeLog({ afterSequence: 0 })).toContainEqual(
+      expect.objectContaining({
+        kind: 'proposal_changed', recordType: 'proposal', recordId: first[0].id,
+      }),
+    );
   });
 
   it('runs at startup on a review-only schedule without requiring an Obsidian vault', async () => {

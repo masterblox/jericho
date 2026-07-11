@@ -237,6 +237,12 @@ export enum ChangeLogKind {
   CaptureFailed = 'capture_failed',
   CursorAdvanced = 'cursor_advanced',
   ProposalCreated = 'proposal_created',
+  ProposalChanged = 'proposal_changed',
+  MissionChanged = 'mission_changed',
+  AssignmentChanged = 'assignment_changed',
+  DecisionRecorded = 'decision_recorded',
+  ReceiptChanged = 'receipt_changed',
+  CostRecorded = 'cost_recorded',
   HealthChanged = 'health_changed',
 }
 
