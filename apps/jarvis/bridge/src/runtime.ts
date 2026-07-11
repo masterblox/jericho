@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto';
 
+import {
+  ConnectorCapability,
+  ConnectorHealthStatus,
+  SourceType,
+  type ConnectorHealth,
+} from '@jericho/shared';
+
 import type { JerichoConfig } from './config.js';
 import type { JerichoStore } from './core/store.js';
 import { ConductorConnector } from './connectors/adapters/conductor.js';
@@ -37,6 +44,7 @@ import {
 import {
   HermesFilesystemExecutor,
   HermesResultVerifier,
+  inspectHermesProtocol,
 } from './orchestration/hermes-filesystem-executor.js';
 import { MissionRunner, type RunnerOutcome } from './orchestration/runner.js';
 
@@ -403,21 +411,31 @@ export interface MissionExecutionRuntime {
   stop(): Promise<void>;
 }
 
+export interface MissionExecutionRuntimeFactoryOptions {
+  now?: () => string;
+}
+
 export function createMissionExecutionRuntime(
   config: JerichoConfig,
   store: JerichoStore,
+  options: MissionExecutionRuntimeFactoryOptions = {},
 ): MissionExecutionRuntime | undefined {
   const workspaceFields = [config.hermesBusRoot, config.hermesRepo, config.hermesBranch];
   if (workspaceFields.every((value) => value === undefined)) return undefined;
   if (workspaceFields.some((value) => value === undefined)) {
     throw new Error('Hermes execution requires an explicit bus root, repository, and branch');
   }
+  const now = options.now ?? (() => new Date().toISOString());
+  const compatibility = inspectHermesProtocol(config.hermesBusRoot!, now());
+  recordHermesExecutionHealth(store, compatibility, now());
+  if (!compatibility.compatible) return undefined;
   const executor = new HermesFilesystemExecutor({
     busRoot: config.hermesBusRoot!,
     store,
     workspace: { repo: config.hermesRepo!, branch: config.hermesBranch! },
     pollIntervalMs: config.hermesPollIntervalMs,
     maxWaitMs: config.hermesMaxWaitMs,
+    now,
   });
   const runner = new MissionRunner(store, executor, new HermesResultVerifier(store), {
     workerId: `jericho-hermes-${process.pid}-${randomUUID()}`,
@@ -426,6 +444,50 @@ export function createMissionExecutionRuntime(
   });
   return new MissionExecutionScheduler(runner, {
     pollIntervalMs: config.hermesPollIntervalMs,
+  });
+}
+
+function recordHermesExecutionHealth(
+  store: JerichoStore,
+  compatibility: ReturnType<typeof inspectHermesProtocol>,
+  checkedAt: string,
+): ConnectorHealth {
+  const status = compatibility.compatible
+    ? ConnectorHealthStatus.Healthy
+    : ConnectorHealthStatus.Unavailable;
+  const details = {
+    reason: compatibility.reason,
+    executable: compatibility.compatible,
+    protocolVersion: compatibility.protocolVersion ?? 1,
+    ...(compatibility.operatorId ? { operatorId: compatibility.operatorId } : {}),
+    ...(compatibility.operatorVersion ? { operatorVersion: compatibility.operatorVersion } : {}),
+    ...(compatibility.capabilities ? { capabilities: compatibility.capabilities } : {}),
+    ...(compatibility.expiresAt ? { handshakeExpiresAt: compatibility.expiresAt } : {}),
+  };
+  return store.upsertConnectorHealth({
+    connectorId: 'hermes-execution',
+    status,
+    checkedAt,
+    ...(compatibility.compatible
+      ? { lastSuccessAt: checkedAt }
+      : { lastFailureAt: checkedAt }),
+    consecutiveFailures: compatibility.compatible ? 0 : 1,
+    freshness: { observedAt: checkedAt },
+    capabilities: [{
+      capability: ConnectorCapability.Health,
+      status,
+      checkedAt,
+      ...(compatibility.compatible
+        ? { lastSuccessAt: checkedAt }
+        : { lastFailureAt: checkedAt }),
+      details,
+    }],
+    details,
+    provenance: [{
+      source: 'jericho:hermes-protocol',
+      sourceType: SourceType.System,
+      observedAt: checkedAt,
+    }],
   });
 }
 

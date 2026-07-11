@@ -9,7 +9,7 @@
 | Area | Canonical start | Responsibility |
 |---|---|---|
 | Local service | `bridge/src/server.ts` | One loopback origin for static UI, authenticated API/SSE, voice WebSocket, and connector lifecycle. |
-| Runtime composition | `bridge/src/runtime.ts` | Registers configured source connectors and durable polling supervision. |
+| Runtime composition | `bridge/src/runtime.ts` | Registers configured source connectors, fail-closed Hermes protocol health, and durable polling supervision. |
 | Private truth | `bridge/src/core/store.ts` | Encrypted SQLite records, immutable events, provenance, identities, missions, decisions, assignments, and receipts. |
 | Orchestration | `bridge/src/orchestration/` | Classify, route, plan, policy-check, lease, execute, verify, and retain bounded missions. |
 | Contracts | `shared/src/index.ts` | Shared envelopes and command-center projections. |
@@ -19,6 +19,7 @@
 ## Knowledge and authority map
 
 - `bridge/src/connectors/adapters/` contains read-side truth adapters. Telegram enters only through the authenticated Hermes gateway.
+- `bridge/src/orchestration/hermes-filesystem-executor.ts` is the v1 execution boundary. It requires the contract in `../../docs/HERMES-EXECUTION-PROTOCOL-V1.md`; legacy results are review checkpoints, never successes.
 - `bridge/src/command-center.ts` projects persisted truth; it must never fabricate activity for visual effect.
 - `frontend/src/command-center-app.tsx` presents Core projections and records exact-version decisions; it is not a second database.
 - `frontend/src/*controller*.ts`, `tracking.ts`, `calibration.ts`, and `hit-testing.ts` are deterministic gesture primitives.

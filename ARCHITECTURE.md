@@ -85,6 +85,14 @@ A checkpoint is mandatory before any budget/runtime/concurrency/retry overrun, n
 
 Assignments use durable leases, idempotency keys, bounded retries, cancellation, dependency checks, and minimum evidence/tool/writable scope. Only versioned `AgentCapability` entries may run. Workers cannot recursively create unrestricted workers or widen their own authority. Completion requires a structured artifact and independent verification.
 
+Hermes execution additionally requires a fresh, expiring v1 operator capability
+handshake. A configured bus without that handshake is visible as unavailable
+and receives no assignment. Historical Hermes results are retained only as
+unverified review checkpoints. Repository grants require both an explicit
+configured allowlist entry and an immutable direct-capture selector; neither
+workspace configuration nor natural-language inference silently grants a repo.
+The exact operator contract is `docs/HERMES-EXECUTION-PROTOCOL-V1.md`.
+
 External effects require destination-scoped idempotency and a verified receipt. Retries must not duplicate a send, deployment, or other mutation.
 
 ### Retain

@@ -29,6 +29,7 @@ import { JerichoStore } from '../src/core/store.js';
 import {
   HermesFilesystemExecutor,
   HermesResultVerifier,
+  inspectHermesProtocol,
 } from '../src/orchestration/hermes-filesystem-executor.js';
 import type { AssignmentExecutionContext } from '../src/orchestration/runner.js';
 
@@ -43,6 +44,51 @@ afterEach(() => {
 });
 
 describe('Hermes filesystem execution adapter', () => {
+  it('fails closed when the operator has no fresh v1 capability manifest', () => {
+    const { busRoot, store } = setupBus({ manifest: false });
+
+    expect(inspectHermesProtocol(busRoot, T0)).toMatchObject({
+      compatible: false,
+      reason: 'missing_manifest',
+    });
+    expect(() => executorFor(busRoot, store)).toThrow(/capability manifest|protocol.*unavailable/i);
+  });
+
+  it('rejects a stale operator capability handshake', () => {
+    const { busRoot, store } = setupBus({ manifest: false });
+    writeProtocolManifest(busRoot, {
+      generated_at: '2026-07-10T23:00:00.000Z',
+      expires_at: '2026-07-10T23:30:00.000Z',
+    });
+
+    expect(inspectHermesProtocol(busRoot, T0)).toMatchObject({
+      compatible: false,
+      reason: 'stale_manifest',
+      protocolVersion: 1,
+    });
+    expect(() => executorFor(busRoot, store)).toThrow(/stale|protocol.*unavailable/i);
+  });
+
+  it('accepts only a fresh manifest declaring every bounded v1 capability', () => {
+    const { busRoot } = setupBus();
+
+    expect(inspectHermesProtocol(busRoot, T0)).toEqual({
+      compatible: true,
+      reason: 'compatible',
+      protocolVersion: 1,
+      operatorId: 'hermes-jericho-operator',
+      operatorVersion: '1.0.0',
+      capabilities: [
+        'bounded_stop',
+        'idempotent_dispatch',
+        'independent_verification_evidence',
+        'structured_artifacts',
+      ],
+      generatedAt: T0,
+      expiresAt: '2026-07-11T00:10:00.000Z',
+    });
+  });
+
   it('emits one bounded task and retains the matching successful result', async () => {
     const { busRoot, store } = setupBus();
     const context = executionContext();
@@ -52,6 +98,7 @@ describe('Hermes filesystem execution adapter', () => {
       workspace: { repo: 'jericho', branch: 'masterblox/approved' },
       pollIntervalMs: 5,
       maxWaitMs: 1_000,
+      now: () => T0,
     });
     const execution = executor.execute(context);
 
@@ -263,7 +310,17 @@ describe('Hermes filesystem execution adapter', () => {
       error: null,
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(store.listEvents({ source: 'hermes-filesystem' })).toEqual([]);
+    expect(store.listEvents({ source: 'hermes-filesystem' })).toMatchObject([{
+      type: 'hermes.legacy_result_checkpoint',
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      payload: {
+        taskId: task.id,
+        status: 'in_progress',
+        summary: 'Operator is still working.',
+        verified: false,
+      },
+    }]);
 
     writeResult(busRoot, task.id, successfulResult(task.id));
 
@@ -271,6 +328,37 @@ describe('Hermes filesystem execution adapter', () => {
       kind: 'success',
       result: { artifact: { type: 'report', data: { complete: true } } },
     });
+  });
+
+  it('retains a legacy success as an unverified checkpoint and never returns it as success', async () => {
+    const { busRoot, store } = setupBus();
+    const execution = executorFor(busRoot, store).execute(executionContext());
+    const taskFile = await waitForTask(busRoot);
+    const task = JSON.parse(readFileSync(taskFile, 'utf8'));
+    writeResult(busRoot, task.id, {
+      task_id: task.id,
+      completed_at: T0,
+      status: 'success',
+      summary: 'Legacy operator says the task completed.',
+      error: null,
+    });
+
+    await expect(execution).rejects.toThrow(/legacy.*unverified|unverified.*checkpoint/i);
+    expect(store.listEvents({ source: 'hermes-filesystem' })).toMatchObject([{
+      type: 'hermes.legacy_result_checkpoint',
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      payload: {
+        taskId: task.id,
+        status: 'success',
+        summary: 'Legacy operator says the task completed.',
+        verified: false,
+        artifact: null,
+        verification: null,
+      },
+    }]);
+    expect(store.listEvents({ source: 'hermes-filesystem' }))
+      .not.toEqual(expect.arrayContaining([expect.objectContaining({ status: LifecycleStatus.Succeeded })]));
   });
 
   it('emits one deterministic bounded stop task when execution is aborted', async () => {
@@ -352,12 +440,13 @@ describe('Hermes filesystem execution adapter', () => {
   });
 });
 
-function setupBus(): { busRoot: string; store: JerichoStore } {
+function setupBus(options: { manifest?: boolean } = {}): { busRoot: string; store: JerichoStore } {
   const root = mkdtempSync(join(tmpdir(), 'jericho-hermes-'));
   roots.push(root);
   const busRoot = join(root, 'bus');
   mkdirSync(join(busRoot, 'outbox'), { recursive: true });
   mkdirSync(join(busRoot, 'inbox'));
+  if (options.manifest !== false) writeProtocolManifest(busRoot);
   const store = new JerichoStore({ path: ':memory:', key: KEY });
   stores.push(store);
   return { busRoot, store };
@@ -370,7 +459,28 @@ function executorFor(busRoot: string, store: JerichoStore): HermesFilesystemExec
     workspace: { repo: 'jericho', branch: 'masterblox/approved' },
     pollIntervalMs: 5,
     maxWaitMs: 1_000,
+    now: () => T0,
   });
+}
+
+function writeProtocolManifest(
+  busRoot: string,
+  overrides: Record<string, unknown> = {},
+): void {
+  writeFileSync(join(busRoot, 'jericho-operator-capabilities.json'), JSON.stringify({
+    protocol_version: 1,
+    operator_id: 'hermes-jericho-operator',
+    operator_version: '1.0.0',
+    generated_at: T0,
+    expires_at: '2026-07-11T00:10:00.000Z',
+    capabilities: [
+      'structured_artifacts',
+      'independent_verification_evidence',
+      'bounded_stop',
+      'idempotent_dispatch',
+    ],
+    ...overrides,
+  }));
 }
 
 function executionContext(overrides: {

@@ -5,6 +5,8 @@ import { userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { MutationClass, type RepositoryGrant } from '@jericho/shared';
+
 const directory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(directory, '../../.env') });
 
@@ -34,6 +36,7 @@ export interface JerichoConfig {
   hermesBranch?: string;
   hermesPollIntervalMs: number;
   hermesMaxWaitMs: number;
+  missionRepositoryGrants: RepositoryGrant[];
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
 }
@@ -175,6 +178,9 @@ export function loadConfig(
     ...(hermesBranch ? { hermesBranch } : {}),
     hermesPollIntervalMs,
     hermesMaxWaitMs,
+    missionRepositoryGrants: parseRepositoryGrants(
+      environment.JERICHO_MISSION_REPOSITORY_GRANTS,
+    ),
     reflectionIntervalMs: parsePositiveInteger(
       environment.JERICHO_REFLECTION_INTERVAL_MS ?? '21600000',
       'JERICHO_REFLECTION_INTERVAL_MS',
@@ -285,6 +291,57 @@ function parseNamedPaths(value: string | undefined, variable: string): NamedPath
     throw new Error(`${variable} contains duplicate ids`);
   }
   return paths;
+}
+
+function parseRepositoryGrants(value: string | undefined): RepositoryGrant[] {
+  const variable = 'JERICHO_MISSION_REPOSITORY_GRANTS';
+  if (!value?.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error(`${variable} must be a JSON array of repository grants`);
+  }
+  if (!Array.isArray(parsed)) {
+    throw new Error(`${variable} must be a JSON array of repository grants`);
+  }
+  const validMutations = new Set(Object.values(MutationClass));
+  const grants = parsed.map((item): RepositoryGrant => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error(`${variable} entries must be repository grant objects`);
+    }
+    const record = item as Record<string, unknown>;
+    const repository = typeof record.repository === 'string' ? record.repository.trim() : '';
+    const writablePaths = record.writablePaths;
+    const mutationClasses = record.mutationClasses;
+    if (
+      !repository ||
+      !Array.isArray(writablePaths) ||
+      !writablePaths.every((entry) => typeof entry === 'string' && safeRepositoryPath(entry)) ||
+      !Array.isArray(mutationClasses) ||
+      !mutationClasses.every((entry) => typeof entry === 'string' && validMutations.has(entry as MutationClass))
+    ) {
+      throw new Error(
+        `${variable} entries require repository, safe writablePaths, and valid mutationClasses`,
+      );
+    }
+    return {
+      repository,
+      writablePaths: [...new Set(writablePaths as string[])],
+      mutationClasses: [...new Set(mutationClasses as MutationClass[])],
+    };
+  });
+  if (new Set(grants.map((grant) => grant.repository)).size !== grants.length) {
+    throw new Error(`${variable} contains duplicate repositories`);
+  }
+  return grants;
+}
+
+function safeRepositoryPath(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized || normalized.startsWith('/') || normalized.includes('\\')) return false;
+  if (normalized === '.') return true;
+  return normalized.split('/').every((segment) => Boolean(segment) && segment !== '.' && segment !== '..');
 }
 
 function parsePositiveInteger(value: string, variable: string): number {

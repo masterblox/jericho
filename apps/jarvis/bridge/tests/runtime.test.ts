@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -20,6 +20,22 @@ import {
 
 const KEY = Buffer.alloc(32, 83);
 const resources: Array<() => void> = [];
+
+function writeHermesManifest(busRoot: string): void {
+  writeFileSync(join(busRoot, 'jericho-operator-capabilities.json'), JSON.stringify({
+    protocol_version: 1,
+    operator_id: 'hermes-jericho-operator',
+    operator_version: '1.0.0',
+    generated_at: '2026-07-11T00:00:00.000Z',
+    expires_at: '2026-07-11T00:10:00.000Z',
+    capabilities: [
+      'structured_artifacts',
+      'independent_verification_evidence',
+      'bounded_stop',
+      'idempotent_dispatch',
+    ],
+  }));
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -206,7 +222,7 @@ describe('production mission execution lifecycle', () => {
     expect(runNext).toHaveBeenCalledTimes(2);
   });
 
-  it('creates no executor without a complete explicit workspace and creates a bounded one with it', async () => {
+  it('creates no executor without a complete explicit workspace and fails closed on a legacy bus', async () => {
     const store = new JerichoStore({ path: ':memory:', key: KEY });
     resources.push(() => store.close());
     expect(createMissionExecutionRuntime(loadConfig({ JERICHO_API_TOKEN: 'runtime-token' }, []), store))
@@ -224,7 +240,41 @@ describe('production mission execution lifecycle', () => {
     }, []);
     const runtime = createMissionExecutionRuntime(configured, store);
 
+    expect(runtime).toBeUndefined();
+    expect(store.listConnectorHealth()).toMatchObject([{
+      connectorId: 'hermes-execution',
+      status: ConnectorHealthStatus.Unavailable,
+      details: { reason: 'missing_manifest', executable: false, protocolVersion: 1 },
+    }]);
+  });
+
+  it('creates a bounded executor only after a fresh Hermes v1 capability handshake', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: KEY });
+    resources.push(() => store.close());
+    const busRoot = mkdtempSync(join(tmpdir(), 'jericho-hermes-runtime-v1-'));
+    resources.push(() => rmSync(busRoot, { recursive: true, force: true }));
+    mkdirSync(join(busRoot, 'outbox'), { recursive: true });
+    mkdirSync(join(busRoot, 'inbox'));
+    writeHermesManifest(busRoot);
+    const configured = loadConfig({
+      JERICHO_API_TOKEN: 'runtime-token',
+      JERICHO_HERMES_BUS_ROOT: busRoot,
+      JERICHO_HERMES_REPO: 'jericho',
+      JERICHO_HERMES_BRANCH: 'masterblox/approved',
+      JERICHO_HERMES_POLL_INTERVAL_MS: '5',
+      JERICHO_HERMES_MAX_WAIT_MS: '50',
+    }, []);
+
+    const runtime = createMissionExecutionRuntime(configured, store, {
+      now: () => '2026-07-11T00:00:00.000Z',
+    });
+
     expect(runtime).toBeDefined();
+    expect(store.listConnectorHealth()).toMatchObject([{
+      connectorId: 'hermes-execution',
+      status: ConnectorHealthStatus.Healthy,
+      details: { reason: 'compatible', executable: true, protocolVersion: 1 },
+    }]);
     await runtime?.start();
     await runtime?.stop();
   });

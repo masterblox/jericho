@@ -39,6 +39,32 @@ import type {
 
 const TASK_PROTOCOL_VERSION = 1;
 const MAX_RESULT_BYTES = 1_048_576;
+export const HERMES_PROTOCOL_MANIFEST = 'jericho-operator-capabilities.json';
+const REQUIRED_PROTOCOL_CAPABILITIES = [
+  'bounded_stop',
+  'idempotent_dispatch',
+  'independent_verification_evidence',
+  'structured_artifacts',
+] as const;
+
+export type HermesProtocolReason =
+  | 'compatible'
+  | 'missing_manifest'
+  | 'invalid_manifest'
+  | 'unsupported_protocol'
+  | 'missing_capability'
+  | 'stale_manifest';
+
+export interface HermesProtocolCompatibility {
+  compatible: boolean;
+  reason: HermesProtocolReason;
+  protocolVersion?: number;
+  operatorId?: string;
+  operatorVersion?: string;
+  capabilities?: string[];
+  generatedAt?: string;
+  expiresAt?: string;
+}
 
 export interface HermesWorkspace {
   repo: string;
@@ -51,6 +77,7 @@ export interface HermesFilesystemExecutorOptions {
   workspace: HermesWorkspace;
   pollIntervalMs?: number;
   maxWaitMs?: number;
+  now?: () => string;
 }
 
 interface HermesOutboxTask {
@@ -112,6 +139,7 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
   readonly #inbox: string;
   readonly #pollIntervalMs: number;
   readonly #maxWaitMs: number;
+  readonly #now: () => string;
 
   constructor(private readonly options: HermesFilesystemExecutorOptions) {
     this.#pollIntervalMs = options.pollIntervalMs ?? 250;
@@ -121,6 +149,11 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
     }
     if (!Number.isInteger(this.#maxWaitMs) || this.#maxWaitMs < this.#pollIntervalMs) {
       throw new TypeError('Hermes maximum wait is invalid');
+    }
+    this.#now = options.now ?? (() => new Date().toISOString());
+    const compatibility = inspectHermesProtocol(options.busRoot, this.#now());
+    if (!compatibility.compatible) {
+      throw new Error(`Hermes protocol unavailable: ${compatibility.reason}`);
     }
     this.#busRoot = prepareDirectory(options.busRoot);
     this.#outbox = prepareChildDirectory(this.#busRoot, 'outbox');
@@ -139,6 +172,7 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
   }
 
   async execute(context: AssignmentExecutionContext): Promise<ExecutorResult> {
+    this.#assertProtocolCompatible();
     assertApprovedContext(context, this.options.workspace);
     const task = taskFor(context, this.options.workspace);
     assertBusDirectory(this.#busRoot, this.#outbox, 'outbox');
@@ -148,11 +182,13 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
     try {
       while (Date.now() - started <= this.#maxWaitMs) {
         if (context.signal.aborted) throw abortError(context.signal.reason);
+        this.#assertProtocolCompatible();
         assertBusDirectory(this.#busRoot, this.#inbox, 'inbox');
         const resultPath = join(this.#inbox, `${task.id}.json`);
         if (existsSync(resultPath)) {
           const result = readResult(resultPath, task.id);
           if (result.status === 'in_progress') {
+            appendLegacyCheckpoint(this.options.store, context, result);
             await wait(this.#pollIntervalMs, context.signal);
             continue;
           }
@@ -162,7 +198,10 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
             throw new Error(`Hermes task ${task.id} ${result.status}: ${result.error ?? result.summary}`);
           }
           if (!result.artifact || !result.verification) {
-            throw new TypeError(`Hermes task ${task.id} success result is incomplete`);
+            appendLegacyCheckpoint(this.options.store, context, result);
+            throw new TypeError(
+              `Hermes task ${task.id} returned a legacy unverified checkpoint, not a verified result`,
+            );
           }
           assertSuccessfulResultMatches(context, result);
           appendResultEvent(this.options.store, context, result);
@@ -182,9 +221,79 @@ export class HermesFilesystemExecutor implements DynamicAssignmentExecutor {
   }
 
   #writeStop(context: AssignmentExecutionContext, task: HermesOutboxTask): void {
+    if (!inspectHermesProtocol(this.#busRoot, this.#now()).compatible) return;
     assertBusDirectory(this.#busRoot, this.#outbox, 'outbox');
     const stop = stopTaskFor(context, task, this.options.workspace);
     writeAtomicIdempotent(join(this.#outbox, `${stop.id}.json`), canonicalJson(stop));
+  }
+
+  #assertProtocolCompatible(): void {
+    const compatibility = inspectHermesProtocol(this.#busRoot, this.#now());
+    if (!compatibility.compatible) {
+      throw new Error(`Hermes protocol unavailable: ${compatibility.reason}`);
+    }
+  }
+}
+
+/**
+ * Reads the operator-owned, short-lived capability handshake without creating
+ * or mutating the bus. Legacy Hermes installations therefore remain visible
+ * but cannot receive executable Jericho assignments.
+ */
+export function inspectHermesProtocol(
+  busRoot: string,
+  now: string = new Date().toISOString(),
+): HermesProtocolCompatibility {
+  const absoluteRoot = resolve(busRoot);
+  const manifestPath = join(absoluteRoot, HERMES_PROTOCOL_MANIFEST);
+  if (!existsSync(manifestPath)) {
+    return { compatible: false, reason: 'missing_manifest' };
+  }
+  try {
+    const rootStat = lstatSync(absoluteRoot);
+    if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+      return { compatible: false, reason: 'invalid_manifest' };
+    }
+    const value: unknown = JSON.parse(readRegularFile(manifestPath, 64 * 1024));
+    if (!isRecord(value)) return { compatible: false, reason: 'invalid_manifest' };
+    const protocolVersion = value.protocol_version;
+    const operatorId = value.operator_id;
+    const operatorVersion = value.operator_version;
+    const generatedAt = value.generated_at;
+    const expiresAt = value.expires_at;
+    const capabilities = value.capabilities;
+    const base = {
+      ...(typeof protocolVersion === 'number' ? { protocolVersion } : {}),
+      ...(typeof operatorId === 'string' ? { operatorId } : {}),
+      ...(typeof operatorVersion === 'string' ? { operatorVersion } : {}),
+      ...(isStringArray(capabilities) ? { capabilities: [...capabilities].sort() } : {}),
+      ...(typeof generatedAt === 'string' ? { generatedAt } : {}),
+      ...(typeof expiresAt === 'string' ? { expiresAt } : {}),
+    };
+    if (
+      !Number.isInteger(protocolVersion) ||
+      typeof operatorId !== 'string' || !operatorId.trim() ||
+      typeof operatorVersion !== 'string' || !operatorVersion.trim() ||
+      !isIsoTimestamp(generatedAt) ||
+      !isIsoTimestamp(expiresAt) ||
+      !isStringArray(capabilities) ||
+      !isIsoTimestamp(now)
+    ) {
+      return { compatible: false, reason: 'invalid_manifest', ...base };
+    }
+    if (protocolVersion !== TASK_PROTOCOL_VERSION) {
+      return { compatible: false, reason: 'unsupported_protocol', ...base };
+    }
+    if (REQUIRED_PROTOCOL_CAPABILITIES.some((item) => !capabilities.includes(item))) {
+      return { compatible: false, reason: 'missing_capability', ...base };
+    }
+    const nowEpoch = Date.parse(now);
+    if (Date.parse(generatedAt) > nowEpoch || Date.parse(expiresAt) <= nowEpoch) {
+      return { compatible: false, reason: 'stale_manifest', ...base };
+    }
+    return { compatible: true, reason: 'compatible', ...base };
+  } catch {
+    return { compatible: false, reason: 'invalid_manifest' };
   }
 }
 
@@ -406,6 +515,52 @@ function appendResultEvent(
       source: 'hermes-filesystem',
       sourceType: SourceType.Agent,
       sourceEventId: result.taskId,
+      observedAt: result.completedAt,
+    }],
+  };
+  return store.appendEvent(event).event;
+}
+
+function appendLegacyCheckpoint(
+  store: JerichoStore,
+  context: AssignmentExecutionContext,
+  result: HermesResult,
+): EventEnvelope {
+  const sourceEventId = [
+    result.taskId,
+    result.status,
+    result.completedAt,
+    createHash('sha256').update(result.summary).digest('hex').slice(0, 16),
+  ].join(':');
+  const event: EventEnvelope = {
+    id: `hermes-checkpoint-${createHash('sha256').update(sourceEventId).digest('hex').slice(0, 32)}`,
+    source: 'hermes-filesystem',
+    sourceType: SourceType.Agent,
+    sourceEventId,
+    type: 'hermes.legacy_result_checkpoint',
+    occurredAt: result.completedAt,
+    ingestedAt: result.completedAt,
+    payload: {
+      assignmentId: context.assignment.id,
+      missionId: context.mission.id,
+      missionTaskId: context.task.id,
+      taskId: result.taskId,
+      status: result.status,
+      summary: result.summary,
+      error: result.error,
+      verified: false,
+      // Never retain an unverified body as a completed artifact. Its declared
+      // type is enough for review without projecting private result data.
+      artifact: result.artifact ? { type: result.artifact.type } : null,
+      verification: null,
+    },
+    status: LifecycleStatus.PendingApproval,
+    route: RouteType.HumanApproval,
+    risk: context.assignment.risk,
+    provenance: [{
+      source: 'hermes-filesystem',
+      sourceType: SourceType.Agent,
+      sourceEventId,
       observedAt: result.completedAt,
     }],
   };

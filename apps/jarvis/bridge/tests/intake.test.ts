@@ -62,8 +62,32 @@ describe('production intake pipeline', () => {
     );
 
     expect(() => new IntakeProcessor({ store })).toThrow(
-      /builtin\.dev\.v1.*incompatible/i,
+      /builtin\.dev\.v2.*incompatible/i,
     );
+  });
+
+  it('registers the new scoped capability version without rewriting a legacy v1 record', () => {
+    const store = openStore();
+    const legacy = capability('builtin.dev.v1', AgentLane.Dev, 'Legacy DEV v1');
+    legacy.agentId = 'DEV';
+    legacy.supportedActions = ['lane.dev.plan'];
+    store.registerAgentCapability(legacy);
+    const configured: MissionPermissions = {
+      ...safePermissions(),
+      allowedRepositories: [{
+        repository: 'jericho', writablePaths: ['apps/jarvis'],
+        mutationClasses: [MutationClass.Reversible],
+      }],
+      allowedMutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+    };
+
+    new IntakeProcessor({ store, missionPermissions: configured });
+
+    expect(store.getAgentCapability('builtin.dev.v1')?.name).toBe('Legacy DEV v1');
+    expect(store.getAgentCapability(BUILT_IN_CAPABILITY_IDS[AgentLane.Dev])).toMatchObject({
+      id: expect.stringMatching(/\.v2$/),
+      metadata: { builtInVersion: 2 },
+    });
   });
 
   it('turns one direct Carlos project capture into one deterministic high-confidence intent and bounded plan', () => {
@@ -116,7 +140,9 @@ describe('production intake pipeline', () => {
 
   it('uses explicit configured grants while keeping the unconfigured default read-only and empty', () => {
     const store = openStore();
-    const event = store.commitLocalCapture(localProject('configured-project')).event;
+    const event = store.commitLocalCapture(localProject('configured-project', {
+      jerichoScope: { repository: 'jericho' },
+    })).event;
     const permissions: MissionPermissions = {
       ...safePermissions(),
       allowedTools: ['git'],
@@ -135,6 +161,62 @@ describe('production intake pipeline', () => {
       requiredTools: ['git'],
       writableScope: permissions,
     });
+    expect(result.mission?.taskGraph[0].writableScope.allowedRepositories).toEqual([{
+      repository: 'jericho',
+      writablePaths: [],
+      mutationClasses: [],
+    }]);
+  });
+
+  it('never grants a configured repository without an explicit direct-capture selector', () => {
+    const store = openStore();
+    const event = store.commitLocalCapture(localProject('unselected-project')).event;
+    const configured: MissionPermissions = {
+      ...safePermissions(),
+      allowedTools: ['git'],
+      allowedRepositories: [{
+        repository: 'jericho',
+        writablePaths: ['apps/jarvis'],
+        mutationClasses: [MutationClass.Reversible],
+      }],
+      allowedMutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+    };
+
+    const result = new IntakeProcessor({ store, missionPermissions: configured }).processEvent(event.id);
+
+    expect(result).toMatchObject({ status: 'planned' });
+    expect(result.mission?.permissions.allowedRepositories).toEqual([]);
+    expect(result.mission?.permissions.allowedMutationClasses).toEqual([MutationClass.ReadOnly]);
+    expect(result.mission?.taskGraph.every(
+      (task) => task.writableScope.allowedRepositories.length === 0,
+    )).toBe(true);
+  });
+
+  it('routes an unknown repository selector to Review instead of widening scope or planning', () => {
+    const store = openStore();
+    const event = store.commitLocalCapture(localProject('unknown-repository', {
+      jerichoScope: { repository: 'not-configured' },
+    })).event;
+    const configured: MissionPermissions = {
+      ...safePermissions(),
+      allowedRepositories: [{
+        repository: 'jericho', writablePaths: ['apps/jarvis'],
+        mutationClasses: [MutationClass.Reversible],
+      }],
+      allowedMutationClasses: [MutationClass.ReadOnly, MutationClass.Reversible],
+    };
+
+    const result = new IntakeProcessor({ store, missionPermissions: configured }).processEvent(event.id);
+
+    expect(result).toMatchObject({
+      status: 'review',
+      intent: {
+        route: IntentRoute.Review,
+        routeRuleId: 'safety:low-confidence',
+        ambiguityReasons: [expect.stringMatching(/repository.*not-configured.*not configured/i)],
+      },
+    });
+    expect(store.listMissions()).toEqual([]);
   });
 
   it('persists low-confidence and contradictory captures as Review and never plans them', () => {
@@ -315,7 +397,7 @@ function capability(id: string, lane: AgentLane, name: string): AgentCapability 
     costClass: CostClass.Local,
     mayCreateAssignments: false,
     maximumRisk: RiskLevel.Critical,
-    metadata: { builtInVersion: 1 },
+    metadata: { builtInVersion: id.endsWith('.v1') ? 1 : 2 },
     provenance: [{ source: 'test', sourceType: SourceType.System, observedAt: T0 }],
     createdAt: T0,
     updatedAt: T0,

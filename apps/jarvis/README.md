@@ -53,6 +53,17 @@ Linear uses its read-only GraphQL API; Git/GitHub/Conductor/Obsidian read their
 configured truth surfaces. Named repository/root settings use JSON arrays such
 as `[{"id":"jericho","path":"/path/to/jericho"}]`.
 
+Hermes execution is fail-closed. `JERICHO_HERMES_BUS_ROOT`,
+`JERICHO_HERMES_REPO`, and `JERICHO_HERMES_BRANCH` select a workspace, but no
+assignment is emitted unless the operator publishes a fresh v1 capability
+handshake. The installed historical operator is intentionally reported as
+unavailable. See [the Hermes v1 contract](../../docs/HERMES-EXECUTION-PROTOCOL-V1.md).
+
+Repository authority is separate and explicit. Configure
+`JERICHO_MISSION_REPOSITORY_GRANTS` as a JSON array of repository grants, then
+select one in a direct capture with `jerichoScope.repository`. Configuration
+without a capture selector grants nothing; an unknown selector enters Review.
+
 Open <http://localhost:5173>, click the start overlay, and allow camera/mic.
 Press Escape at any time to pause gesture tracking and restore the mouse cursor.
 
@@ -99,8 +110,10 @@ live dogfooding because CI has no webcam.
 | Durable cursor/lease/retry-safe connector supervision | Implemented |
 | Tool calls | Truth-backed; drafts remain approval-only |
 | Bounded mission orchestration + verified receipts | Implemented |
-| Real Hermes worker executor integration | Follow-up adapter |
+| Hermes worker executor | Jericho v1 adapter implemented; installed legacy operator fails closed pending Hermes-side upgrade |
 
 `JERICHO_API_TOKEN` is required for the local service. `GEMINI_API_KEY` is only
-required for voice. Paperclip is a reconciled worker queue, not a truth source;
-its real-fleet executor remains a follow-up adapter.
+required for voice. Paperclip is a reconciled worker queue, not a truth source.
+The current Hermes operator cannot produce a successful Jericho assignment
+until it implements the documented v1 artifact, verification, stop, and
+handshake contract.

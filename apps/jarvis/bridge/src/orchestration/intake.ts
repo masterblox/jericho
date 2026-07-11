@@ -23,6 +23,7 @@ import {
   type MissionPermissions,
   type MissionPlan,
   type MissionTaskDefinition,
+  type RepositoryGrant,
 } from '@jericho/shared';
 
 import type { JerichoStore } from '../core/store.js';
@@ -33,15 +34,15 @@ import { routeIntent, type RoutingDecision } from './router.js';
 import { permissionScopeViolations } from './scope.js';
 
 export const BUILT_IN_CAPABILITY_IDS: Record<AgentLane, string> = {
-  [AgentLane.Dev]: 'builtin.dev.v1',
-  [AgentLane.Angela]: 'builtin.angela.v1',
-  [AgentLane.Donald]: 'builtin.donald.v1',
-  [AgentLane.Iris]: 'builtin.iris.v1',
-  [AgentLane.Researcher]: 'builtin.researcher.v1',
-  [AgentLane.Analyst]: 'builtin.analyst.v1',
+  [AgentLane.Dev]: 'builtin.dev.v2',
+  [AgentLane.Angela]: 'builtin.angela.v2',
+  [AgentLane.Donald]: 'builtin.donald.v2',
+  [AgentLane.Iris]: 'builtin.iris.v2',
+  [AgentLane.Researcher]: 'builtin.researcher.v2',
+  [AgentLane.Analyst]: 'builtin.analyst.v2',
 };
 
-const BUILT_IN_REGISTRY_VERSION = 1;
+const BUILT_IN_REGISTRY_VERSION = 2;
 const BUILT_IN_CREATED_AT = '2026-01-01T00:00:00.000Z';
 const DIRECT_CAPTURE_CONFIDENCE = 0.98;
 const DEFAULT_MODEL = 'local';
@@ -59,6 +60,7 @@ export interface IntakeProcessorOptions {
   classifier?: typeof classifyEvent;
   router?: typeof routeIntent;
   missionPermissions?: MissionPermissions;
+  repositoryGrants?: RepositoryGrant[];
 }
 
 export interface IntakeProcessingResult {
@@ -89,12 +91,34 @@ export class IntakeProcessor {
   readonly #classifier: typeof classifyEvent;
   readonly #router: typeof routeIntent;
   readonly #missionPermissions: MissionPermissions;
+  readonly #baseMissionPermissions: MissionPermissions;
+  readonly #repositoryGrants: ReadonlyMap<string, RepositoryGrant>;
 
   constructor(options: IntakeProcessorOptions) {
     this.#store = options.store;
     this.#classifier = options.classifier ?? classifyEvent;
     this.#router = options.router ?? routeIntent;
-    this.#missionPermissions = structuredClone(options.missionPermissions ?? safePermissions());
+    const configuredPermissions = structuredClone(options.missionPermissions ?? safePermissions());
+    const grants = mergeRepositoryGrants(
+      configuredPermissions.allowedRepositories,
+      options.repositoryGrants ?? [],
+    );
+    this.#repositoryGrants = new Map(grants.map((grant) => [grant.repository, grant]));
+    this.#missionPermissions = {
+      ...configuredPermissions,
+      allowedRepositories: structuredClone(grants),
+      allowedMutationClasses: uniqueMutationClasses([
+        ...configuredPermissions.allowedMutationClasses,
+        ...grants.flatMap((grant) => grant.mutationClasses),
+      ]),
+    };
+    this.#baseMissionPermissions = {
+      ...structuredClone(configuredPermissions),
+      allowedRepositories: [],
+      allowedMutationClasses: configuredPermissions.allowedMutationClasses.includes(MutationClass.ReadOnly)
+        ? [MutationClass.ReadOnly]
+        : [],
+    };
     this.#seedBuiltInCapabilities();
   }
 
@@ -196,18 +220,40 @@ export class IntakeProcessor {
     const hints = isDirectCarlosCapture(event)
       ? { confidence: DIRECT_CAPTURE_CONFIDENCE }
       : {};
-    const draft = this.#classifier(event, hints);
+    let draft = this.#classifier(event, hints);
+    const repositorySelection = captureRepositorySelection(event);
+    if (
+      repositorySelection.requested &&
+      (!repositorySelection.repository || !this.#repositoryGrants.has(repositorySelection.repository))
+    ) {
+      const label = repositorySelection.repository ?? '<invalid>';
+      draft = {
+        ...draft,
+        confidence: 0,
+        ambiguityReasons: [
+          ...draft.ambiguityReasons,
+          `Requested repository ${label} is not configured for Jericho mission authority`,
+        ],
+      };
+    }
     const routing = this.#router(draft);
     const intent = intentFrom(event, intentId, draft, routing);
     return this.#store.saveIntent(intent);
   }
 
   #plan(event: EventEnvelope, intent: IntentEnvelope, missionId: string): MissionPlan {
+    const repositorySelection = captureRepositorySelection(event);
+    const selectedGrant = repositorySelection.repository
+      ? this.#repositoryGrants.get(repositorySelection.repository)
+      : undefined;
+    const permissions = selectedGrant
+      ? permissionsWithRepository(this.#baseMissionPermissions, selectedGrant)
+      : structuredClone(this.#baseMissionPermissions);
     const plan = defaultMissionPlan(
       event,
       intent,
       missionId,
-      this.#missionPermissions,
+      permissions,
     );
     return this.#store.createMissionPlan(createMissionPlan(
       plan,
@@ -364,7 +410,14 @@ function defaultMissionPlan(
   const permissions = structuredClone(missionPermissions);
   const eventEvidence = [event.id];
   const provenance = structuredClone(event.provenance);
-  const researchScope = safePermissions();
+  const researchScope: MissionPermissions = {
+    ...safePermissions(),
+    allowedRepositories: permissions.allowedRepositories.map((grant) => ({
+      repository: grant.repository,
+      writablePaths: [],
+      mutationClasses: [],
+    })),
+  };
   return {
     id: missionId,
     seriesId: deterministicId('mission-series', intent.id),
@@ -557,6 +610,56 @@ function payloadSnapshot(event: EventEnvelope): JsonObject {
     eventType: event.type,
     captured: structuredClone(event.payload),
   };
+}
+
+function captureRepositorySelection(event: EventEnvelope): {
+  requested: boolean;
+  repository?: string;
+} {
+  if (!isDirectCarlosCapture(event) || !isRecord(event.payload)) return { requested: false };
+  const scope = event.payload.jerichoScope;
+  if (!isRecord(scope) || !Object.hasOwn(scope, 'repository')) return { requested: false };
+  if (typeof scope.repository !== 'string' || !scope.repository.trim()) {
+    return { requested: true };
+  }
+  return { requested: true, repository: scope.repository.trim() };
+}
+
+function mergeRepositoryGrants(
+  first: readonly RepositoryGrant[],
+  second: readonly RepositoryGrant[],
+): RepositoryGrant[] {
+  const grants = [...first, ...second].map((grant) => structuredClone(grant));
+  const repositories = new Set<string>();
+  for (const grant of grants) {
+    if (!grant.repository.trim() || repositories.has(grant.repository)) {
+      throw new TypeError(`Repository grant ${grant.repository || '<empty>'} is duplicated or invalid`);
+    }
+    repositories.add(grant.repository);
+  }
+  return grants;
+}
+
+function permissionsWithRepository(
+  base: MissionPermissions,
+  grant: RepositoryGrant,
+): MissionPermissions {
+  return {
+    ...structuredClone(base),
+    allowedRepositories: [structuredClone(grant)],
+    allowedMutationClasses: uniqueMutationClasses([
+      ...base.allowedMutationClasses,
+      ...grant.mutationClasses,
+    ]),
+  };
+}
+
+function uniqueMutationClasses(values: readonly MutationClass[]): MutationClass[] {
+  return [...new Set(values)];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function safePermissions(): MissionPermissions {
