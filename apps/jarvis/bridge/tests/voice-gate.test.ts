@@ -30,6 +30,19 @@ afterEach(async () => {
 });
 
 describe('voice socket privacy gate', () => {
+  it('rejects a forged same-origin header without a bearer or browser session credential', async () => {
+    const voiceConnect = vi.fn<VoiceConnect>();
+    const runtime = await startVoiceServer(voiceConnect);
+
+    const status = await rejectedSocketStatus(
+      runtime.port,
+      `http://127.0.0.1:${runtime.port}`,
+    );
+
+    expect(status).toBe(401);
+    expect(voiceConnect).not.toHaveBeenCalled();
+  });
+
   it('drops standby audio and closes the active gate when Gemini completes a turn', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
@@ -128,6 +141,21 @@ function connectSocket(port: number): Promise<WebSocket> {
     openSockets.push(socket);
     socket.once('open', () => resolve(socket));
     socket.once('error', reject);
+  });
+}
+
+function rejectedSocketStatus(port: number, origin: string): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, { origin });
+    openSockets.push(socket);
+    socket.once('open', () => reject(new Error('unauthenticated voice socket opened')));
+    socket.once('unexpected-response', (_request, response) => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    socket.once('error', (error) => {
+      if (!String(error).includes('Unexpected server response')) reject(error);
+    });
   });
 }
 

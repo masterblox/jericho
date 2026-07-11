@@ -484,7 +484,7 @@ function attachVoice(
       `Bearer ${url.searchParams.get('token') ?? ''}`,
       options.apiToken,
     ) || authorizedSession(request.headers.cookie, browserSessionToken);
-    if (!tokenAuthorized && !trustedBrowserOrigin) {
+    if (!tokenAuthorized) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
