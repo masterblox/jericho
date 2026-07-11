@@ -18,6 +18,7 @@ import {
   type ConnectorProbe,
 } from '../contracts.js';
 import { stableConnectorEvent } from '../normalization.js';
+import { connectorSubprocessEnvironment } from './git.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -110,6 +111,7 @@ export class GhApiTransport implements GitHubTransport {
     for (const [key, value] of Object.entries(input.query)) args.push('-f', `${key}=${value}`);
     const result = await execFileAsync('gh', args, {
       encoding: 'utf8', signal: input.signal, maxBuffer: 2 * 1024 * 1024,
+      env: connectorSubprocessEnvironment('github'),
     });
     return { status: 200, data: JSON.parse(String(result.stdout)) as JsonValue };
   }

@@ -129,12 +129,50 @@ async function defaultGitRunner(
   args: string[],
   options?: { cwd?: string },
 ): Promise<{ stdout: string; stderr: string }> {
-  const result = await execFileAsync(file, args, {
+  const result = await execFileAsync(file, hardenedGitArguments(args), {
     ...(options?.cwd ? { cwd: options.cwd } : {}),
+    env: connectorSubprocessEnvironment('git'),
     encoding: 'utf8',
     maxBuffer: 2 * 1024 * 1024,
   });
   return { stdout: String(result.stdout), stderr: String(result.stderr) };
+}
+
+export function hardenedGitArguments(args: readonly string[]): string[] {
+  return [
+    '--no-optional-locks',
+    '-c', 'core.fsmonitor=false',
+    '-c', 'core.hooksPath=/dev/null',
+    '-c', 'credential.helper=',
+    ...args,
+  ];
+}
+
+export function connectorSubprocessEnvironment(
+  purpose: 'git' | 'github',
+  environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const allowed: NodeJS.ProcessEnv = {
+    PATH: '/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+    LANG: 'C.UTF-8',
+    LC_ALL: 'C.UTF-8',
+  };
+  if (environment.TMPDIR) allowed.TMPDIR = environment.TMPDIR;
+  if (purpose === 'git') {
+    allowed.GIT_CONFIG_NOSYSTEM = '1';
+    allowed.GIT_TERMINAL_PROMPT = '0';
+    allowed.GIT_OPTIONAL_LOCKS = '0';
+    return allowed;
+  }
+  // GitHub CLI may use its own explicit token or config directory. No other
+  // Jericho credential is inherited by the subprocess.
+  if (environment.GH_TOKEN) allowed.GH_TOKEN = environment.GH_TOKEN;
+  else if (environment.GITHUB_TOKEN) allowed.GITHUB_TOKEN = environment.GITHUB_TOKEN;
+  if (environment.GH_CONFIG_DIR) allowed.GH_CONFIG_DIR = environment.GH_CONFIG_DIR;
+  else if (environment.HOME) allowed.HOME = environment.HOME;
+  allowed.GH_PAGER = 'cat';
+  allowed.PAGER = 'cat';
+  return allowed;
 }
 
 function parseBranchStatus(output: string) {

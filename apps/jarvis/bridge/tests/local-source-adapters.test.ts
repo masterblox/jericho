@@ -21,7 +21,9 @@ import {
 
 import { ConnectorUnauthorizedError } from '../src/connectors/contracts.js';
 import {
+  connectorSubprocessEnvironment,
   GitConnector,
+  hardenedGitArguments,
   type GitCommandRunner,
 } from '../src/connectors/adapters/git.js';
 import {
@@ -41,6 +43,31 @@ afterEach(() => {
 });
 
 describe('GitConnector', () => {
+  it('drops unrelated Jericho secrets and disables repository-controlled execution hooks', () => {
+    const environment = {
+      HOME: '/Users/carlos', GH_TOKEN: 'github-only',
+      GEMINI_API_KEY: 'gemini-secret', JERICHO_MASTER_KEY: 'master-secret',
+      JERICHO_TELEGRAM_GATEWAY_TOKEN: 'telegram-secret',
+      LINEAR_API_KEY: 'linear-secret', NODE_OPTIONS: '--require=malicious',
+    };
+
+    expect(connectorSubprocessEnvironment('git', environment)).toEqual(expect.objectContaining({
+      GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0',
+    }));
+    expect(connectorSubprocessEnvironment('git', environment)).not.toHaveProperty('HOME');
+    expect(connectorSubprocessEnvironment('github', environment)).toMatchObject({
+      HOME: '/Users/carlos', GH_TOKEN: 'github-only', GH_PAGER: 'cat',
+    });
+    const serialized = JSON.stringify({
+      git: connectorSubprocessEnvironment('git', environment),
+      github: connectorSubprocessEnvironment('github', environment),
+    });
+    expect(serialized).not.toMatch(/gemini-secret|master-secret|telegram-secret|linear-secret|NODE_OPTIONS/u);
+    expect(hardenedGitArguments(['-C', '/repo', 'status'])).toEqual(expect.arrayContaining([
+      'core.fsmonitor=false', 'core.hooksPath=/dev/null', 'credential.helper=',
+    ]));
+  });
+
   it('reads a temporary repository with execFile argument arrays and bounded commits', async () => {
     const repository = makeGitRepository();
     const calls: string[][] = [];
