@@ -14,6 +14,7 @@
 | Orchestration | `bridge/src/orchestration/` | Classify, route, plan, policy-check, lease, execute, verify, and retain bounded missions. |
 | Contracts | `shared/src/index.ts` | Shared envelopes and command-center projections. |
 | Command center | `frontend/src/main.tsx` | React application bootstrap and local hardware engagement boundary. |
+| Sphere interface | `frontend/src/sphere-shell.tsx` | Authenticated Core projection into the HADAL visual surface and exact-plan gesture actions. |
 | Gesture runtime | `frontend/src/jarvis-runtime.ts` | Disposable camera/MediaPipe integration and semantic gesture dispatch. |
 | Frontend gesture handoff | `frontend/FRONTEND_HANDOFF.md` | Contracts the visual pass must preserve and the final wiring checklist. |
 | Local gesture assets | `frontend/public/mediapipe/` | Same-origin model, SIMD/non-SIMD WASM, and third-party notices. |
@@ -28,7 +29,7 @@
 - `bridge/src/command-center.ts` projects persisted truth; it must never fabricate activity for visual effect.
 - `frontend/src/command-center-app.tsx` presents Core projections and records exact-version decisions; it is not a second database.
 - `frontend/src/*controller*.ts`, `tracking.ts`, `calibration.ts`, and `hit-testing.ts` are deterministic gesture primitives.
-- `frontend/public/` contains production-local visual assets. The earlier `interface/` app is not bundled.
+- `frontend/src/sphere/` is the production-owned port of the approved interface-v2 visual source. The root `interface/` app remains a design/Playwright source and is not served by Core.
 
 ## Run and verify
 

@@ -519,6 +519,15 @@ export class JarvisRuntime {
   private setStatus(status: string) {
     this.status = status;
     this.renderer.setSystemStatus(status);
+    const jericho = (globalThis as typeof globalThis & {
+      jericho?: { setCoreState?: (state: string) => void };
+    }).jericho;
+    const coreState = status.includes('unavailable') ? 'alert'
+      : status.includes('listening') ? 'listening'
+        : status.includes('greeting') ? 'speaking'
+          : status.includes('agent action') ? 'thinking'
+            : 'idle';
+    jericho?.setCoreState?.(coreState);
   }
 
   private releaseVideoAndStream() {
