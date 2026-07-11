@@ -48,6 +48,31 @@ afterEach(() => {
 });
 
 describe('MissionRunner capability and artifact enforcement', () => {
+  it('resolves an executor descriptor from the leased task context', async () => {
+    const store = setup();
+    store.enqueueAssignment(assignment());
+    const describedTasks: string[] = [];
+    const dynamicExecutor = {
+      descriptorFor: (context) => {
+        describedTasks.push(context.task.id);
+        return {
+          model: context.task.model,
+          maxTokens: context.task.maxTokens,
+          tools: [...context.task.requiredTools],
+          writableScope: structuredClone(context.task.writableScope),
+          mayCreateAssignments: false,
+        };
+      },
+      execute: vi.fn<AssignmentExecutor['execute']>().mockResolvedValue(result()),
+    } satisfies AssignmentExecutor;
+    const runner = new MissionRunner(store, dynamicExecutor, verifier(), runnerOptions());
+
+    const outcome = await runner.runNext();
+
+    expect(outcome.kind).toBe('completed');
+    expect(describedTasks).toEqual(['task-1']);
+  });
+
   it('uses an independent verifier, records integer costs, and completes valid work', async () => {
     const requirement = reportRequirement({
       schema: {

@@ -73,10 +73,17 @@ export interface AssignmentExecutionContext {
   signal: AbortSignal;
 }
 
-export interface AssignmentExecutor {
+export interface StaticAssignmentExecutor {
   descriptor: ExecutorDescriptor;
   execute(context: AssignmentExecutionContext): Promise<ExecutorResult>;
 }
+
+export interface DynamicAssignmentExecutor {
+  descriptorFor(context: AssignmentExecutionContext): ExecutorDescriptor;
+  execute(context: AssignmentExecutionContext): Promise<ExecutorResult>;
+}
+
+export type AssignmentExecutor = StaticAssignmentExecutor | DynamicAssignmentExecutor;
 
 export interface ArtifactVerificationResult {
   verified: boolean;
@@ -235,7 +242,10 @@ export class MissionRunner {
         }
       }
 
-      assertExecutorDescriptor(definition, this.executor.descriptor);
+      assertExecutorDescriptor(
+        definition,
+        descriptorFor(this.executor, { assignment, mission, task, signal }),
+      );
 
       if (assignment.externalAction) {
         const reserved = this.store.reserveReceipt(pendingReceiptFor(assignment, now));
@@ -691,6 +701,15 @@ export class MissionRunner {
       contradictoryEvidenceEventIds: [],
     };
   }
+}
+
+function descriptorFor(
+  executor: AssignmentExecutor,
+  context: AssignmentExecutionContext,
+): ExecutorDescriptor {
+  return 'descriptorFor' in executor
+    ? executor.descriptorFor(context)
+    : executor.descriptor;
 }
 
 function assertExecutorDescriptor(
