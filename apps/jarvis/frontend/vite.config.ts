@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
     : {};
   return {
     plugins: [react()],
-    publicDir: fileURLToPath(new URL('../../../interface/public', import.meta.url)),
+    publicDir: fileURLToPath(new URL('./public', import.meta.url)),
     server: {
       port: 5173,
       proxy: {

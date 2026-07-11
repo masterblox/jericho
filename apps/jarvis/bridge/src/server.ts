@@ -1169,6 +1169,8 @@ function contentType(path: string): string {
     case '.css': return 'text/css; charset=utf-8';
     case '.json': return 'application/json; charset=utf-8';
     case '.svg': return 'image/svg+xml';
+    case '.wasm': return 'application/wasm';
+    case '.task': return 'application/octet-stream';
     default: return 'application/octet-stream';
   }
 }

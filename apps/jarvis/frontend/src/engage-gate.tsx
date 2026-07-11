@@ -54,7 +54,7 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
       <div className="jericho-engage-panel">
         <span className="jericho-eyebrow">LOCAL HARDWARE BOUNDARY</span>
         <h2 id="jericho-engage-title">Enable voice + gestures</h2>
-        <p>Camera and microphone remain local to this runtime. The command center is fully usable by keyboard if permission is unavailable.</p>
+        <p>Camera frames and standby clap analysis stay on this laptop. After wake, active-turn microphone audio is sent only to the configured Gemini Live session. The command center remains fully usable by keyboard.</p>
         {error && <p className="jericho-engage-error" role="alert">{error}</p>}
         {state === 'failed' ? (
           <button className="jericho-engage-button" type="button" onClick={() => void continueWithKeyboard()}>
