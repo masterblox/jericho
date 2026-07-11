@@ -36,7 +36,12 @@ import {
   type IntakeRecoveryResult,
   type MissionQueueResult,
 } from './orchestration/intake.js';
-import { createConnectorRuntime } from './runtime.js';
+import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
+import {
+  ProductionRuntimeLifecycle,
+  createConnectorRuntime,
+  createMissionExecutionRuntime,
+} from './runtime.js';
 import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
 
 export interface SyncPort {
@@ -1174,6 +1179,17 @@ async function main(): Promise<void> {
   const intake = new IntakeProcessor({ store });
   intake.recover();
   const connectors = createConnectorRuntime(config, store, { intake });
+  const knowledge = new KnowledgeRuntime({
+    store,
+    reflectionIntervalMs: config.reflectionIntervalMs,
+    obsidianVaultPath: config.obsidianVaultPath,
+  });
+  const execution = createMissionExecutionRuntime(config, store);
+  const runtime = new ProductionRuntimeLifecycle({
+    knowledge,
+    connectors,
+    ...(execution ? { execution } : {}),
+  });
   const server = createJerichoServer({
     store,
     apiToken: config.apiToken,
@@ -1189,19 +1205,26 @@ async function main(): Promise<void> {
     connectorDescriptors: connectors.descriptors,
     obsidianSearch: connectors.obsidianSearch,
     intake,
+    ...(knowledge.retention ? { retention: knowledge.retention } : {}),
+    reflection: knowledge.reflection,
   });
   const address = await server.listen(config.port, config.host);
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    await connectors.stop();
     await server.close();
+    await runtime.stop();
     store.close();
   };
   process.once('SIGINT', () => { void shutdown(); });
   process.once('SIGTERM', () => { void shutdown(); });
-  await connectors.start();
+  try {
+    await runtime.start();
+  } catch (error) {
+    await shutdown();
+    throw error;
+  }
   if (shuttingDown) return;
   console.log(`[jericho] listening on http://${config.host}:${address.port}`);
 }

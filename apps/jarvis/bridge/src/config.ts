@@ -19,6 +19,8 @@ export interface JerichoConfig {
   allowedOrigins: string[];
   telegramGatewayUrl?: string;
   telegramGatewayToken?: string;
+  whatsappGatewayUrl?: string;
+  whatsappGatewayToken?: string;
   linearApiKey?: string;
   gitRepositories: NamedPath[];
   githubRepositories: string[];
@@ -27,6 +29,12 @@ export interface JerichoConfig {
   connectorLeaseMs: number;
   connectorMaxPages: number;
   connectorPollIntervalMs: number;
+  hermesBusRoot?: string;
+  hermesRepo?: string;
+  hermesBranch?: string;
+  hermesPollIntervalMs: number;
+  hermesMaxWaitMs: number;
+  reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
 }
 
@@ -111,6 +119,21 @@ export function loadConfig(
   const port = parsePort(
     cliPort ?? environment.CONDUCTOR_PORT ?? environment.PORT ?? '8787',
   );
+  const hermesBusRoot = optionalString(environment.JERICHO_HERMES_BUS_ROOT);
+  const hermesRepo = optionalString(environment.JERICHO_HERMES_REPO);
+  const hermesBranch = optionalString(environment.JERICHO_HERMES_BRANCH);
+  assertCompleteHermesWorkspace({ hermesBusRoot, hermesRepo, hermesBranch });
+  const hermesPollIntervalMs = parsePositiveInteger(
+    environment.JERICHO_HERMES_POLL_INTERVAL_MS ?? '250',
+    'JERICHO_HERMES_POLL_INTERVAL_MS',
+  );
+  const hermesMaxWaitMs = parsePositiveInteger(
+    environment.JERICHO_HERMES_MAX_WAIT_MS ?? '900000',
+    'JERICHO_HERMES_MAX_WAIT_MS',
+  );
+  if (hermesMaxWaitMs < hermesPollIntervalMs) {
+    throw new Error('JERICHO_HERMES_MAX_WAIT_MS must be at least JERICHO_HERMES_POLL_INTERVAL_MS');
+  }
   return {
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
@@ -122,6 +145,8 @@ export function loadConfig(
     allowedOrigins: parseCsv(environment.JERICHO_ALLOWED_ORIGINS),
     telegramGatewayUrl: optionalString(environment.JERICHO_TELEGRAM_GATEWAY_URL),
     telegramGatewayToken: optionalString(environment.JERICHO_TELEGRAM_GATEWAY_TOKEN),
+    whatsappGatewayUrl: optionalString(environment.JERICHO_WHATSAPP_GATEWAY_URL),
+    whatsappGatewayToken: optionalString(environment.JERICHO_WHATSAPP_GATEWAY_TOKEN),
     linearApiKey: optionalString(environment.LINEAR_API_KEY),
     gitRepositories: parseNamedPaths(
       environment.JERICHO_GIT_REPOSITORIES,
@@ -145,11 +170,34 @@ export function loadConfig(
       environment.JERICHO_CONNECTOR_POLL_INTERVAL_MS ?? '30000',
       'JERICHO_CONNECTOR_POLL_INTERVAL_MS',
     ),
+    ...(hermesBusRoot ? { hermesBusRoot } : {}),
+    ...(hermesRepo ? { hermesRepo } : {}),
+    ...(hermesBranch ? { hermesBranch } : {}),
+    hermesPollIntervalMs,
+    hermesMaxWaitMs,
+    reflectionIntervalMs: parsePositiveInteger(
+      environment.JERICHO_REFLECTION_INTERVAL_MS ?? '21600000',
+      'JERICHO_REFLECTION_INTERVAL_MS',
+    ),
     voiceActiveTurnMs: parsePositiveInteger(
       environment.JERICHO_VOICE_ACTIVE_TURN_MS ?? '30000',
       'JERICHO_VOICE_ACTIVE_TURN_MS',
     ),
   };
+}
+
+function assertCompleteHermesWorkspace(input: {
+  hermesBusRoot?: string;
+  hermesRepo?: string;
+  hermesBranch?: string;
+}): void {
+  const configured = [input.hermesBusRoot, input.hermesRepo, input.hermesBranch]
+    .filter((value) => value !== undefined).length;
+  if (configured !== 0 && configured !== 3) {
+    throw new Error(
+      'JERICHO_HERMES_BUS_ROOT, JERICHO_HERMES_REPO, and JERICHO_HERMES_BRANCH must be configured together',
+    );
+  }
 }
 
 function validateApiToken(value: string, source: string): string {

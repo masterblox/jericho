@@ -23,12 +23,22 @@ import {
   type TelegramGatewayTransport,
   type TelegramGatewayUpdate,
 } from './connectors/adapters/telegram-gateway.js';
+import {
+  WhatsAppGatewayAdapter,
+  type WhatsAppGatewayTransport,
+  type WhatsAppGatewayUpdate,
+} from './connectors/adapters/whatsapp-gateway.js';
 import type { CaptureConnector, ConnectorDescriptor } from './connectors/contracts.js';
 import { CaptureConnectorRegistry } from './connectors/registry.js';
 import {
   ConnectorSupervisor,
   type ConnectorIntakePort,
 } from './connectors/supervisor.js';
+import {
+  HermesFilesystemExecutor,
+  HermesResultVerifier,
+} from './orchestration/hermes-filesystem-executor.js';
+import { MissionRunner, type RunnerOutcome } from './orchestration/runner.js';
 
 export interface ConnectorRuntime {
   registry: CaptureConnectorRegistry;
@@ -56,6 +66,11 @@ export function createConnectorRuntime(
       gatewayUrl: config.telegramGatewayUrl,
       gatewayToken: config.telegramGatewayToken,
       transport: new HttpTelegramGatewayTransport(fetchImplementation),
+    }),
+    new WhatsAppGatewayAdapter({
+      gatewayUrl: config.whatsappGatewayUrl,
+      gatewayToken: config.whatsappGatewayToken,
+      transport: new HttpWhatsAppGatewayTransport(fetchImplementation),
     }),
     new LinearAdapter({
       apiKey: config.linearApiKey,
@@ -252,6 +267,215 @@ export class HttpTelegramGatewayTransport implements TelegramGatewayTransport {
       ...(typeof body.chatId === 'string' ? { chatId: body.chatId } : {}),
       ...(typeof body.messageId === 'string' ? { messageId: body.messageId } : {}),
     };
+  }
+}
+
+export class HttpWhatsAppGatewayTransport implements WhatsAppGatewayTransport {
+  constructor(private readonly fetchImplementation: typeof globalThis.fetch = globalThis.fetch) {}
+
+  async probe(input: Parameters<WhatsAppGatewayTransport['probe']>[0]) {
+    const response = await this.fetchImplementation(
+      gatewayUrl(input.gatewayUrl, '/v1/jericho/whatsapp/health'),
+      {
+        method: 'GET',
+        headers: { authorization: `Bearer ${input.gatewayToken}`, accept: 'application/json' },
+        signal: input.signal,
+      },
+    );
+    return { status: response.status };
+  }
+
+  async fetchUpdates(input: Parameters<WhatsAppGatewayTransport['fetchUpdates']>[0]) {
+    const url = gatewayUrl(input.gatewayUrl, '/v1/jericho/whatsapp/updates');
+    url.searchParams.set('partition', input.partition);
+    url.searchParams.set('limit', String(input.limit));
+    if (input.epoch !== undefined) url.searchParams.set('epoch', String(input.epoch));
+    if (input.sequence !== undefined) url.searchParams.set('sequence', String(input.sequence));
+    if (input.pageToken) url.searchParams.set('pageToken', input.pageToken);
+    const response = await this.fetchImplementation(url, {
+      method: 'GET',
+      headers: { authorization: `Bearer ${input.gatewayToken}`, accept: 'application/json' },
+      signal: input.signal,
+    });
+    if (!response.ok) return { status: response.status, updates: [], hasMore: false };
+    const body = await response.json() as Record<string, unknown>;
+    return {
+      status: response.status,
+      updates: Array.isArray(body.updates) ? body.updates as WhatsAppGatewayUpdate[] : [],
+      ...(typeof body.nextPageToken === 'string' ? { nextPageToken: body.nextPageToken } : {}),
+      hasMore: body.hasMore === true,
+    };
+  }
+
+  async sendMessage(input: Parameters<WhatsAppGatewayTransport['sendMessage']>[0]) {
+    const response = await this.fetchImplementation(
+      gatewayUrl(input.gatewayUrl, '/v1/jericho/whatsapp/messages'),
+      {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${input.gatewayToken}`,
+          'content-type': 'application/json',
+          accept: 'application/json',
+        },
+        body: JSON.stringify({
+          recipient: input.recipient,
+          text: input.text,
+          idempotencyKey: input.idempotencyKey,
+        }),
+        signal: input.signal,
+      },
+    );
+    if (!response.ok) return { status: response.status };
+    const body = await response.json() as Record<string, unknown>;
+    return {
+      status: response.status,
+      ...(typeof body.chatId === 'string' ? { chatId: body.chatId } : {}),
+      ...(typeof body.messageId === 'string' ? { messageId: body.messageId } : {}),
+    };
+  }
+}
+
+export interface MissionExecutionPort {
+  runNext(signal: AbortSignal): Promise<RunnerOutcome>;
+}
+
+export interface MissionExecutionSchedulerOptions {
+  pollIntervalMs: number;
+}
+
+/** Runs at most one durable assignment at a time in this process. */
+export class MissionExecutionScheduler {
+  #running = false;
+  #controller?: AbortController;
+  #timer?: ReturnType<typeof setTimeout>;
+  #inFlight?: Promise<void>;
+
+  constructor(
+    private readonly runner: MissionExecutionPort,
+    private readonly options: MissionExecutionSchedulerOptions,
+  ) {
+    if (!Number.isInteger(options.pollIntervalMs) || options.pollIntervalMs < 1) {
+      throw new TypeError('Mission execution polling interval is invalid');
+    }
+  }
+
+  async start(): Promise<void> {
+    if (this.#running) return;
+    this.#running = true;
+    this.#controller = new AbortController();
+    this.#run();
+  }
+
+  async stop(): Promise<void> {
+    if (!this.#running && !this.#inFlight) return;
+    this.#running = false;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#controller?.abort();
+    await this.#inFlight;
+    this.#controller = undefined;
+  }
+
+  #run(): void {
+    if (!this.#running || !this.#controller || this.#inFlight) return;
+    const signal = this.#controller.signal;
+    const execution = (async () => {
+      try {
+        await this.runner.runNext(signal);
+      } catch {
+        // The runner persists terminal/retry state; the scheduler must stay alive.
+      }
+    })();
+    this.#inFlight = execution;
+    void execution.finally(() => {
+      if (this.#inFlight === execution) this.#inFlight = undefined;
+      if (!this.#running || signal.aborted) return;
+      this.#timer = setTimeout(() => {
+        this.#timer = undefined;
+        this.#run();
+      }, this.options.pollIntervalMs);
+    });
+  }
+}
+
+export interface MissionExecutionRuntime {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export function createMissionExecutionRuntime(
+  config: JerichoConfig,
+  store: JerichoStore,
+): MissionExecutionRuntime | undefined {
+  const workspaceFields = [config.hermesBusRoot, config.hermesRepo, config.hermesBranch];
+  if (workspaceFields.every((value) => value === undefined)) return undefined;
+  if (workspaceFields.some((value) => value === undefined)) {
+    throw new Error('Hermes execution requires an explicit bus root, repository, and branch');
+  }
+  const executor = new HermesFilesystemExecutor({
+    busRoot: config.hermesBusRoot!,
+    store,
+    workspace: { repo: config.hermesRepo!, branch: config.hermesBranch! },
+    pollIntervalMs: config.hermesPollIntervalMs,
+    maxWaitMs: config.hermesMaxWaitMs,
+  });
+  const runner = new MissionRunner(store, executor, new HermesResultVerifier(store), {
+    workerId: `jericho-hermes-${process.pid}-${randomUUID()}`,
+    leaseMs: config.connectorLeaseMs,
+    retryDelayMs: config.hermesPollIntervalMs,
+  });
+  return new MissionExecutionScheduler(runner, {
+    pollIntervalMs: config.hermesPollIntervalMs,
+  });
+}
+
+interface LifecyclePort {
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface ProductionRuntimeLifecycleOptions {
+  knowledge: LifecyclePort;
+  execution?: LifecyclePort;
+  connectors: LifecyclePort;
+}
+
+/** Starts dependencies in authority order and always drains them in reverse. */
+export class ProductionRuntimeLifecycle implements LifecyclePort {
+  #running = false;
+
+  constructor(private readonly runtimes: ProductionRuntimeLifecycleOptions) {}
+
+  async start(): Promise<void> {
+    if (this.#running) return;
+    this.#running = true;
+    try {
+      await this.runtimes.knowledge.start();
+      await this.runtimes.execution?.start();
+      await this.runtimes.connectors.start();
+    } catch (error) {
+      await this.stop();
+      throw error;
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (!this.#running) return;
+    this.#running = false;
+    let firstFailure: unknown;
+    for (const runtime of [
+      this.runtimes.connectors,
+      this.runtimes.execution,
+      this.runtimes.knowledge,
+    ]) {
+      if (!runtime) continue;
+      try {
+        await runtime.stop();
+      } catch (error) {
+        firstFailure ??= error;
+      }
+    }
+    if (firstFailure !== undefined) throw firstFailure;
   }
 }
 

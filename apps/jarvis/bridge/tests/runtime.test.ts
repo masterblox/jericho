@@ -10,7 +10,11 @@ import { JerichoStore } from '../src/core/store.js';
 import type { LinearSurface } from '../src/connectors/adapters/linear.js';
 import {
   ConnectorPollingScheduler,
+  HttpWhatsAppGatewayTransport,
+  MissionExecutionScheduler,
+  ProductionRuntimeLifecycle,
   LinearGraphqlTransport,
+  createMissionExecutionRuntime,
   createConnectorRuntime,
 } from '../src/runtime.js';
 
@@ -85,6 +89,7 @@ describe('connector runtime composition', () => {
       'linear',
       'obsidian',
       'telegram',
+      'whatsapp',
     ]);
     await expect(runtime.supervisor.sync('telegram', 'primary')).resolves.toMatchObject({
       status: 'unavailable',
@@ -103,6 +108,169 @@ describe('connector runtime composition', () => {
       type: 'obsidian.note.snapshot',
     }));
     expect(processEvent).toHaveBeenCalledWith(expect.stringMatching(/^obsidian[-:]/));
+  });
+});
+
+describe('production WhatsApp gateway transport', () => {
+  it('uses only the authenticated Hermes health, update, and message endpoints', async () => {
+    const requests: Array<{ url: URL; init: RequestInit }> = [];
+    const fetchImplementation = vi.fn(async (value: string | URL | Request, init: RequestInit = {}) => {
+      const url = new URL(String(value));
+      requests.push({ url, init });
+      if (url.pathname.endsWith('/health')) return new Response(null, { status: 204 });
+      if (url.pathname.endsWith('/updates')) {
+        return Response.json({
+          updates: [],
+          nextPageToken: 'opaque-next',
+          hasMore: true,
+        });
+      }
+      return Response.json({ chatId: 'wa-chat-1', messageId: 'wa-message-1' });
+    });
+    const transport = new HttpWhatsAppGatewayTransport(fetchImplementation as typeof fetch);
+    const signal = new AbortController().signal;
+
+    await expect(transport.probe({
+      gatewayUrl: 'https://hermes.internal/base', gatewayToken: 'wa-secret', signal,
+    })).resolves.toEqual({ status: 204 });
+    await expect(transport.fetchUpdates({
+      gatewayUrl: 'https://hermes.internal/base', gatewayToken: 'wa-secret',
+      partition: 'primary', epoch: 7, sequence: 42, pageToken: 'opaque-current',
+      limit: 25, signal,
+    })).resolves.toEqual({
+      status: 200, updates: [], nextPageToken: 'opaque-next', hasMore: true,
+    });
+    await expect(transport.sendMessage({
+      gatewayUrl: 'https://hermes.internal/base', gatewayToken: 'wa-secret',
+      recipient: 'wa-chat-1', text: 'Approved exact text',
+      idempotencyKey: 'approved-send-key', signal,
+    })).resolves.toEqual({
+      status: 200, chatId: 'wa-chat-1', messageId: 'wa-message-1',
+    });
+
+    expect(requests.map(({ url, init }) => ({
+      path: `${url.pathname}${url.search}`,
+      method: init.method,
+      authorization: new Headers(init.headers).get('authorization'),
+    }))).toEqual([{
+      path: '/base/v1/jericho/whatsapp/health',
+      method: 'GET',
+      authorization: 'Bearer wa-secret',
+    }, {
+      path: '/base/v1/jericho/whatsapp/updates?partition=primary&limit=25&epoch=7&sequence=42&pageToken=opaque-current',
+      method: 'GET',
+      authorization: 'Bearer wa-secret',
+    }, {
+      path: '/base/v1/jericho/whatsapp/messages',
+      method: 'POST',
+      authorization: 'Bearer wa-secret',
+    }]);
+    expect(JSON.parse(String(requests[2].init.body))).toEqual({
+      recipient: 'wa-chat-1',
+      text: 'Approved exact text',
+      idempotencyKey: 'approved-send-key',
+    });
+    expect(JSON.stringify(requests)).not.toContain('transcript');
+  });
+});
+
+describe('production mission execution lifecycle', () => {
+  it('starts immediately, never overlaps a runner, and aborts bounded work on stop', async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const runNext = vi.fn(async (signal: AbortSignal) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+        signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      return { kind: signal.aborted ? 'cancelled' as const : 'idle' as const, reasons: [] };
+    });
+    const scheduler = new MissionExecutionScheduler({ runNext }, { pollIntervalMs: 100 });
+
+    await scheduler.start();
+    await Promise.resolve();
+    expect(runNext).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(runNext).toHaveBeenCalledTimes(1);
+
+    release();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(99);
+    expect(runNext).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(runNext).toHaveBeenCalledTimes(2);
+
+    await scheduler.stop();
+    expect((runNext.mock.calls[1][0] as AbortSignal).aborted).toBe(true);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(runNext).toHaveBeenCalledTimes(2);
+  });
+
+  it('creates no executor without a complete explicit workspace and creates a bounded one with it', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: KEY });
+    resources.push(() => store.close());
+    expect(createMissionExecutionRuntime(loadConfig({ JERICHO_API_TOKEN: 'runtime-token' }, []), store))
+      .toBeUndefined();
+
+    const busRoot = mkdtempSync(join(tmpdir(), 'jericho-hermes-runtime-'));
+    resources.push(() => rmSync(busRoot, { recursive: true, force: true }));
+    const configured = loadConfig({
+      JERICHO_API_TOKEN: 'runtime-token',
+      JERICHO_HERMES_BUS_ROOT: busRoot,
+      JERICHO_HERMES_REPO: 'jericho',
+      JERICHO_HERMES_BRANCH: 'masterblox/approved',
+      JERICHO_HERMES_POLL_INTERVAL_MS: '5',
+      JERICHO_HERMES_MAX_WAIT_MS: '50',
+    }, []);
+    const runtime = createMissionExecutionRuntime(configured, store);
+
+    expect(runtime).toBeDefined();
+    await runtime?.start();
+    await runtime?.stop();
+  });
+
+  it('starts knowledge, execution, then capture and stops in reverse order', async () => {
+    const calls: string[] = [];
+    const port = (name: string) => ({
+      start: vi.fn(async () => { calls.push(`start:${name}`); }),
+      stop: vi.fn(async () => { calls.push(`stop:${name}`); }),
+    });
+    const knowledge = port('knowledge');
+    const execution = port('execution');
+    const connectors = port('connectors');
+    const lifecycle = new ProductionRuntimeLifecycle({ knowledge, execution, connectors });
+
+    await lifecycle.start();
+    await lifecycle.stop();
+
+    expect(calls).toEqual([
+      'start:knowledge', 'start:execution', 'start:connectors',
+      'stop:connectors', 'stop:execution', 'stop:knowledge',
+    ]);
+  });
+
+  it('drains every runtime even when an earlier shutdown step fails', async () => {
+    const calls: string[] = [];
+    const knowledge = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => { calls.push('stop:knowledge'); }),
+    };
+    const execution = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => { calls.push('stop:execution'); }),
+    };
+    const connectors = {
+      start: vi.fn(async () => {}),
+      stop: vi.fn(async () => {
+        calls.push('stop:connectors');
+        throw new Error('connector stop failed');
+      }),
+    };
+    const lifecycle = new ProductionRuntimeLifecycle({ knowledge, execution, connectors });
+    await lifecycle.start();
+
+    await expect(lifecycle.stop()).rejects.toThrow(/connector stop failed/);
+    expect(calls).toEqual(['stop:connectors', 'stop:execution', 'stop:knowledge']);
   });
 });
 

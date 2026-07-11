@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +39,14 @@ describe('runtime config', () => {
       PORT: '4200',
       JERICHO_TELEGRAM_GATEWAY_URL: 'https://hermes.internal',
       JERICHO_TELEGRAM_GATEWAY_TOKEN: 'gateway-token',
+      JERICHO_WHATSAPP_GATEWAY_URL: 'https://hermes.internal/whatsapp',
+      JERICHO_WHATSAPP_GATEWAY_TOKEN: 'whatsapp-gateway-token',
+      JERICHO_HERMES_BUS_ROOT: '/runtime/hermes-bus',
+      JERICHO_HERMES_REPO: 'jericho',
+      JERICHO_HERMES_BRANCH: 'masterblox/approved',
+      JERICHO_HERMES_POLL_INTERVAL_MS: '125',
+      JERICHO_HERMES_MAX_WAIT_MS: '120000',
+      JERICHO_REFLECTION_INTERVAL_MS: '3600000',
       LINEAR_API_KEY: 'linear-token',
       JERICHO_GIT_REPOSITORIES: '[{"id":"jericho","path":"/repos/jericho"}]',
       JERICHO_GITHUB_REPOSITORIES: 'masterblox/jericho, masterblox/hermes',
@@ -51,6 +60,14 @@ describe('runtime config', () => {
       geminiApiKey: undefined,
       telegramGatewayUrl: 'https://hermes.internal',
       telegramGatewayToken: 'gateway-token',
+      whatsappGatewayUrl: 'https://hermes.internal/whatsapp',
+      whatsappGatewayToken: 'whatsapp-gateway-token',
+      hermesBusRoot: '/runtime/hermes-bus',
+      hermesRepo: 'jericho',
+      hermesBranch: 'masterblox/approved',
+      hermesPollIntervalMs: 125,
+      hermesMaxWaitMs: 120_000,
+      reflectionIntervalMs: 3_600_000,
       linearApiKey: 'linear-token',
       gitRepositories: [{ id: 'jericho', path: '/repos/jericho' }],
       githubRepositories: ['masterblox/jericho', 'masterblox/hermes'],
@@ -67,6 +84,9 @@ describe('runtime config', () => {
       port: 8787,
       host: '127.0.0.1',
       voiceActiveTurnMs: 30_000,
+      hermesPollIntervalMs: 250,
+      hermesMaxWaitMs: 15 * 60_000,
+      reflectionIntervalMs: 6 * 60 * 60_000,
     });
     expect(defaults.systemInstruction).toContain('client and server voice gates');
     expect(defaults.systemInstruction).not.toMatch(
@@ -76,6 +96,92 @@ describe('runtime config', () => {
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',
     }, [])).toThrow(/JERICHO_GIT_REPOSITORIES/);
+  });
+
+  it('fails closed when only part of the Hermes execution workspace is configured', () => {
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_HERMES_BUS_ROOT: '/runtime/hermes-bus',
+      JERICHO_HERMES_REPO: 'jericho',
+    }, [])).toThrow(/JERICHO_HERMES_(?:BUS_ROOT|REPO|BRANCH).*together/i);
+
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_HERMES_BRANCH: 'masterblox/approved',
+    }, [])).toThrow(/JERICHO_HERMES_(?:BUS_ROOT|REPO|BRANCH).*together/i);
+
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_HERMES_BUS_ROOT: '/runtime/hermes-bus',
+      JERICHO_HERMES_REPO: 'jericho',
+      JERICHO_HERMES_BRANCH: 'masterblox/approved',
+      JERICHO_HERMES_POLL_INTERVAL_MS: '100',
+      JERICHO_HERMES_MAX_WAIT_MS: '99',
+    }, [])).toThrow(/JERICHO_HERMES_MAX_WAIT_MS.*POLL_INTERVAL/i);
+  });
+});
+
+describe('production Core composition', () => {
+  it('boots explicit Hermes execution and exposes the scheduled knowledge runtime', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jericho-production-main-'));
+    directories.push(root);
+    const home = join(root, 'home');
+    const vault = join(root, 'vault');
+    const busRoot = join(root, 'hermes-bus');
+    mkdirSync(home, { recursive: true });
+    mkdirSync(vault, { recursive: true });
+    const bridgeRoot = new URL('..', import.meta.url);
+    const cli = new URL('../node_modules/tsx/dist/cli.mjs', import.meta.url);
+    const entrypoint = new URL('../src/server.ts', import.meta.url);
+    const child = spawn(process.execPath, [cli.pathname, entrypoint.pathname], {
+      cwd: bridgeRoot.pathname,
+      env: {
+        ...process.env,
+        NODE_ENV: 'test',
+        HOME: home,
+        JERICHO_API_TOKEN: TOKEN,
+        JERICHO_MASTER_KEY: Buffer.alloc(32, 17).toString('base64'),
+        CONDUCTOR_PORT: '0',
+        GEMINI_API_KEY: '',
+        JERICHO_TELEGRAM_GATEWAY_URL: '',
+        JERICHO_TELEGRAM_GATEWAY_TOKEN: '',
+        JERICHO_WHATSAPP_GATEWAY_URL: '',
+        JERICHO_WHATSAPP_GATEWAY_TOKEN: '',
+        LINEAR_API_KEY: '',
+        JERICHO_GIT_REPOSITORIES: '[]',
+        JERICHO_GITHUB_REPOSITORIES: '',
+        JERICHO_CONDUCTOR_ROOTS: '[]',
+        JERICHO_OBSIDIAN_VAULT: vault,
+        JERICHO_HERMES_BUS_ROOT: busRoot,
+        JERICHO_HERMES_REPO: 'jericho',
+        JERICHO_HERMES_BRANCH: 'masterblox/approved',
+        JERICHO_HERMES_POLL_INTERVAL_MS: '10',
+        JERICHO_HERMES_MAX_WAIT_MS: '100',
+        JERICHO_REFLECTION_INTERVAL_MS: '60000',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const closeChild = async () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
+      await new Promise<void>((resolve) => {
+        if (child.exitCode !== null || child.signalCode !== null) resolve();
+        else child.once('exit', () => resolve());
+      });
+    };
+    servers.push({ close: closeChild });
+
+    const listeningUrl = await childListeningUrl(child);
+    const reflected = await fetch(`${listeningUrl}/api/v1/reflection/run`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+
+    expect(reflected.status).toBe(200);
+    expect(await reflected.json()).toEqual({ proposals: [] });
+    expect(existsSync(join(busRoot, 'outbox'))).toBe(true);
+    expect(existsSync(join(busRoot, 'inbox'))).toBe(true);
+    await closeChild();
+    expect(child.exitCode).toBe(0);
   });
 });
 
@@ -492,6 +598,26 @@ function api(url: string, path: string, init: RequestInit = {}) {
       authorization: `Bearer ${TOKEN}`,
       ...(init.headers ?? {}),
     },
+  });
+}
+
+function childListeningUrl(child: ReturnType<typeof spawn>): Promise<string> {
+  return new Promise((resolve, reject) => {
+    let stderr = '';
+    const timer = setTimeout(() => {
+      reject(new Error(`Jericho child did not listen in time: ${stderr}`));
+    }, 5_000);
+    child.stderr?.on('data', (chunk) => { stderr += String(chunk); });
+    child.stdout?.on('data', (chunk) => {
+      const match = String(chunk).match(/listening on (http:\/\/[^\s]+)/u);
+      if (!match) return;
+      clearTimeout(timer);
+      resolve(match[1]);
+    });
+    child.once('exit', (code, signal) => {
+      clearTimeout(timer);
+      reject(new Error(`Jericho child exited before listening (${code ?? signal}): ${stderr}`));
+    });
   });
 }
 
