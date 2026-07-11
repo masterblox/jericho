@@ -40,6 +40,7 @@ describe('BridgeClient lifecycle', () => {
     await Promise.all([client.start(), client.start()]);
     expect(sockets).toHaveLength(1);
     expect(sockets[0].url).toBe(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`);
+    expect(mic.start).toHaveBeenCalledTimes(1);
     await sockets[0].open();
     expect(mic.start).toHaveBeenCalledTimes(1);
 
@@ -55,6 +56,22 @@ describe('BridgeClient lifecycle', () => {
     expect(speaker.interrupt).toHaveBeenCalled();
     expect(speaker.dispose).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('keeps local clap wake and the exact greeting available while the voice socket is offline', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+
+    expect(harness.mic.start).toHaveBeenCalledTimes(1);
+    harness.emitClap();
+    await flushPromises();
+
+    expect(harness.speakGreeting).toHaveBeenCalledWith(
+      'Hello, sir. What are we doing today?',
+    );
+    expect(sentMessages(harness.socket)).not.toContainEqual({ type: 'wake' });
+    expect(harness.mic.stop).not.toHaveBeenCalled();
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
   });
 
   it('keeps every microphone chunk local while standby', async () => {

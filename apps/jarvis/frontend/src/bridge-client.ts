@@ -53,8 +53,9 @@ export interface BridgeEvents {
 
 export const LOCAL_WAKE_GREETING = 'Hello, sir. What are we doing today?';
 const DEFAULT_ACTIVE_TURN_MS = 30_000;
+const REMOTE_WAKE_GRACE_MS = 1_500;
 
-type VoiceTurnState = 'standby' | 'greeting' | 'active';
+type VoiceTurnState = 'standby' | 'greeting' | 'waiting' | 'active';
 
 /** Privacy gate around the transient local mic and remote live-audio session. */
 export class BridgeClient {
@@ -100,7 +101,22 @@ export class BridgeClient {
     if (this.started) return;
     if (this.disposed) throw new Error('Voice bridge is disposed');
     this.started = true;
+    this.enterStandby();
     this.connect();
+    try {
+      // Standby capture is local-only. Start it independently of the remote
+      // voice socket so clap wake remains useful during reconnects/outages.
+      await this.mic.start();
+      if (!this.started || this.disposed) {
+        this.mic.stop();
+        return;
+      }
+      this.startVAD();
+      void this.spk.resume();
+      this.events.onStatus?.('standby');
+    } catch (err) {
+      this.events.onError?.(`mic: ${(err as Error).message}`);
+    }
   }
 
   stop() {
@@ -152,7 +168,6 @@ export class BridgeClient {
     if (
       !this.started ||
       this.disposed ||
-      socket?.readyState !== 1 ||
       this.turnState !== 'standby'
     ) return;
 
@@ -174,24 +189,40 @@ export class BridgeClient {
         if (
           this.greetingGeneration !== greetingGeneration ||
           this.turnState !== 'greeting' ||
-          this.ws !== socket ||
-          socket.readyState !== 1 ||
           !this.started ||
           this.disposed
         ) return;
-        socket.send(JSON.stringify({ type: 'wake' }));
-        this.turnState = 'active';
-        this.mic.setMuted(false);
-        this.events.onArmed?.(true);
-        this.events.onStatus?.('listening');
-        this.turnTimer = setTimeout(() => {
-          if (this.turnState !== 'active') return;
-          if (this.ws?.readyState === 1) {
-            this.ws.send(JSON.stringify({ type: 'standby', reason: 'timeout' }));
-          }
-          this.enterStandby({ interrupt: true });
-        }, this.activeTurnMs);
+        if (!socket || this.ws !== socket || socket.readyState !== 1) {
+          // A clap may land while the same-origin socket is still handshaking.
+          // Retain that explicit intent only for the wake-time SLA window.
+          this.turnState = 'waiting';
+          this.events.onStatus?.('voice-connecting');
+          this.turnTimer = setTimeout(() => {
+            if (this.turnState !== 'waiting') return;
+            this.enterStandby();
+            this.events.onStatus?.('voice-unavailable');
+          }, REMOTE_WAKE_GRACE_MS);
+          return;
+        }
+        this.activateRemoteTurn(socket);
       });
+  }
+
+  private activateRemoteTurn(socket: BridgeWebSocketPort): void {
+    if (this.ws !== socket || socket.readyState !== 1 || !this.started || this.disposed) return;
+    if (this.turnTimer) clearTimeout(this.turnTimer);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    this.turnState = 'active';
+    this.mic.setMuted(false);
+    this.events.onArmed?.(true);
+    this.events.onStatus?.('listening');
+    this.turnTimer = setTimeout(() => {
+      if (this.turnState !== 'active') return;
+      if (this.ws?.readyState === 1) {
+        this.ws.send(JSON.stringify({ type: 'standby', reason: 'timeout' }));
+      }
+      this.enterStandby({ interrupt: true });
+    }, this.activeTurnMs);
   }
 
   /**
@@ -224,22 +255,14 @@ export class BridgeClient {
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     const socket = this.createWebSocket(`${proto}://${location.host}/ws`);
     this.ws = socket;
-    socket.onopen = async () => {
+    socket.onopen = () => {
       if (this.ws !== socket || !this.started || this.disposed) return;
-      // The mic stays local-only until a clap or manual wake completes greeting.
-      this.enterStandby();
-      try {
-        await this.mic.start();
-        if (this.ws !== socket || !this.started || this.disposed) {
-          this.mic.stop();
-          return;
-        }
-      } catch (err) {
-        this.events.onError?.(`mic: ${(err as Error).message}`);
-      }
-      this.startVAD();
       void this.spk.resume();
-      this.events.onStatus?.('standby');
+      if (this.turnState === 'waiting') {
+        this.activateRemoteTurn(socket);
+        return;
+      }
+      if (this.turnState === 'standby') this.events.onStatus?.('standby');
     };
     socket.onmessage = (event) => {
       if (this.ws === socket) this.onMessage(String(event.data));
@@ -249,7 +272,6 @@ export class BridgeClient {
       this.ws = null;
       this.events.onStatus?.('reconnecting');
       this.enterStandby({ interrupt: true });
-      this.mic.stop();
       if (this.started && !this.disposed) this.retry = setTimeout(() => this.connect(), 1500);
     };
     socket.onerror = () => {
