@@ -1,199 +1,566 @@
-import { WebSocketServer, WebSocket } from 'ws';
+import { timingSafeEqual } from 'node:crypto';
+import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { extname, join, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
 import { GoogleGenAI, Modality, type Session } from '@google/genai';
-import { config } from './config.js';
-import { FUNCTION_DECLARATIONS, execute } from './tools.js';
+import { WebSocket, WebSocketServer } from 'ws';
 
-const ai = new GoogleGenAI({ apiKey: config.geminiApiKey });
-const wss = new WebSocketServer({ port: config.port });
+import { EntityType } from '@jericho/shared';
 
-// deep/male Gemini voices to audition for the JARVIS rasp.
-// ordered by rasp likelihood; invalid ones auto-grey out in the UI at runtime.
-export const VOICES = [
-  'Fenrir',     // gravelly/deepest — top rasp candidate
-  'Charon',     // deep, informative
-  'Orus',       // firm
-  'Iapetus',    // deep
-  'Sulafat',    // low
-  'Enceladus',  // breathy
-  'Erinome',    // low
-  'Algieba',    // deep
-  'Algenib',    // deep
-  'Kratos',     // deep (may be unsupported → will grey out)
-];
+import { loadConfig } from './config.js';
+import { JerichoStore } from './core/store.js';
+import { createConnectorRuntime } from './runtime.js';
+import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
 
-interface ToolCall {
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
+export interface SyncPort {
+  sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
 }
 
-wss.on('connection', (ws: WebSocket) => {
-  console.log('[bridge] browser connected');
-  let session: Session | null = null;
-  let currentVoice = config.voice;
-  let inChunks = 0;
-  let outChunks = 0;
+export interface ObsidianSearchPort {
+  search(query: string, limit: number): Promise<unknown>;
+}
 
-  const reporter = setInterval(() => {
-    if (inChunks || outChunks) {
-      console.log(`[flow] in=${inChunks} out=${outChunks}`);
-    }
-    inChunks = 0;
-    outChunks = 0;
-  }, 3000);
+export interface JerichoServerOptions {
+  store: JerichoStore;
+  apiToken: string;
+  host?: string;
+  allowedOrigins?: string[];
+  geminiApiKey?: string;
+  geminiModel?: string;
+  geminiVoice?: string;
+  systemInstruction?: string;
+  frontendDir?: string;
+  supervisor?: SyncPort;
+  connectorDescriptors?: readonly unknown[];
+  obsidianSearch?: ObsidianSearchPort;
+  ssePollMs?: number;
+  toolExecutor?: ToolExecutor;
+}
 
-  function openSession(voice: string) {
-    currentVoice = voice;
-    try {
-      session?.close();
-    } catch {
-      /* noop */
-    }
-    session = null;
-    ws.send(JSON.stringify({ type: 'voice_switching', voice }));
-    console.log(`[bridge] opening session voice=${voice}`);
+export interface JerichoServerAddress {
+  address: string;
+  port: number;
+}
 
-    let heardAudio = false;
-    // detect unsupported voices: if no audio within 3.5s, mark as failed
-    const failTimer = setTimeout(() => {
-      if (!heardAudio) {
-        console.log(`[bridge] voice ${voice} produced NO audio — unsupported`);
-        ws.send(JSON.stringify({ type: 'voice_failed', voice }));
-      }
-    }, 3500);
+export interface JerichoServer {
+  listen(port: number, host?: string): Promise<JerichoServerAddress>;
+  close(): Promise<void>;
+}
 
-    ai.live
-      .connect({
-        model: config.model,
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: config.systemInstruction,
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-          tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as any }],
-        },
-        callbacks: {
-          onopen: () => ws.send(JSON.stringify({ type: 'ready', voice })),
-          onmessage: (e: any) => {
-            if (e.serverContent?.modelTurn?.parts?.some((p: any) => p.inlineData?.data)) {
-              heardAudio = true;
-              clearTimeout(failTimer);
-            }
-            handleServerMessage(e, ws);
-          },
-          onerror: (ev: any) => {
-            console.error('[bridge] live error', ev?.message);
-            ws.send(JSON.stringify({ type: 'error', message: ev?.message ?? 'live error' }));
-          },
-          onclose: () => {
-            clearTimeout(failTimer);
-            ws.send(JSON.stringify({ type: 'closed' }));
-          },
-        },
-      })
-      .then((s) => {
-        session = s;
-        console.log('[bridge] live session open:', config.model, 'voice:', voice);
-        // audition: play a greeting in the new voice
-        try {
-          s.sendClientContent({
-            turns: 'Greet the user in one short sentence as JARVIS: online and ready, sir.',
-            turnComplete: true,
-          });
-        } catch (err) {
-          console.error('[bridge] greeting failed', err);
-        }
-      })
-      .catch((err) => {
-        console.error('[bridge] live connect failed', err);
-        ws.send(JSON.stringify({ type: 'error', message: String(err?.message ?? err) }));
-      });
-  }
+const SECURITY_HEADERS = {
+  'Content-Security-Policy': "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; media-src 'self' blob:; script-src 'self'; style-src 'self' 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'X-Frame-Options': 'DENY',
+  'Referrer-Policy': 'no-referrer',
+  'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=()',
+} as const;
 
-  async function handleServerMessage(e: any, ws: WebSocket) {
-    const sc = e.serverContent;
-    if (sc?.modelTurn?.parts) {
-      for (const p of sc.modelTurn.parts) {
-        if (p.inlineData?.data) {
-          outChunks++;
-          ws.send(
-            JSON.stringify({
-              type: 'audio',
-              mimeType: p.inlineData.mimeType ?? 'audio/pcm;rate=24000',
-              data: p.inlineData.data,
-            }),
-          );
-        }
-        if (p.text) ws.send(JSON.stringify({ type: 'text', text: p.text }));
-      }
-    }
-    if (sc?.interrupted) ws.send(JSON.stringify({ type: 'interrupt' }));
+export const VOICES = [
+  'Fenrir', 'Charon', 'Orus', 'Iapetus', 'Sulafat',
+  'Enceladus', 'Erinome', 'Algieba', 'Algenib', 'Kratos',
+] as const;
 
-    const calls: ToolCall[] | undefined = e.toolCall?.functionCalls;
-    if (calls?.length && session) {
-      const responses = [];
-      for (const c of calls) {
-        ws.send(JSON.stringify({ type: 'tool_start', name: c.name, args: c.args }));
-        const result = await execute(c.name, c.args ?? {});
-        ws.send(JSON.stringify({ type: 'tool_result', name: c.name, result }));
-        responses.push({ id: c.id, name: c.name, response: result });
-      }
-      try {
-        session.sendToolResponse({ functionResponses: responses as any });
-      } catch (err) {
-        console.error('[bridge] sendToolResponse failed', err);
-      }
-    }
-  }
+export function createJerichoServer(options: JerichoServerOptions): JerichoServer {
+  if (!options.apiToken) throw new Error('Local Core API token is required');
+  const host = options.host ?? '127.0.0.1';
+  const allowedOrigins = new Set(options.allowedOrigins ?? []);
+  const ssePollMs = options.ssePollMs ?? 250;
+  const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
+  const tools = options.toolExecutor ?? createToolExecutor({ store: options.store });
+  const httpServer = createServer((request, response) => {
+    void handleRequest(request, response).catch((error) => {
+      if (!response.headersSent) sendJson(response, 500, { error: 'internal_error' });
+      else response.end();
+      if (process.env.NODE_ENV !== 'test') console.error('[jericho] request failed', error);
+    });
+  });
+  const voice = attachVoice(httpServer, options, tools, host, allowedOrigins);
 
-  // open the first session with the default voice
-  openSession(currentVoice);
-  // tell the browser which voices are available + which is active
-  ws.send(JSON.stringify({ type: 'voices', voices: VOICES, active: currentVoice }));
-  // always-on: the client streams mic audio continuously; Gemini's system
-  // instruction gates the wake word. Tell the UI it's listening.
-  ws.send(JSON.stringify({ type: 'armed', armed: true }));
-
-  ws.on('message', (raw: Buffer) => {
-    let msg: any;
-    try {
-      msg = JSON.parse(raw.toString());
-    } catch {
+  async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    applySecurityHeaders(response);
+    const hostHeader = request.headers.host;
+    if (!hostHeader || !hostAllowed(hostHeader, host)) {
+      sendJson(response, 421, { error: 'misdirected_request' });
       return;
     }
-    if (msg.type === 'audio' && msg.data && session) {
-      // ALWAYS forward — Gemini's system instruction handles the wake-word gate
-      inChunks++;
-      try {
-        session.sendRealtimeInput({
-          media: { data: msg.data, mimeType: 'audio/pcm;rate=16000' } as any,
-        });
-      } catch (err) {
-        console.error('[bridge] sendRealtimeInput failed', err);
+    const origin = request.headers.origin;
+    if (origin && origin !== `http://${hostHeader}` && origin !== `https://${hostHeader}` && !allowedOrigins.has(origin)) {
+      sendJson(response, 403, { error: 'origin_forbidden' });
+      return;
+    }
+
+    const url = new URL(request.url ?? '/', `http://${hostHeader}`);
+    if (url.pathname.startsWith('/api/v1/')) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!authorized(request.headers.authorization, options.apiToken)) {
+        response.setHeader('WWW-Authenticate', 'Bearer realm="jericho-local"');
+        sendJson(response, 401, { error: 'unauthorized' });
+        return;
       }
-    } else if (msg.type === 'wake') {
-      // manual nudge (click-to-talk): prompt JARVIS to acknowledge
-      try {
+      await handleApi(request, response, url);
+      return;
+    }
+    await serveFrontend(request, response, options.frontendDir, url.pathname);
+  }
+
+  async function handleApi(
+    request: IncomingMessage,
+    response: ServerResponse,
+    url: URL,
+  ): Promise<void> {
+    if (request.method === 'GET' && url.pathname === '/api/v1/health') {
+      sendJson(response, 200, {
+        ok: true,
+        voice: { status: options.geminiApiKey ? 'available' : 'unavailable' },
+        connectors: options.store.listConnectorHealth(),
+      });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
+      const changes = options.store.listChangeLog({ afterSequence: 0, limit: 10_000 });
+      sendJson(response, 200, {
+        tasks: options.store.listEntities({ type: EntityType.Task }),
+        missions: options.store.listMissions(),
+        proposals: options.store.listProposals(),
+        connectors: options.store.listConnectorHealth(),
+        captureFailures: options.store.listCaptureFailures(),
+        lastChangeSequence: changes.at(-1)?.sequence ?? 0,
+      });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/connectors') {
+      sendJson(response, 200, {
+        connectors: options.connectorDescriptors ?? [],
+        health: options.store.listConnectorHealth(),
+      });
+      return;
+    }
+    const syncMatch = url.pathname.match(/^\/api\/v1\/connectors\/([^/]+)\/sync$/);
+    if (request.method === 'POST' && syncMatch) {
+      if (!options.supervisor) {
+        sendJson(response, 503, { error: 'connector_supervisor_unavailable' });
+        return;
+      }
+      const body = await readJsonBody(request, 64 * 1024);
+      const partition = typeof body.partition === 'string' ? body.partition : 'primary';
+      const controller = new AbortController();
+      request.once('aborted', () => controller.abort());
+      const result = await options.supervisor.sync(decodeURIComponent(syncMatch[1]), partition, controller.signal);
+      sendJson(response, 200, result);
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/captures') {
+      const limit = boundedInteger(url.searchParams.get('limit'), 100, 1, 1_000);
+      sendJson(response, 200, { events: options.store.listEvents({ limit }) });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/obsidian/search') {
+      if (!options.obsidianSearch) {
+        sendJson(response, 503, { error: 'obsidian_search_unavailable' });
+        return;
+      }
+      const query = url.searchParams.get('q') ?? '';
+      const limit = boundedInteger(url.searchParams.get('limit'), 10, 1, 50);
+      const results = await options.obsidianSearch.search(query, limit);
+      sendJson(response, 200, { results });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/events') {
+      openEventStream(request, response);
+      return;
+    }
+    sendJson(response, 404, { error: 'not_found' });
+  }
+
+  function openEventStream(request: IncomingMessage, response: ServerResponse): void {
+    const rawLast = request.headers['last-event-id'];
+    const after = rawLast === undefined || rawLast === '' ? 0 : Number(rawLast);
+    if (!Number.isInteger(after) || after < 0) {
+      sendJson(response, 400, { error: 'invalid_last_event_id' });
+      return;
+    }
+    response.writeHead(200, {
+      ...SECURITY_HEADERS,
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-store',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+    response.write(': connected\n\n');
+    let cursor = after;
+    const all = options.store.listChangeLog({ afterSequence: 0, limit: 10_000 });
+    const latest = all.at(-1)?.sequence ?? 0;
+    if (cursor > latest) {
+      writeSse(response, 'gap', undefined, {
+        reason: 'cursor_ahead',
+        refetch: '/api/v1/command-center',
+        latest,
+      });
+      cursor = latest;
+    } else {
+      cursor = flushChanges(response, cursor);
+    }
+    const timer = setInterval(() => {
+      if (!response.destroyed) cursor = flushChanges(response, cursor);
+    }, ssePollMs);
+    const client = { response, timer };
+    sseClients.add(client);
+    request.once('close', () => {
+      clearInterval(timer);
+      sseClients.delete(client);
+    });
+  }
+
+  function flushChanges(response: ServerResponse, after: number): number {
+    const changes = options.store.listChangeLog({ afterSequence: after, limit: 1_000 });
+    if (changes.length && changes[0].sequence > after + 1) {
+      writeSse(response, 'gap', undefined, {
+        reason: 'retention_gap',
+        refetch: '/api/v1/command-center',
+        firstAvailable: changes[0].sequence,
+      });
+    }
+    for (const change of changes) writeSse(response, 'change', change.sequence, change);
+    return changes.at(-1)?.sequence ?? after;
+  }
+
+  return {
+    listen: (port, requestedHost = host) => new Promise((resolveListen, reject) => {
+      httpServer.once('error', reject);
+      httpServer.listen(port, requestedHost, () => {
+        httpServer.off('error', reject);
+        const address = httpServer.address();
+        if (!address || typeof address === 'string') {
+          reject(new Error('Jericho server did not bind a TCP address'));
+          return;
+        }
+        resolveListen({ address: address.address, port: address.port });
+      });
+    }),
+    close: async () => {
+      for (const client of sseClients) {
+        clearInterval(client.timer);
+        client.response.end();
+      }
+      sseClients.clear();
+      await voice.close();
+      if (!httpServer.listening) return;
+      await new Promise<void>((resolveClose, reject) => {
+        httpServer.close((error) => error ? reject(error) : resolveClose());
+        httpServer.closeIdleConnections();
+      });
+    },
+  };
+}
+
+function attachVoice(
+  server: ReturnType<typeof createServer>,
+  options: JerichoServerOptions,
+  tools: ToolExecutor,
+  host: string,
+  allowedOrigins: Set<string>,
+) {
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (request, socket, head) => {
+    const hostHeader = request.headers.host;
+    if (!hostHeader || !hostAllowed(hostHeader, host)) {
+      socket.end('HTTP/1.1 421 Misdirected Request\r\n\r\n');
+      return;
+    }
+    const url = new URL(request.url ?? '/', `http://${hostHeader}`);
+    if (url.pathname !== '/ws/audio' && url.pathname !== '/ws') {
+      socket.end('HTTP/1.1 404 Not Found\r\n\r\n');
+      return;
+    }
+    const origin = request.headers.origin;
+    const trustedBrowserOrigin = Boolean(
+      origin && (
+        origin === `http://${hostHeader}` ||
+        origin === `https://${hostHeader}` ||
+        allowedOrigins.has(origin)
+      ),
+    );
+    if (origin && !trustedBrowserOrigin) {
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+      return;
+    }
+    const tokenAuthorized = authorized(
+      `Bearer ${url.searchParams.get('token') ?? ''}`,
+      options.apiToken,
+    );
+    if (!tokenAuthorized && !trustedBrowserOrigin) {
+      socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      return;
+    }
+    if (!options.geminiApiKey) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
+    wss.handleUpgrade(request, socket, head, (webSocket) => wss.emit('connection', webSocket));
+  });
+  wss.on('connection', (webSocket: WebSocket) => {
+    openVoiceSession(webSocket, options, tools);
+  });
+  return {
+    close: () => new Promise<void>((resolveClose) => {
+      for (const client of wss.clients) client.terminate();
+      wss.close(() => resolveClose());
+    }),
+  };
+}
+
+function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, tools: ToolExecutor): void {
+  const ai = new GoogleGenAI({ apiKey: options.geminiApiKey! });
+  let session: Session | undefined;
+  let currentVoice = options.geminiVoice ?? 'Algieba';
+  let generation = 0;
+  let clientClosed = false;
+
+  const send = (message: Record<string, unknown>) => {
+    if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
+  };
+  const connect = (voice: string) => {
+    const connectionGeneration = ++generation;
+    session?.close();
+    session = undefined;
+    currentVoice = voice;
+    send({ type: 'voice_switching', voice });
+    void ai.live.connect({
+      model: options.geminiModel ?? 'gemini-2.5-flash-native-audio-latest',
+      config: {
+        responseModalities: [Modality.AUDIO],
+        systemInstruction: options.systemInstruction,
+        speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
+        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as never }],
+      },
+      callbacks: {
+        onopen: () => {
+          if (connectionGeneration === generation) send({ type: 'ready', voice });
+        },
+        onmessage: (message: any) => {
+          if (connectionGeneration !== generation) return;
+          if (message.serverContent?.interrupted) send({ type: 'interrupt' });
+          for (const part of message.serverContent?.modelTurn?.parts ?? []) {
+            if (part.inlineData?.data) {
+              send({
+                type: 'audio',
+                mimeType: part.inlineData.mimeType ?? 'audio/pcm;rate=24000',
+                data: part.inlineData.data,
+              });
+            }
+            if (part.text) send({ type: 'text', text: part.text });
+          }
+          const calls = message.toolCall?.functionCalls ?? [];
+          const activeSession = session;
+          if (calls.length && activeSession) {
+            void Promise.all(calls.map(async (call: any) => {
+              const args = call.args ?? {};
+              send({ type: 'tool_start', name: call.name, args });
+              const result = await tools.execute(call.name, args);
+              send({ type: 'tool_result', name: call.name, result });
+              return { id: call.id, name: call.name, response: result };
+            })).then((responses) => {
+              if (session === activeSession) {
+                activeSession.sendToolResponse({ functionResponses: responses as never });
+              }
+            }).catch(() => send({ type: 'error', message: 'tool execution failed' }));
+          }
+        },
+        onerror: () => {
+          if (connectionGeneration === generation) send({ type: 'error', message: 'voice unavailable' });
+        },
+        onclose: () => {
+          if (!clientClosed && connectionGeneration === generation) send({ type: 'closed' });
+        },
+      },
+    }).then((connected) => {
+      if (clientClosed || connectionGeneration !== generation) {
+        connected.close();
+        return;
+      }
+      session = connected;
+    }).catch(() => {
+      if (connectionGeneration === generation) send({ type: 'error', message: 'voice unavailable' });
+    });
+  };
+
+  send({ type: 'voices', voices: [...VOICES], active: currentVoice });
+  connect(currentVoice);
+  webSocket.on('message', (raw) => {
+    try {
+      const message = JSON.parse(raw.toString()) as Record<string, unknown>;
+      if (message.type === 'audio' && typeof message.data === 'string') {
+        session?.sendRealtimeInput({ media: { data: message.data, mimeType: 'audio/pcm;rate=16000' } as never });
+      }
+      if (
+        message.type === 'set_voice' &&
+        typeof message.voice === 'string' &&
+        (VOICES as readonly string[]).includes(message.voice) &&
+        message.voice !== currentVoice
+      ) {
+        connect(message.voice);
+      }
+      if (message.type === 'wake') {
         session?.sendClientContent({
-          turns: "Acknowledge the user with a brief 'Yes, sir.' then wait for their request.",
+          turns: 'Carlos has explicitly woken you. Acknowledge briefly and listen for his request.',
           turnComplete: true,
         });
-      } catch {
-        /* session not ready yet */
       }
-    } else if (msg.type === 'set_voice' && msg.voice) {
-      openSession(msg.voice); // hot-swap session to audition the new voice
-    }
+    } catch { /* invalid client frame */ }
   });
-
-  ws.on('close', () => {
-    console.log('[bridge] browser disconnected');
-    clearInterval(reporter);
-    try {
-      session?.close();
-    } catch {
-      /* noop */
-    }
+  webSocket.on('close', () => {
+    clientClosed = true;
+    generation += 1;
+    session?.close();
   });
-});
+}
 
-console.log(`[bridge] listening on ws://localhost:${config.port} (model: ${config.model})`);
+async function serveFrontend(
+  request: IncomingMessage,
+  response: ServerResponse,
+  frontendDir: string | undefined,
+  pathname: string,
+): Promise<void> {
+  if (request.method !== 'GET' && request.method !== 'HEAD') {
+    sendJson(response, 405, { error: 'method_not_allowed' });
+    return;
+  }
+  if (!frontendDir || !existsSync(frontendDir)) {
+    sendJson(response, 404, { error: 'not_found' });
+    return;
+  }
+  let decoded: string;
+  try { decoded = decodeURIComponent(pathname); } catch {
+    sendJson(response, 400, { error: 'invalid_path' });
+    return;
+  }
+  if (decoded.includes('\0') || decoded.includes('\\') || decoded.split('/').includes('..')) {
+    sendJson(response, 400, { error: 'invalid_path' });
+    return;
+  }
+  const root = realpathSync(frontendDir);
+  const candidate = resolve(root, `.${decoded}`);
+  if (candidate !== root && !candidate.startsWith(`${root}${sep}`)) {
+    sendJson(response, 400, { error: 'invalid_path' });
+    return;
+  }
+  let file = candidate;
+  if (!existsSync(file) || statSync(file).isDirectory()) {
+    if (extname(decoded)) {
+      sendJson(response, 404, { error: 'not_found' });
+      return;
+    }
+    file = join(root, 'index.html');
+  }
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    sendJson(response, 404, { error: 'not_found' });
+    return;
+  }
+  response.statusCode = 200;
+  response.setHeader('Content-Type', contentType(file));
+  if (request.method === 'HEAD') { response.end(); return; }
+  await new Promise<void>((resolveStream, reject) => {
+    const stream = createReadStream(file);
+    stream.on('error', reject);
+    stream.on('end', resolveStream);
+    stream.pipe(response);
+  });
+}
+
+function applySecurityHeaders(response: ServerResponse): void {
+  for (const [name, value] of Object.entries(SECURITY_HEADERS)) response.setHeader(name, value);
+}
+
+function sendJson(response: ServerResponse, status: number, body: unknown): void {
+  applySecurityHeaders(response);
+  response.statusCode = status;
+  response.setHeader('Content-Type', 'application/json; charset=utf-8');
+  response.end(JSON.stringify(body));
+}
+
+function writeSse(response: ServerResponse, event: string, id: number | undefined, data: unknown): void {
+  if (id !== undefined) response.write(`id: ${id}\n`);
+  response.write(`event: ${event}\n`);
+  response.write(`data: ${JSON.stringify(data)}\n\n`);
+}
+
+function hostAllowed(hostHeader: string, configuredHost: string): boolean {
+  const hostname = hostHeader.startsWith('[')
+    ? hostHeader.slice(1, hostHeader.indexOf(']'))
+    : hostHeader.split(':')[0];
+  return hostname === configuredHost || hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+}
+
+function authorized(header: string | undefined, token: string): boolean {
+  if (!header?.startsWith('Bearer ')) return false;
+  const supplied = Buffer.from(header.slice(7));
+  const expected = Buffer.from(token);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
+async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) throw new Error('request_body_too_large');
+    chunks.push(buffer);
+  }
+  if (!chunks.length) return {};
+  const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid_json_body');
+  return parsed as Record<string, unknown>;
+}
+
+function boundedInteger(raw: string | null, fallback: number, minimum: number, maximum: number): number {
+  if (raw === null) return fallback;
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error('invalid_numeric_bound');
+  return value;
+}
+
+function contentType(path: string): string {
+  switch (extname(path).toLocaleLowerCase()) {
+    case '.html': return 'text/html; charset=utf-8';
+    case '.js': return 'text/javascript; charset=utf-8';
+    case '.css': return 'text/css; charset=utf-8';
+    case '.json': return 'application/json; charset=utf-8';
+    case '.svg': return 'image/svg+xml';
+    default: return 'application/octet-stream';
+  }
+}
+
+async function main(): Promise<void> {
+  const config = loadConfig();
+  const store = new JerichoStore();
+  const connectors = createConnectorRuntime(config, store);
+  const server = createJerichoServer({
+    store,
+    apiToken: config.apiToken,
+    host: config.host,
+    allowedOrigins: config.allowedOrigins,
+    geminiApiKey: config.geminiApiKey,
+    geminiModel: config.model,
+    geminiVoice: config.voice,
+    systemInstruction: config.systemInstruction,
+    frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),
+    supervisor: connectors.supervisor,
+    connectorDescriptors: connectors.descriptors,
+    obsidianSearch: connectors.obsidianSearch,
+  });
+  const address = await server.listen(config.port, config.host);
+  console.log(`[jericho] listening on http://${config.host}:${address.port}`);
+  const shutdown = async () => {
+    await server.close();
+    store.close();
+  };
+  process.once('SIGINT', () => { void shutdown(); });
+  process.once('SIGTERM', () => { void shutdown(); });
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main();
+}

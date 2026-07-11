@@ -1,9 +1,10 @@
 # Jericho Interface v1.0.4
 
-Jericho's browser control room combines Gemini Live voice with webcam-driven,
-hands-free interaction. Jericho owns this interface; the bridge currently keeps
-the existing local mock tools. Real Paperclip/Hermes fleet execution is the next
-adapter and is intentionally outside the v1.0.4 gesture pass.
+Jericho's browser control room combines a private local truth store, bounded
+mission orchestration, optional Gemini Live voice, and webcam-driven hands-free
+interaction. The local Core owns personal context and authority; direct APIs and
+Git are truth sources, while approved external work is fenced by mission scope
+and receipts.
 
 ## Gesture contract
 
@@ -37,9 +38,20 @@ module and will not start on older runtimes.
 ```bash
 cd apps/jarvis
 corepack pnpm install
-cp .env.example .env # add GEMINI_API_KEY
+cp .env.example .env # add JERICHO_API_TOKEN; Gemini is optional
 corepack pnpm dev
 ```
+
+Set `JERICHO_API_TOKEN` before starting. `GEMINI_API_KEY` is optional: without
+it, capture, truth, tools, connector health, HTTP API, and SSE continue to run
+and `/api/v1/health` reports voice as unavailable. The server binds to loopback
+by default and rejects invalid Host/Origin and unauthenticated API requests.
+
+Configured connectors are composed by the production runtime, not test
+fixtures. Telegram is consumed only through the authenticated Hermes gateway;
+Linear uses its read-only GraphQL API; Git/GitHub/Conductor/Obsidian read their
+configured truth surfaces. Named repository/root settings use JSON arrays such
+as `[{"id":"jericho","path":"/path/to/jericho"}]`.
 
 Open <http://localhost:5173>, click the start overlay, and allow camera/mic.
 Press Escape at any time to pause gesture tracking and restore the mouse cursor.
@@ -81,9 +93,14 @@ live dogfooding because CI has no webcam.
 | Sticky card acquisition + fresh-pinch grab preview | v1.0.4 |
 | Immediate pinch attachment | v1.0.2 |
 | Per-hand five-point calibration | v1.0.1 |
-| Gemini Live voice loop | Preserved |
-| Tool calls | Local mock |
-| Real Hermes fleet dispatch | Follow-up adapter |
+| Gemini Live voice loop | Optional/preserved |
+| Encrypted local truth + identity reconciliation | Implemented |
+| Telegram/Linear/Git/GitHub/Conductor/Obsidian capture adapters | Implemented |
+| Durable cursor/lease/retry-safe connector supervision | Implemented |
+| Tool calls | Truth-backed; drafts remain approval-only |
+| Bounded mission orchestration + verified receipts | Implemented |
+| Real Hermes worker executor integration | Follow-up adapter |
 
-Only `GEMINI_API_KEY` is required for voice. Paperclip variables remain reserved
-for the future real-fleet adapter.
+`JERICHO_API_TOKEN` is required for the local service. `GEMINI_API_KEY` is only
+required for voice. Paperclip is a reconciled worker queue, not a truth source;
+its real-fleet executor remains a follow-up adapter.

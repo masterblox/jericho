@@ -8,36 +8,57 @@ import {
   assertActionReceipt,
   assertAgentCapability,
   assertAssignment,
+  assertCaptureFailure,
+  assertChangeLog,
+  assertConnectorLease,
   assertConnectorHealth,
   assertCostRecord,
   assertDecisionRecord,
   assertEntity,
   assertEventEnvelope,
+  assertExternalIdentityLink,
+  assertNormalizedCapture,
   assertIntentEnvelope,
   assertMissionPlan,
   assertMissionTask,
   assertPreferenceChange,
   assertProposal,
   assertRelation,
+  assertVersionedCursor,
+  CaptureFailureKind,
+  ChangeLogKind,
+  ConnectorCapability,
+  ConnectorHealthStatus,
   DecisionOutcome,
+  ExternalIdentityLinkStatus,
+  IdentityReviewKind,
   LifecycleStatus,
   ReceiptStatus,
+  RiskLevel,
   RouteType,
+  SourceType,
   type ActionReceipt,
   type AgentCapability,
   type AgentLane,
   type Assignment,
+  type CaptureFailure,
+  type ChangeLog,
+  type ConnectorLease,
   type ConnectorHealth,
-  type ConnectorHealthStatus,
+  type ConnectorCapabilityHealth,
   type CostRecord,
   type DecisionRecord,
   type Entity,
   type EntityType,
   type EventEnvelope,
+  type ExternalIdentityLink,
+  type ExternalIdentityObservation,
+  type ExternalIdentityReviewCandidate,
   type Freshness,
   type IntentEnvelope,
   type IntentRoute,
   type JsonValue,
+  type JsonObject,
   type MissionPlan,
   type MissionTask,
   type PreferenceChange,
@@ -46,6 +67,8 @@ import {
   type ReceiptStatus as ReceiptStatusType,
   type Relation,
   type RelationType,
+  type NormalizedCapture,
+  type VersionedCursor,
 } from '@jericho/shared';
 
 import { CapabilityRegistry } from '../orchestration/capability-registry.js';
@@ -64,6 +87,51 @@ export interface JerichoStoreOptions {
 export interface AppendEventResult {
   event: EventEnvelope;
   inserted: boolean;
+}
+
+export interface EventListOptions {
+  source?: string;
+  limit?: number;
+}
+
+export interface CommitCaptureBatchInput {
+  connectorId: string;
+  capability: ConnectorCapability;
+  partition: string;
+  expectedCursorVersion: number;
+  nextCursor: VersionedCursor;
+  captures: NormalizedCapture[];
+  failures?: CaptureFailure[];
+  leaseToken: string;
+  committedAt: string;
+}
+
+export interface CommitCaptureBatchResult {
+  events: AppendEventResult[];
+  identityLinks: ExternalIdentityLink[];
+  reviewCandidates: ExternalIdentityReviewCandidate[];
+  failures: CaptureFailure[];
+  cursor: VersionedCursor;
+  changes: ChangeLog[];
+}
+
+export interface ExternalIdentityListOptions {
+  connectorId?: string;
+  entityId?: string;
+  status?: ExternalIdentityLinkStatus;
+}
+
+export interface ChangeLogListOptions {
+  afterSequence?: number;
+  limit?: number;
+}
+
+export interface AcquireConnectorLeaseInput {
+  connectorId: string;
+  capability: ConnectorCapability;
+  ownerId: string;
+  now: string;
+  leaseMs: number;
 }
 
 export interface EntityListOptions {
@@ -157,6 +225,20 @@ export class EventConflictError extends Error {
   }
 }
 
+export class CursorConflictError extends Error {
+  constructor(connectorId: string, partition: string) {
+    super(`Connector cursor compare-and-swap failed for ${connectorId}/${partition}`);
+    this.name = 'CursorConflictError';
+  }
+}
+
+export class ConnectorLeaseError extends Error {
+  constructor(id: string) {
+    super(`Connector lease ${id} token is invalid or expired`);
+    this.name = 'ConnectorLeaseError';
+  }
+}
+
 interface Migration {
   version: number;
   sql: string;
@@ -176,7 +258,12 @@ type EncryptedRecordTable =
   | 'decisions'
   | 'connector_health'
   | 'preference_changes'
-  | 'cost_records';
+  | 'cost_records'
+  | 'connector_cursors'
+  | 'connector_leases'
+  | 'external_identities'
+  | 'capture_failures'
+  | 'change_log';
 
 type DatabaseRow = Record<string, SQLInputValue>;
 type RecordProjection = Record<string, string | number | null>;
@@ -517,6 +604,83 @@ const MIGRATIONS: readonly Migration[] = [
       ON assignments (mission_id, mission_task_id);
     `,
   },
+  {
+    version: 6,
+    sql: `
+      CREATE TABLE connector_cursors (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        partition_key TEXT NOT NULL,
+        cursor_version INTEGER NOT NULL,
+        epoch INTEGER NOT NULL,
+        sequence INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL,
+        UNIQUE (connector_id, capability, partition_key)
+      );
+      CREATE INDEX connector_cursors_lookup_idx
+      ON connector_cursors (connector_id, capability, partition_key);
+
+      CREATE TABLE connector_leases (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        owner_id TEXT NOT NULL,
+        lease_token TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        lease_version INTEGER NOT NULL,
+        updated_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL,
+        UNIQUE (connector_id, capability)
+      );
+      CREATE INDEX connector_leases_expiry_idx ON connector_leases (expires_at);
+
+      CREATE TABLE external_identities (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        namespace TEXT NOT NULL,
+        external_id TEXT NOT NULL,
+        entity_id TEXT NOT NULL REFERENCES entities(id) ON DELETE RESTRICT,
+        status TEXT NOT NULL,
+        last_observed_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL,
+        UNIQUE (connector_id, namespace, external_id)
+      );
+      CREATE INDEX external_identities_entity_idx ON external_identities (entity_id, status);
+
+      CREATE TABLE capture_failures (
+        id TEXT PRIMARY KEY,
+        connector_id TEXT NOT NULL,
+        capability TEXT NOT NULL,
+        status TEXT NOT NULL,
+        route TEXT NOT NULL,
+        risk TEXT NOT NULL,
+        occurred_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL
+      );
+      CREATE INDEX capture_failures_connector_idx
+      ON capture_failures (connector_id, capability, occurred_at);
+
+      CREATE TABLE change_log (
+        id TEXT PRIMARY KEY,
+        sequence INTEGER NOT NULL UNIQUE,
+        kind TEXT NOT NULL,
+        connector_id TEXT,
+        record_type TEXT NOT NULL,
+        record_id TEXT NOT NULL,
+        event_id TEXT,
+        changed_at TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL
+      );
+      CREATE INDEX change_log_sequence_idx ON change_log (sequence);
+    `,
+  },
 ];
 
 export class JerichoStore {
@@ -556,57 +720,7 @@ export class JerichoStore {
     assertEventEnvelope(event);
     const normalized = normalizeEvent(event);
     assertEventEnvelope(normalized);
-    return this.#writeTransaction(() => {
-      const integrityHash = this.#integrityHashFor(normalized);
-      const existing = this.#database
-        .prepare(`
-          SELECT *
-          FROM events
-          WHERE source = ? AND source_event_id = ?
-        `)
-        .get(normalized.source, normalized.sourceEventId);
-      if (existing) {
-        const existingEvent = this.#readRecord<EventEnvelope>(
-          'events',
-          String(existing.id),
-          existing,
-          (value) => assertEventEnvelope(value),
-          (value) => value.id,
-        );
-        if (digestsEqual(existing.integrity_hash, integrityHash)) {
-          return { event: existingEvent, inserted: false };
-        }
-        throw new EventConflictError(normalized.source, normalized.sourceEventId);
-      }
-      const sealed = this.#sealRecord('events', normalized.id, normalized);
-
-      this.#database
-        .prepare(`
-          INSERT INTO events (
-            id, source, source_type, source_event_id, event_type,
-            occurred_at, ingested_at, status, route, risk, confidence,
-            freshness_at, integrity_hash, body
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `)
-        .run(
-          normalized.id,
-          normalized.source,
-          normalized.sourceType,
-          normalized.sourceEventId,
-          normalized.type,
-          normalized.occurredAt,
-          normalized.ingestedAt,
-          normalized.status ?? null,
-          normalized.route ?? null,
-          normalized.risk ?? null,
-          normalized.confidence ?? null,
-          normalized.freshness?.observedAt ?? null,
-          sealed.integrityHash,
-          sealed.body,
-        );
-
-      return { event: sealed.record, inserted: true };
-    });
+    return this.#writeTransaction(() => this.#appendEventRecord(normalized));
   }
 
   getEvent(id: string): EventEnvelope | undefined {
@@ -623,6 +737,343 @@ export class JerichoStore {
       (value) => assertEventEnvelope(value),
       (value) => value.id,
     );
+  }
+
+  listEvents(options: EventListOptions = {}): EventEnvelope[] {
+    const limit = options.limit ?? 100;
+    if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+      throw new TypeError('Event list limit is invalid');
+    }
+    const rows = options.source
+      ? this.#database.prepare(`
+          SELECT * FROM events WHERE source = ?
+          ORDER BY occurred_at DESC, id ASC LIMIT ?
+        `).all(options.source, limit)
+      : this.#database.prepare(`
+          SELECT * FROM events ORDER BY occurred_at DESC, id ASC LIMIT ?
+        `).all(limit);
+    return rows.map((row) => this.#readRecord<EventEnvelope>(
+      'events', String(row.id), row,
+      (value) => assertEventEnvelope(value), (value) => value.id,
+    ));
+  }
+
+  getConnectorCursor(
+    connectorId: string,
+    capability: ConnectorCapability,
+    partition: string,
+  ): VersionedCursor | undefined {
+    const row = this.#database.prepare(`
+      SELECT * FROM connector_cursors
+      WHERE connector_id = ? AND capability = ? AND partition_key = ?
+    `).get(connectorId, capability, partition);
+    return row ? this.#readRecord<VersionedCursor>(
+      'connector_cursors',
+      String(row.id),
+      row,
+      (value) => assertVersionedCursor(value),
+      (value) => cursorRecordId(value.connectorId, value.capability, value.partition),
+    ) : undefined;
+  }
+
+  commitCaptureBatch(input: CommitCaptureBatchInput): CommitCaptureBatchResult {
+    if (!Number.isInteger(input.expectedCursorVersion) || input.expectedCursorVersion < 0) {
+      throw new TypeError('Expected cursor version must be a non-negative integer');
+    }
+    assertVersionedCursor(input.nextCursor);
+    input.captures.forEach(assertNormalizedCapture);
+    (input.failures ?? []).forEach(assertCaptureFailure);
+    const committedAt = normalizeTimestamp(input.committedAt);
+    if (
+      input.nextCursor.connectorId !== input.connectorId ||
+      input.nextCursor.capability !== input.capability ||
+      input.nextCursor.partition !== input.partition ||
+      input.nextCursor.version !== input.expectedCursorVersion + 1
+    ) {
+      throw new CursorConflictError(input.connectorId, input.partition);
+    }
+
+    return this.#writeTransaction(() => {
+      this.#requireConnectorLease(
+        input.connectorId,
+        input.capability,
+        input.leaseToken,
+        committedAt,
+      );
+      const current = this.getConnectorCursor(
+        input.connectorId,
+        input.capability,
+        input.partition,
+      );
+      if ((current?.version ?? 0) !== input.expectedCursorVersion) {
+        throw new CursorConflictError(input.connectorId, input.partition);
+      }
+
+      const events: AppendEventResult[] = [];
+      const identityLinks: ExternalIdentityLink[] = [];
+      const reviewCandidates: ExternalIdentityReviewCandidate[] = [];
+      const failures: CaptureFailure[] = [];
+      const changes: ChangeLog[] = [];
+
+      for (const capture of input.captures) {
+        const eventResult = this.#appendEventRecord(normalizeEvent(capture.event));
+        events.push(eventResult);
+        if (eventResult.inserted) {
+          changes.push(this.#appendChangeLog({
+            kind: ChangeLogKind.EventCaptured,
+            connectorId: input.connectorId,
+            recordType: 'event',
+            recordId: eventResult.event.id,
+            eventId: eventResult.event.id,
+            changedAt: committedAt,
+            payload: { eventType: eventResult.event.type },
+          }));
+        }
+
+        for (const observation of capture.identities) {
+          const resolution = this.#resolveExternalIdentity(
+            observation,
+            input.connectorId,
+            input.capability,
+            committedAt,
+          );
+          identityLinks.push(resolution.link);
+          changes.push(this.#appendChangeLog({
+            kind: ChangeLogKind.IdentityObserved,
+            connectorId: input.connectorId,
+            recordType: 'external_identity',
+            recordId: resolution.link.id,
+            eventId: capture.event.id,
+            changedAt: committedAt,
+            payload: { entityId: resolution.link.entityId, status: resolution.link.status },
+          }));
+          if (resolution.reviewCandidate && resolution.failure) {
+            reviewCandidates.push(resolution.reviewCandidate);
+            failures.push(resolution.failure);
+            this.#insertCaptureFailure(resolution.failure);
+            changes.push(this.#appendChangeLog({
+              kind: ChangeLogKind.IdentityReview,
+              connectorId: input.connectorId,
+              recordType: 'capture_failure',
+              recordId: resolution.failure.id,
+              eventId: capture.event.id,
+              changedAt: committedAt,
+              payload: { reviewCandidateId: resolution.reviewCandidate.id },
+            }));
+          }
+        }
+
+        for (const observation of capture.relations) {
+          const relation = this.#resolveExternalRelation(observation, committedAt);
+          if (!relation) {
+            const failure = this.#identityFailure(
+              input.connectorId,
+              input.capability,
+              CaptureFailureKind.IdentityConflict,
+              `Relation ${observation.type} references an unresolved external identity`,
+              observation.evidenceEventId,
+              committedAt,
+            );
+            failures.push(failure);
+            this.#insertCaptureFailure(failure);
+            continue;
+          }
+          changes.push(this.#appendChangeLog({
+            kind: ChangeLogKind.RelationObserved,
+            connectorId: input.connectorId,
+            recordType: 'relation',
+            recordId: relation.id,
+            eventId: capture.event.id,
+            changedAt: committedAt,
+            payload: { relationType: relation.type },
+          }));
+        }
+      }
+
+      for (const failure of input.failures ?? []) {
+        if (
+          failure.connectorId !== input.connectorId ||
+          failure.capability !== input.capability ||
+          failure.retryable ||
+          (
+            failure.kind !== CaptureFailureKind.InvalidPayload &&
+            failure.kind !== CaptureFailureKind.ContradictoryHistory
+          )
+        ) {
+          throw new Error('Retryable transport or authorization failures cannot advance a cursor');
+        }
+        this.#insertCaptureFailure(failure);
+        failures.push(failure);
+        changes.push(this.#appendChangeLog({
+          kind: ChangeLogKind.CaptureFailed,
+          connectorId: input.connectorId,
+          recordType: 'capture_failure',
+          recordId: failure.id,
+          changedAt: committedAt,
+          payload: { kind: failure.kind, retryable: failure.retryable },
+        }));
+      }
+
+      const cursor = normalizeCursor(input.nextCursor);
+      this.#writeConnectorCursor(cursor);
+      changes.push(this.#appendChangeLog({
+        kind: ChangeLogKind.CursorAdvanced,
+        connectorId: input.connectorId,
+        recordType: 'connector_cursor',
+        recordId: cursorRecordId(cursor.connectorId, cursor.capability, cursor.partition),
+        changedAt: committedAt,
+        payload: { version: cursor.version, epoch: cursor.epoch, sequence: cursor.sequence },
+      }));
+      return { events, identityLinks, reviewCandidates, failures, cursor, changes };
+    });
+  }
+
+  listExternalIdentityLinks(options: ExternalIdentityListOptions = {}): ExternalIdentityLink[] {
+    const clauses: string[] = [];
+    const parameters: SQLInputValue[] = [];
+    if (options.connectorId) { clauses.push('connector_id = ?'); parameters.push(options.connectorId); }
+    if (options.entityId) { clauses.push('entity_id = ?'); parameters.push(options.entityId); }
+    if (options.status) { clauses.push('status = ?'); parameters.push(options.status); }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
+    return this.#database.prepare(`
+      SELECT * FROM external_identities${where}
+      ORDER BY last_observed_at DESC, id ASC
+    `).all(...parameters).map((row) => this.#readRecord<ExternalIdentityLink>(
+      'external_identities',
+      String(row.id),
+      row,
+      (value) => assertExternalIdentityLink(value),
+      (value) => value.id,
+    ));
+  }
+
+  establishExternalIdentity(
+    id: string,
+    entityId: string,
+    establishedAt: string,
+  ): ExternalIdentityLink {
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM external_identities WHERE id = ?').get(id);
+      if (!row) throw new Error(`External identity ${id} does not exist`);
+      const link = this.#readRecord<ExternalIdentityLink>(
+        'external_identities', String(row.id), row,
+        (value) => assertExternalIdentityLink(value), (value) => value.id,
+      );
+      if (link.entityId !== entityId || !this.getEntity(entityId)) {
+        throw new Error('Establishing an external identity cannot silently merge entities');
+      }
+      const established: ExternalIdentityLink = {
+        ...link,
+        status: ExternalIdentityLinkStatus.Established,
+        lastObservedAt: normalizeTimestamp(establishedAt),
+      };
+      this.#writeExternalIdentity(established);
+      return this.listExternalIdentityLinks().find((item) => item.id === id)!;
+    });
+  }
+
+  listCaptureFailures(connectorId?: string): CaptureFailure[] {
+    const rows = connectorId
+      ? this.#database.prepare('SELECT * FROM capture_failures WHERE connector_id = ? ORDER BY occurred_at DESC, id ASC').all(connectorId)
+      : this.#database.prepare('SELECT * FROM capture_failures ORDER BY occurred_at DESC, id ASC').all();
+    return rows.map((row) => this.#readRecord<CaptureFailure>(
+      'capture_failures', String(row.id), row,
+      (value) => assertCaptureFailure(value), (value) => value.id,
+    ));
+  }
+
+  recordCaptureFailure(failure: CaptureFailure): CaptureFailure {
+    assertCaptureFailure(failure);
+    return this.#writeTransaction(() => {
+      this.#insertCaptureFailure(failure);
+      this.#appendChangeLog({
+        kind: ChangeLogKind.CaptureFailed,
+        connectorId: failure.connectorId,
+        recordType: 'capture_failure',
+        recordId: failure.id,
+        changedAt: failure.occurredAt,
+        payload: { kind: failure.kind, retryable: failure.retryable },
+      });
+      return this.listCaptureFailures().find((item) => item.id === failure.id)!;
+    });
+  }
+
+  listChangeLog(options: ChangeLogListOptions = {}): ChangeLog[] {
+    const after = options.afterSequence ?? 0;
+    const limit = options.limit ?? 1_000;
+    if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 10_000) {
+      throw new TypeError('Change log range is invalid');
+    }
+    return this.#database.prepare(`
+      SELECT * FROM change_log WHERE sequence > ? ORDER BY sequence ASC LIMIT ?
+    `).all(after, limit).map((row) => this.#readRecord<ChangeLog>(
+      'change_log', String(row.id), row,
+      (value) => assertChangeLog(value), (value) => value.id,
+    ));
+  }
+
+  acquireConnectorLease(input: AcquireConnectorLeaseInput): ConnectorLease | undefined {
+    if (!Number.isInteger(input.leaseMs) || input.leaseMs < 1) throw new TypeError('Connector lease duration is invalid');
+    const now = normalizeTimestamp(input.now);
+    return this.#writeTransaction(() => {
+      const id = connectorLeaseId(input.connectorId, input.capability);
+      const row = this.#database.prepare('SELECT * FROM connector_leases WHERE id = ?').get(id);
+      const current = row ? this.#readRecord<ConnectorLease>(
+        'connector_leases', String(row.id), row,
+        (value) => assertConnectorLease(value), (value) => value.id,
+      ) : undefined;
+      if (current && Date.parse(current.expiresAt) > Date.parse(now)) return undefined;
+      const lease: ConnectorLease = {
+        id,
+        connectorId: input.connectorId,
+        capability: input.capability,
+        ownerId: input.ownerId,
+        leaseToken: randomUUID(),
+        expiresAt: new Date(Date.parse(now) + input.leaseMs).toISOString(),
+        version: (current?.version ?? 0) + 1,
+        updatedAt: now,
+      };
+      this.#writeConnectorLease(lease);
+      return lease;
+    });
+  }
+
+  renewConnectorLease(id: string, leaseToken: string, now: string, leaseMs: number): ConnectorLease {
+    if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new TypeError('Connector lease duration is invalid');
+    return this.#writeTransaction(() => {
+      const at = normalizeTimestamp(now);
+      const row = this.#database.prepare('SELECT * FROM connector_leases WHERE id = ?').get(id);
+      if (!row) throw new ConnectorLeaseError(id);
+      const current = this.#readRecord<ConnectorLease>(
+        'connector_leases', String(row.id), row,
+        (value) => assertConnectorLease(value), (value) => value.id,
+      );
+      if (current.leaseToken !== leaseToken || Date.parse(current.expiresAt) <= Date.parse(at)) {
+        throw new ConnectorLeaseError(id);
+      }
+      const renewed: ConnectorLease = {
+        ...current,
+        expiresAt: new Date(Date.parse(at) + leaseMs).toISOString(),
+        version: current.version + 1,
+        updatedAt: at,
+      };
+      this.#writeConnectorLease(renewed);
+      return renewed;
+    });
+  }
+
+  releaseConnectorLease(id: string, leaseToken: string): boolean {
+    return this.#writeTransaction(() => {
+      const row = this.#database.prepare('SELECT * FROM connector_leases WHERE id = ?').get(id);
+      if (!row) return false;
+      const current = this.#readRecord<ConnectorLease>(
+        'connector_leases', String(row.id), row,
+        (value) => assertConnectorLease(value), (value) => value.id,
+      );
+      if (current.leaseToken !== leaseToken) throw new ConnectorLeaseError(id);
+      this.#database.prepare('DELETE FROM connector_leases WHERE id = ?').run(id);
+      return true;
+    });
   }
 
   upsertEntity(entity: Entity): Entity {
@@ -1346,6 +1797,24 @@ export class JerichoStore {
     ) : undefined;
   }
 
+  startReceipt(id: string, startedAt: string): ActionReceipt {
+    return this.#writeTransaction(() => {
+      const receipt = this.getReceipt(id);
+      if (!receipt || receipt.status !== ReceiptStatus.Pending || receipt.verified) {
+        throw new Error(`Receipt ${id} is not a pending reserved action`);
+      }
+      if (receipt.startedAt) {
+        throw new Error(`Receipt ${id} already started and is uncertain; refusing to resend`);
+      }
+      const started: ActionReceipt = {
+        ...receipt,
+        startedAt: normalizeTimestamp(startedAt),
+      };
+      this.#writeReceiptRecord(started);
+      return this.getReceipt(id)!;
+    });
+  }
+
   listReceipts(status?: ReceiptStatusType): ActionReceipt[] {
     const rows = status
       ? this.#database.prepare('SELECT * FROM receipts WHERE status = ? ORDER BY requested_at DESC, id ASC').all(status)
@@ -1833,12 +2302,56 @@ export class JerichoStore {
           (value) => assertConnectorHealth(value),
           (value) => value.connectorId,
         );
-        if (
-          timestampEpoch(current.checkedAt) >= timestampEpoch(normalized.checkedAt)
-        ) {
+        const mergedCapabilities = [...current.capabilities];
+        let capabilityChanged = false;
+        for (const incoming of normalized.capabilities) {
+          const index = mergedCapabilities.findIndex(
+            (candidate) => candidate.capability === incoming.capability,
+          );
+          if (index < 0) {
+            mergedCapabilities.push(incoming);
+            capabilityChanged = true;
+          } else if (
+            timestampEpoch(incoming.checkedAt) >
+            timestampEpoch(mergedCapabilities[index].checkedAt)
+          ) {
+            mergedCapabilities[index] = incoming;
+            capabilityChanged = true;
+          }
+        }
+        const incomingIsNewer =
+          timestampEpoch(normalized.checkedAt) > timestampEpoch(current.checkedAt);
+        if (!capabilityChanged && !incomingIsNewer) {
           return current;
         }
+        const newest = incomingIsNewer ? normalized : current;
+        normalized.capabilities = mergedCapabilities.sort((first, second) =>
+          first.capability.localeCompare(second.capability),
+        );
+        normalized.status = aggregateConnectorHealth(normalized.capabilities);
+        normalized.checkedAt = laterTimestamp(current.checkedAt, normalized.checkedAt);
+        normalized.lastSuccessAt = latestOptionalTimestamp(
+          current.lastSuccessAt,
+          normalized.lastSuccessAt,
+        );
+        normalized.lastFailureAt = latestOptionalTimestamp(
+          current.lastFailureAt,
+          normalized.lastFailureAt,
+        );
+        normalized.latencyMs = newest.latencyMs;
+        normalized.consecutiveFailures = newest.consecutiveFailures;
+        normalized.freshness = timestampEpoch(normalized.freshness.observedAt) >
+          timestampEpoch(current.freshness.observedAt)
+          ? normalized.freshness
+          : current.freshness;
+        normalized.details = { ...current.details, ...normalized.details };
+        normalized.provenance = mergeProvenance(current.provenance, normalized.provenance);
       }
+
+      normalized.status = aggregateConnectorHealth(normalized.capabilities);
+      if (normalized.lastSuccessAt === undefined) delete normalized.lastSuccessAt;
+      if (normalized.lastFailureAt === undefined) delete normalized.lastFailureAt;
+      if (normalized.latencyMs === undefined) delete normalized.latencyMs;
 
       const sealed = this.#sealRecord(
         'connector_health',
@@ -1905,6 +2418,462 @@ export class JerichoStore {
         (value) => value.connectorId,
       ),
     );
+  }
+
+  #appendEventRecord(normalized: EventEnvelope): AppendEventResult {
+    const integrityHash = this.#integrityHashFor(normalized);
+    const existing = this.#database.prepare(`
+      SELECT * FROM events WHERE source = ? AND source_event_id = ?
+    `).get(normalized.source, normalized.sourceEventId);
+    if (existing) {
+      const existingEvent = this.#readRecord<EventEnvelope>(
+        'events', String(existing.id), existing,
+        (value) => assertEventEnvelope(value), (value) => value.id,
+      );
+      if (digestsEqual(existing.integrity_hash, integrityHash)) {
+        return { event: existingEvent, inserted: false };
+      }
+      throw new EventConflictError(normalized.source, normalized.sourceEventId);
+    }
+    const sealed = this.#sealRecord('events', normalized.id, normalized);
+    this.#database.prepare(`
+      INSERT INTO events (
+        id, source, source_type, source_event_id, event_type,
+        occurred_at, ingested_at, status, route, risk, confidence,
+        freshness_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      normalized.id, normalized.source, normalized.sourceType,
+      normalized.sourceEventId, normalized.type, normalized.occurredAt,
+      normalized.ingestedAt, normalized.status ?? null, normalized.route ?? null,
+      normalized.risk ?? null, normalized.confidence ?? null,
+      normalized.freshness?.observedAt ?? null, sealed.integrityHash, sealed.body,
+    );
+    return { event: sealed.record, inserted: true };
+  }
+
+  #resolveExternalIdentity(
+    observation: ExternalIdentityObservation,
+    connectorId: string,
+    capability: ConnectorCapability,
+    committedAt: string,
+  ): {
+    link: ExternalIdentityLink;
+    reviewCandidate?: ExternalIdentityReviewCandidate;
+    failure?: CaptureFailure;
+  } {
+    if (observation.connectorId !== connectorId) {
+      throw new Error('External identity connector does not match its capture batch');
+    }
+    const row = this.#database.prepare(`
+      SELECT * FROM external_identities
+      WHERE connector_id = ? AND namespace = ? AND external_id = ?
+    `).get(observation.connectorId, observation.namespace, observation.externalId);
+    const provenance: Provenance = {
+      source: observation.connectorId,
+      sourceType: SourceType.Connector,
+      sourceEventId: observation.evidenceEventId,
+      observedAt: observation.observedAt,
+      confidence: observation.confidence,
+    };
+
+    if (row) {
+      const existing = this.#readRecord<ExternalIdentityLink>(
+        'external_identities', String(row.id), row,
+        (value) => assertExternalIdentityLink(value), (value) => value.id,
+      );
+      const link: ExternalIdentityLink = {
+        ...existing,
+        lastObservedAt: laterTimestamp(existing.lastObservedAt, observation.observedAt),
+        evidenceEventIds: uniqueStrings([...existing.evidenceEventIds, observation.evidenceEventId]),
+        confidence: Math.max(existing.confidence, observation.confidence),
+        provenance: mergeProvenance(existing.provenance, [provenance]),
+      };
+      this.#writeExternalIdentity(link);
+      if (observation.claimedEntityId && observation.claimedEntityId !== existing.entityId) {
+        const reviewCandidate = this.#identityReview(
+          IdentityReviewKind.Contradiction,
+          observation,
+          existing.entityId,
+          [observation.claimedEntityId],
+          'An established external identity was claimed for a different entity',
+          committedAt,
+        );
+        const failure: CaptureFailure = {
+          ...this.#identityFailure(
+            connectorId,
+            capability,
+            CaptureFailureKind.IdentityConflict,
+            reviewCandidate.reason,
+            observation.evidenceEventId,
+            committedAt,
+          ),
+          reviewCandidate,
+        };
+        return { link, reviewCandidate, failure };
+      }
+      return { link };
+    }
+
+    const entityId = `entity-${randomUUID()}`;
+    const entity: Entity = {
+      id: entityId,
+      type: observation.entityType,
+      canonicalName: observation.displayName ?? `${observation.namespace}:${observation.externalId}`,
+      aliases: [],
+      attributes: structuredClone(observation.attributes),
+      status: LifecycleStatus.Draft,
+      risk: RiskLevel.Low,
+      confidence: observation.confidence,
+      freshness: { observedAt: observation.observedAt },
+      provenance: [provenance],
+      createdAt: observation.observedAt,
+      updatedAt: observation.observedAt,
+    };
+    this.#insertEntityRecord(entity);
+    const link: ExternalIdentityLink = {
+      id: `identity-${randomUUID()}`,
+      connectorId: observation.connectorId,
+      namespace: observation.namespace,
+      externalId: observation.externalId,
+      entityId,
+      status: ExternalIdentityLinkStatus.Provisional,
+      firstObservedAt: observation.observedAt,
+      lastObservedAt: observation.observedAt,
+      evidenceEventIds: [observation.evidenceEventId],
+      confidence: observation.confidence,
+      provenance: [provenance],
+    };
+    this.#writeExternalIdentity(link);
+
+    const displayCandidates = observation.displayName
+      ? this.listEntities()
+          .filter((candidate) =>
+            candidate.id !== entityId &&
+            candidate.canonicalName.localeCompare(observation.displayName!, undefined, { sensitivity: 'accent' }) === 0
+          )
+          .map((candidate) => candidate.id)
+      : [];
+    const candidateEntityIds = uniqueStrings([
+      ...displayCandidates,
+      ...(observation.claimedEntityId ? [observation.claimedEntityId] : []),
+    ]);
+    if (candidateEntityIds.length === 0) return { link };
+    const reviewCandidate = this.#identityReview(
+      IdentityReviewKind.ProposedMerge,
+      observation,
+      entityId,
+      candidateEntityIds,
+      'Display names and claimed candidates require explicit identity review',
+      committedAt,
+    );
+    const failure: CaptureFailure = {
+      ...this.#identityFailure(
+        connectorId,
+        capability,
+        CaptureFailureKind.IdentityConflict,
+        reviewCandidate.reason,
+        observation.evidenceEventId,
+        committedAt,
+      ),
+      reviewCandidate,
+    };
+    return { link, reviewCandidate, failure };
+  }
+
+  #resolveExternalRelation(
+    observation: NormalizedCapture['relations'][number],
+    committedAt: string,
+  ): Relation | undefined {
+    const resolve = (key: typeof observation.from) => {
+      const row = this.#database.prepare(`
+        SELECT * FROM external_identities
+        WHERE connector_id = ? AND namespace = ? AND external_id = ?
+      `).get(key.connectorId, key.namespace, key.externalId);
+      return row ? this.#readRecord<ExternalIdentityLink>(
+        'external_identities', String(row.id), row,
+        (value) => assertExternalIdentityLink(value), (value) => value.id,
+      ) : undefined;
+    };
+    const from = resolve(observation.from);
+    const to = resolve(observation.to);
+    if (!from || !to) return undefined;
+    const row = this.#database.prepare(`
+      SELECT * FROM relations
+      WHERE from_entity_id = ? AND to_entity_id = ? AND relation_type = ?
+    `).get(from.entityId, to.entityId, observation.type);
+    const provenance: Provenance = {
+      source: observation.from.connectorId,
+      sourceType: SourceType.Connector,
+      sourceEventId: observation.evidenceEventId,
+      observedAt: observation.observedAt,
+    };
+    const current = row ? this.#readRecord<Relation>(
+      'relations', String(row.id), row,
+      (value) => assertRelation(value), (value) => value.id,
+    ) : undefined;
+    const relation: Relation = current ? {
+      ...current,
+      attributes: { ...current.attributes, ...observation.attributes },
+      freshness: { observedAt: observation.observedAt },
+      provenance: mergeProvenance(current.provenance, [provenance]),
+      updatedAt: laterTimestamp(current.updatedAt, committedAt),
+    } : {
+      id: `relation-${randomUUID()}`,
+      fromEntityId: from.entityId,
+      toEntityId: to.entityId,
+      type: observation.type,
+      attributes: structuredClone(observation.attributes),
+      status: LifecycleStatus.Active,
+      risk: RiskLevel.Low,
+      freshness: { observedAt: observation.observedAt },
+      provenance: [provenance],
+      createdAt: committedAt,
+      updatedAt: committedAt,
+    };
+    this.#writeRelationRecord(relation, Boolean(current));
+    return relation;
+  }
+
+  #identityReview(
+    kind: IdentityReviewKind,
+    observation: ExternalIdentityObservation,
+    observedEntityId: string,
+    candidateEntityIds: string[],
+    reason: string,
+    createdAt: string,
+  ): ExternalIdentityReviewCandidate {
+    return {
+      id: `identity-review-${randomUUID()}`,
+      kind,
+      connectorId: observation.connectorId,
+      namespace: observation.namespace,
+      externalId: observation.externalId,
+      observedEntityId,
+      candidateEntityIds,
+      reason,
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      risk: RiskLevel.Medium,
+      evidenceEventIds: [observation.evidenceEventId],
+      createdAt,
+      provenance: [{
+        source: observation.connectorId,
+        sourceType: SourceType.Connector,
+        sourceEventId: observation.evidenceEventId,
+        observedAt: observation.observedAt,
+      }],
+    };
+  }
+
+  #identityFailure(
+    connectorId: string,
+    capability: ConnectorCapability,
+    kind: CaptureFailureKind,
+    message: string,
+    sourceEventId: string,
+    occurredAt: string,
+  ): CaptureFailure {
+    return {
+      id: `capture-failure-${randomUUID()}`,
+      connectorId,
+      capability,
+      kind,
+      message,
+      retryable: false,
+      sourceEventId,
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      risk: RiskLevel.Medium,
+      details: {},
+      occurredAt,
+      provenance: [{
+        source: connectorId,
+        sourceType: SourceType.Connector,
+        sourceEventId,
+        observedAt: occurredAt,
+      }],
+    };
+  }
+
+  #insertEntityRecord(entity: Entity): void {
+    assertEntity(entity);
+    const sealed = this.#sealRecord('entities', entity.id, entity);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO entities (
+        id, entity_type, status, risk, confidence, freshness_at,
+        created_at, updated_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.type, stored.status ?? null, stored.risk ?? null,
+      stored.confidence ?? null, stored.freshness.observedAt, stored.createdAt,
+      stored.updatedAt, sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #writeRelationRecord(relation: Relation, update: boolean): void {
+    assertRelation(relation);
+    const sealed = this.#sealRecord('relations', relation.id, relation);
+    const stored = sealed.record;
+    if (update) {
+      this.#database.prepare(`
+        UPDATE relations SET status = ?, risk = ?, confidence = ?, freshness_at = ?,
+          created_at = ?, updated_at = ?, integrity_hash = ?, body = ? WHERE id = ?
+      `).run(
+        stored.status ?? null, stored.risk ?? null, stored.confidence ?? null,
+        stored.freshness.observedAt, stored.createdAt, stored.updatedAt,
+        sealed.integrityHash, sealed.body, stored.id,
+      );
+      return;
+    }
+    this.#database.prepare(`
+      INSERT INTO relations (
+        id, from_entity_id, to_entity_id, relation_type, status, risk,
+        confidence, freshness_at, created_at, updated_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.fromEntityId, stored.toEntityId, stored.type,
+      stored.status ?? null, stored.risk ?? null, stored.confidence ?? null,
+      stored.freshness.observedAt, stored.createdAt, stored.updatedAt,
+      sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #writeExternalIdentity(link: ExternalIdentityLink): void {
+    assertExternalIdentityLink(link);
+    const sealed = this.#sealRecord('external_identities', link.id, link);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO external_identities (
+        id, connector_id, namespace, external_id, entity_id, status,
+        last_observed_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        entity_id = excluded.entity_id,
+        status = excluded.status,
+        last_observed_at = excluded.last_observed_at,
+        integrity_hash = excluded.integrity_hash,
+        body = excluded.body
+    `).run(
+      stored.id, stored.connectorId, stored.namespace, stored.externalId,
+      stored.entityId, stored.status, stored.lastObservedAt,
+      sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #insertCaptureFailure(failure: CaptureFailure): void {
+    assertCaptureFailure(failure);
+    const existing = this.#database.prepare('SELECT * FROM capture_failures WHERE id = ?').get(failure.id);
+    if (existing) {
+      const current = this.#readRecord<CaptureFailure>(
+        'capture_failures', String(existing.id), existing,
+        (value) => assertCaptureFailure(value), (value) => value.id,
+      );
+      if (this.#integrityHashFor(current) === this.#integrityHashFor(failure)) return;
+      throw new Error(`Capture failure ${failure.id} conflicts with its immutable record`);
+    }
+    const sealed = this.#sealRecord('capture_failures', failure.id, failure);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO capture_failures (
+        id, connector_id, capability, status, route, risk, occurred_at,
+        integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.connectorId, stored.capability, stored.status,
+      stored.route, stored.risk, stored.occurredAt, sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #writeConnectorCursor(cursor: VersionedCursor): void {
+    assertVersionedCursor(cursor);
+    const id = cursorRecordId(cursor.connectorId, cursor.capability, cursor.partition);
+    const sealed = this.#sealRecord('connector_cursors', id, cursor);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO connector_cursors (
+        id, connector_id, capability, partition_key, cursor_version, epoch,
+        sequence, updated_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        cursor_version = excluded.cursor_version,
+        epoch = excluded.epoch,
+        sequence = excluded.sequence,
+        updated_at = excluded.updated_at,
+        integrity_hash = excluded.integrity_hash,
+        body = excluded.body
+    `).run(
+      id, stored.connectorId, stored.capability, stored.partition,
+      stored.version, stored.epoch, stored.sequence, stored.updatedAt,
+      sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #writeConnectorLease(lease: ConnectorLease): void {
+    assertConnectorLease(lease);
+    const sealed = this.#sealRecord('connector_leases', lease.id, lease);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO connector_leases (
+        id, connector_id, capability, owner_id, lease_token, expires_at,
+        lease_version, updated_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET
+        owner_id = excluded.owner_id,
+        lease_token = excluded.lease_token,
+        expires_at = excluded.expires_at,
+        lease_version = excluded.lease_version,
+        updated_at = excluded.updated_at,
+        integrity_hash = excluded.integrity_hash,
+        body = excluded.body
+    `).run(
+      stored.id, stored.connectorId, stored.capability, stored.ownerId,
+      stored.leaseToken, stored.expiresAt, stored.version, stored.updatedAt,
+      sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #requireConnectorLease(
+    connectorId: string,
+    capability: ConnectorCapability,
+    leaseToken: string,
+    at: string,
+  ): ConnectorLease {
+    const id = connectorLeaseId(connectorId, capability);
+    const row = this.#database.prepare('SELECT * FROM connector_leases WHERE id = ?').get(id);
+    if (!row) throw new ConnectorLeaseError(id);
+    const lease = this.#readRecord<ConnectorLease>(
+      'connector_leases', String(row.id), row,
+      (value) => assertConnectorLease(value), (value) => value.id,
+    );
+    if (lease.leaseToken !== leaseToken || Date.parse(lease.expiresAt) <= Date.parse(at)) {
+      throw new ConnectorLeaseError(id);
+    }
+    return lease;
+  }
+
+  #appendChangeLog(input: Omit<ChangeLog, 'id' | 'sequence' | 'integrityHash'>): ChangeLog {
+    const row = this.#database.prepare('SELECT COALESCE(MAX(sequence), 0) AS sequence FROM change_log').get();
+    const change: ChangeLog = {
+      id: `change-${randomUUID()}`,
+      sequence: Number(row?.sequence ?? 0) + 1,
+      ...input,
+    };
+    assertChangeLog(change);
+    const sealed = this.#sealRecord('change_log', change.id, change);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO change_log (
+        id, sequence, kind, connector_id, record_type, record_id, event_id,
+        changed_at, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      stored.id, stored.sequence, stored.kind, stored.connectorId ?? null,
+      stored.recordType, stored.recordId, stored.eventId ?? null,
+      stored.changedAt, sealed.integrityHash, sealed.body,
+    );
+    return stored;
   }
 
   #writeAssignmentRecord(assignment: Assignment): void {
@@ -2675,6 +3644,69 @@ function recordProjection(
         incurred_at: cost.incurredAt,
       };
     }
+    case 'connector_cursors': {
+      const cursor = value as VersionedCursor;
+      return {
+        id: cursorRecordId(cursor.connectorId, cursor.capability, cursor.partition),
+        connector_id: cursor.connectorId,
+        capability: cursor.capability,
+        partition_key: cursor.partition,
+        cursor_version: cursor.version,
+        epoch: cursor.epoch,
+        sequence: cursor.sequence,
+        updated_at: cursor.updatedAt,
+      };
+    }
+    case 'connector_leases': {
+      const lease = value as ConnectorLease;
+      return {
+        id: lease.id,
+        connector_id: lease.connectorId,
+        capability: lease.capability,
+        owner_id: lease.ownerId,
+        lease_token: lease.leaseToken,
+        expires_at: lease.expiresAt,
+        lease_version: lease.version,
+        updated_at: lease.updatedAt,
+      };
+    }
+    case 'external_identities': {
+      const link = value as ExternalIdentityLink;
+      return {
+        id: link.id,
+        connector_id: link.connectorId,
+        namespace: link.namespace,
+        external_id: link.externalId,
+        entity_id: link.entityId,
+        status: link.status,
+        last_observed_at: link.lastObservedAt,
+      };
+    }
+    case 'capture_failures': {
+      const failure = value as CaptureFailure;
+      return {
+        id: failure.id,
+        connector_id: failure.connectorId,
+        capability: failure.capability,
+        status: failure.status,
+        route: failure.route,
+        risk: failure.risk,
+        occurred_at: failure.occurredAt,
+      };
+    }
+    case 'change_log': {
+      const change = value as ChangeLog;
+      return {
+        id: change.id,
+        sequence: change.sequence,
+        kind: change.kind,
+        connector_id: change.connectorId ?? null,
+        record_type: change.recordType,
+        record_id: change.recordId,
+        event_id: change.eventId ?? null,
+        changed_at: change.changedAt,
+      };
+    }
   }
 }
 
@@ -2763,6 +3795,16 @@ function projectionColumns(table: EncryptedRecordTable): readonly string[] {
       return ['id', 'entity_id', 'status', 'route', 'risk', 'changed_at'];
     case 'cost_records':
       return ['id', 'mission_id', 'assignment_id', 'category', 'estimated_microusd', 'actual_microusd', 'idempotency_key', 'incurred_at'];
+    case 'connector_cursors':
+      return ['id', 'connector_id', 'capability', 'partition_key', 'cursor_version', 'epoch', 'sequence', 'updated_at'];
+    case 'connector_leases':
+      return ['id', 'connector_id', 'capability', 'owner_id', 'lease_token', 'expires_at', 'lease_version', 'updated_at'];
+    case 'external_identities':
+      return ['id', 'connector_id', 'namespace', 'external_id', 'entity_id', 'status', 'last_observed_at'];
+    case 'capture_failures':
+      return ['id', 'connector_id', 'capability', 'status', 'route', 'risk', 'occurred_at'];
+    case 'change_log':
+      return ['id', 'sequence', 'kind', 'connector_id', 'record_type', 'record_id', 'event_id', 'changed_at'];
   }
 }
 
@@ -2932,8 +3974,47 @@ function normalizeConnectorHealth(health: ConnectorHealth): ConnectorHealth {
       ? { lastFailureAt: normalizeTimestamp(health.lastFailureAt) }
       : {}),
     freshness: normalizeFreshness(health.freshness),
+    capabilities: health.capabilities.map((capability) => ({
+      ...capability,
+      checkedAt: normalizeTimestamp(capability.checkedAt),
+      ...(capability.lastSuccessAt
+        ? { lastSuccessAt: normalizeTimestamp(capability.lastSuccessAt) }
+        : {}),
+      ...(capability.lastFailureAt
+        ? { lastFailureAt: normalizeTimestamp(capability.lastFailureAt) }
+        : {}),
+    })),
     provenance: health.provenance.map(normalizeProvenance),
   };
+}
+
+function aggregateConnectorHealth(
+  capabilities: readonly ConnectorCapabilityHealth[],
+): ConnectorHealthStatus {
+  if (capabilities.length === 0) return ConnectorHealthStatus.Unknown;
+  if (capabilities.every((item) => item.status === ConnectorHealthStatus.Disabled)) {
+    return ConnectorHealthStatus.Disabled;
+  }
+  const rank: Record<ConnectorHealthStatus, number> = {
+    [ConnectorHealthStatus.Disabled]: 0,
+    [ConnectorHealthStatus.Healthy]: 1,
+    [ConnectorHealthStatus.Unknown]: 2,
+    [ConnectorHealthStatus.Degraded]: 3,
+    [ConnectorHealthStatus.Unavailable]: 4,
+    [ConnectorHealthStatus.Unauthorized]: 5,
+  };
+  return capabilities.reduce<ConnectorHealthStatus>((worst, item) =>
+    rank[item.status] > rank[worst] ? item.status : worst,
+  ConnectorHealthStatus.Disabled);
+}
+
+function latestOptionalTimestamp(
+  first: string | undefined,
+  second: string | undefined,
+): string | undefined {
+  if (!first) return second;
+  if (!second) return first;
+  return laterTimestamp(first, second);
 }
 
 function normalizeIntent(intent: IntentEnvelope): IntentEnvelope {
@@ -3041,6 +4122,30 @@ function normalizeCost(cost: CostRecord): CostRecord {
     incurredAt: normalizeTimestamp(cost.incurredAt),
     provenance: cost.provenance.map(normalizeProvenance),
   };
+}
+
+function normalizeCursor(cursor: VersionedCursor): VersionedCursor {
+  return {
+    ...cursor,
+    updatedAt: normalizeTimestamp(cursor.updatedAt),
+    ...(cursor.watermark ? { watermark: normalizeTimestamp(cursor.watermark) } : {}),
+    ...(cursor.overlapFrom ? { overlapFrom: normalizeTimestamp(cursor.overlapFrom) } : {}),
+  };
+}
+
+function cursorRecordId(
+  connectorId: string,
+  capability: ConnectorCapability,
+  partition: string,
+): string {
+  return `${connectorId}:${capability}:${partition}`;
+}
+
+function connectorLeaseId(
+  connectorId: string,
+  capability: ConnectorCapability,
+): string {
+  return `${connectorId}:${capability}`;
 }
 
 function normalizeFreshness(freshness: Freshness): Freshness {

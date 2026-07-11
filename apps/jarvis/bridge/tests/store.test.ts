@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import {
   ConnectorHealthStatus,
+  ConnectorCapability,
   EntityType,
   LifecycleStatus,
   RelationType,
@@ -123,11 +124,16 @@ describe('JerichoStore migrations', () => {
     expect(tables).toEqual([
       'agent_capabilities',
       'assignments',
+      'capture_failures',
+      'change_log',
+      'connector_cursors',
       'connector_health',
+      'connector_leases',
       'cost_records',
       'decisions',
       'entities',
       'events',
+      'external_identities',
       'intents',
       'mission_task_dependencies',
       'mission_tasks',
@@ -157,7 +163,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3, 4, 5]);
+    ).toEqual([1, 2, 3, 4, 5, 6]);
     database.close();
   });
 
@@ -195,7 +201,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3, 4, 5]);
+    ).toEqual([1, 2, 3, 4, 5, 6]);
     database.close();
   });
 
@@ -764,6 +770,34 @@ describe('JerichoStore connector health', () => {
 
     expect(tied).toEqual(first);
   });
+
+  it('merges independently checked capabilities without losing concurrent health', () => {
+    const store = openStore();
+    store.upsertConnectorHealth(makeConnectorHealth({
+      status: ConnectorHealthStatus.Healthy,
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt: '2026-07-11T01:00:00.000Z',
+        details: {},
+      }],
+    }));
+    const merged = store.upsertConnectorHealth(makeConnectorHealth({
+      status: ConnectorHealthStatus.Unavailable,
+      capabilities: [{
+        capability: ConnectorCapability.Search,
+        status: ConnectorHealthStatus.Unavailable,
+        checkedAt: '2026-07-11T01:00:00.000Z',
+        details: { reason: 'missing config' },
+      }],
+    }));
+
+    expect(merged.status).toBe(ConnectorHealthStatus.Unavailable);
+    expect(merged.capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ capability: ConnectorCapability.Capture, status: ConnectorHealthStatus.Healthy }),
+      expect.objectContaining({ capability: ConnectorCapability.Search, status: ConnectorHealthStatus.Unavailable }),
+    ]));
+  });
 });
 
 function openStore(path = ':memory:'): JerichoStore {
@@ -855,14 +889,22 @@ function makeRelation(overrides: Partial<Relation> = {}): Relation {
 function makeConnectorHealth(
   overrides: Partial<ConnectorHealth> = {},
 ): ConnectorHealth {
+  const status = overrides.status ?? ConnectorHealthStatus.Degraded;
   return {
     connectorId: 'gmail',
-    status: ConnectorHealthStatus.Degraded,
+    status,
     checkedAt: '2026-07-11T01:00:00.000Z',
     lastFailureAt: '2026-07-11T01:00:00.000Z',
     latencyMs: 310,
     consecutiveFailures: 2,
     freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+    capabilities: overrides.capabilities ?? [{
+      capability: ConnectorCapability.Capture,
+      status,
+      checkedAt: '2026-07-11T01:00:00.000Z',
+      lastFailureAt: '2026-07-11T01:00:00.000Z',
+      details: {},
+    }],
     details: { error: 'temporary connector timeout' },
     provenance: [
       {

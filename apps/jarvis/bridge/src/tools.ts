@@ -1,7 +1,16 @@
-/**
- * Tool declarations + dispatcher.
- * Phase 1/2: local mock executor. Phase 3 swaps `execute` to hit Paperclip :3100.
- */
+import { randomUUID } from 'node:crypto';
+
+import {
+  EntityType,
+  LifecycleStatus,
+  ProposalKind,
+  RiskLevel,
+  RouteType,
+  SourceType,
+  type JsonObject,
+} from '@jericho/shared';
+
+import type { JerichoStore } from './core/store.js';
 
 export interface ToolDecl {
   name: string;
@@ -12,12 +21,12 @@ export interface ToolDecl {
 export const FUNCTION_DECLARATIONS: ToolDecl[] = [
   {
     name: 'list_open_tasks',
-    description: 'List the user\'s currently open tasks / issues.',
+    description: 'List open tasks from Jericho truth with freshness and evidence.',
     parameters: { type: 'object', properties: {} },
   },
   {
     name: 'draft_email',
-    description: 'Draft a short email on a given topic.',
+    description: 'Create a reviewable email draft proposal. This never sends.',
     parameters: {
       type: 'object',
       properties: {
@@ -30,45 +39,129 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
   },
   {
     name: 'fleet_status',
-    description: 'Report the current status of the agent fleet.',
+    description: 'Report actual connector and registered agent capability health.',
     parameters: { type: 'object', properties: {} },
   },
 ];
 
-/** Local mock executor. Returns a JSON-serializable result object. */
-export async function execute(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  switch (name) {
-    case 'list_open_tasks':
-      return {
-        count: 3,
-        tasks: [
-          { id: 'P1-2', title: 'Provision Paperclip API key', status: 'blocked', priority: 'high' },
-          { id: 'P1-1', title: 'Wire Telethon for Jericho', status: 'queued', priority: 'high' },
-          { id: 'P0-5', title: 'Rebuild 2 dead crons', status: 'queued', priority: 'urgent' },
-        ],
-      };
-    case 'draft_email': {
-      const to = (args.to as string) ?? 'there';
-      const topic = (args.topic as string) ?? 'following up';
-      const tone = (args.tone as string) ?? 'warm';
-      return {
-        to,
-        subject: topic,
-        body: `Hi ${to},\n\nFollowing up on ${topic}. Wanted to keep this short — let me know what works. (tone: ${tone})\n\n— sent via Jarvis`,
-      };
-    }
-    case 'fleet_status':
-      return {
-        agents: [
-          { name: 'DEV', status: 'online', model: 'deepseek-v4-pro' },
-          { name: 'PA', status: 'online', model: 'deepseek-v4-pro' },
-          { name: 'Iris', status: 'online', model: 'glm-5.2' },
-          { name: 'Jericho', status: 'online', model: 'deepseek-v4-pro' },
-        ],
-        paperclip: 'healthy, no auth',
-        disk: '76%',
-      };
-    default:
-      return { error: `unknown tool: ${name}` };
-  }
+export interface ToolExecutorOptions {
+  store: JerichoStore;
+  clock?: () => string;
+  idFactory?: () => string;
+}
+
+export interface ToolExecutor {
+  execute(name: string, args: Record<string, unknown>): Promise<Record<string, unknown>>;
+}
+
+export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
+  const clock = options.clock ?? (() => new Date().toISOString());
+  const idFactory = options.idFactory ?? (() => `proposal-${randomUUID()}`);
+  return {
+    execute: async (name, args) => {
+      switch (name) {
+        case 'list_open_tasks': {
+          const tasks = options.store.listEntities({ type: EntityType.Task })
+            .filter((entity) =>
+              entity.status !== LifecycleStatus.Succeeded &&
+              entity.status !== LifecycleStatus.Cancelled &&
+              entity.status !== LifecycleStatus.Archived,
+            )
+            .map((entity) => ({
+              id: entity.id,
+              ...(typeof entity.attributes.identifier === 'string'
+                ? { identifier: entity.attributes.identifier }
+                : {}),
+              title: entity.canonicalName,
+              status: entity.status ?? LifecycleStatus.Draft,
+              ...(typeof entity.attributes.state === 'string'
+                ? { state: entity.attributes.state }
+                : {}),
+              ...(typeof entity.attributes.priority === 'string'
+                ? { priority: entity.attributes.priority }
+                : {}),
+              freshness: entity.freshness.observedAt,
+              evidence: entity.provenance.map((item) => ({
+                source: item.source,
+                ...(item.sourceEventId ? { sourceEventId: item.sourceEventId } : {}),
+                observedAt: item.observedAt,
+              })),
+            }));
+          return { count: tasks.length, tasks };
+        }
+        case 'draft_email': {
+          const topic = requiredString(args.topic, 'topic');
+          const to = optionalString(args.to) ?? 'recipient';
+          const tone = optionalString(args.tone) ?? 'warm';
+          const createdAt = clock();
+          const proposal = options.store.saveProposal({
+            id: idFactory(),
+            proposedByAgentId: 'jericho',
+            kind: ProposalKind.Message,
+            summary: `Email draft: ${topic}`,
+            body: {
+              to,
+              topic,
+              tone,
+              subject: topic,
+              draft: draftBody(to, topic, tone),
+            } as JsonObject,
+            status: LifecycleStatus.PendingApproval,
+            route: RouteType.HumanApproval,
+            risk: RiskLevel.Low,
+            createdAt,
+            provenance: [{
+              source: 'jericho-tool:draft_email',
+              sourceType: SourceType.Agent,
+              observedAt: createdAt,
+            }],
+          });
+          return {
+            proposalId: proposal.id,
+            status: proposal.status,
+            summary: proposal.summary,
+            draft: proposal.body.draft,
+          };
+        }
+        case 'fleet_status': {
+          const connectors = options.store.listConnectorHealth().map((health) => ({
+            connectorId: health.connectorId,
+            status: health.status,
+            checkedAt: health.checkedAt,
+            capabilities: health.capabilities,
+          }));
+          const agentsById = new Map<string, Record<string, unknown>>();
+          for (const capability of options.store.listAgentCapabilities()) {
+            const current = agentsById.get(capability.agentId);
+            if (current) {
+              (current.capabilities as string[]).push(capability.id);
+              continue;
+            }
+            agentsById.set(capability.agentId, {
+              agentId: capability.agentId,
+              lane: capability.lane,
+              status: capability.status,
+              capabilities: [capability.id],
+            });
+          }
+          return { connectors, agents: [...agentsById.values()] };
+        }
+        default:
+          return { error: `unknown tool: ${name}` };
+      }
+    },
+  };
+}
+
+function requiredString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${field} is required`);
+  return value.trim();
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function draftBody(to: string, topic: string, tone: string): string {
+  return `Hi ${to},\n\nFollowing up on ${topic}. Please let me know what works for you.\n\nTone: ${tone}`;
 }

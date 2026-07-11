@@ -252,6 +252,13 @@ function makeValidHealth(overrides: Record<string, unknown> = {}) {
     latencyMs: 100,
     consecutiveFailures: 0,
     freshness: { observedAt: '2026-07-11T00:00:00.000Z' },
+    capabilities: [{
+      capability: 'capture',
+      status: 'healthy',
+      checkedAt: '2026-07-11T00:00:00.000Z',
+      lastSuccessAt: '2026-07-11T00:00:00.000Z',
+      details: {},
+    }],
     details: { account: 'primary' },
     provenance: [
       {

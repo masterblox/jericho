@@ -123,6 +123,12 @@ export enum EntityType {
   Device = 'device',
   Agent = 'agent',
   Service = 'service',
+  Conversation = 'conversation',
+  Commitment = 'commitment',
+  Repository = 'repository',
+  Run = 'run',
+  Note = 'note',
+  Artifact = 'artifact',
   Other = 'other',
 }
 
@@ -194,6 +200,45 @@ export enum ConnectorHealthStatus {
   Disabled = 'disabled',
 }
 
+export enum ConnectorCapability {
+  Capture = 'capture',
+  Send = 'send',
+  Search = 'search',
+  Health = 'health',
+}
+
+export enum ExternalIdentityLinkStatus {
+  Provisional = 'provisional',
+  Established = 'established',
+  Review = 'review',
+}
+
+export enum IdentityReviewKind {
+  ProposedMerge = 'proposed_merge',
+  Contradiction = 'contradiction',
+  Collision = 'collision',
+}
+
+export enum CaptureFailureKind {
+  InvalidPayload = 'invalid_payload',
+  IdentityConflict = 'identity_conflict',
+  Transport = 'transport',
+  Authorization = 'authorization',
+  CursorConflict = 'cursor_conflict',
+  ContradictoryHistory = 'contradictory_history',
+}
+
+export enum ChangeLogKind {
+  EventCaptured = 'event_captured',
+  IdentityObserved = 'identity_observed',
+  RelationObserved = 'relation_observed',
+  IdentityReview = 'identity_review',
+  CaptureFailed = 'capture_failed',
+  CursorAdvanced = 'cursor_advanced',
+  ProposalCreated = 'proposal_created',
+  HealthChanged = 'health_changed',
+}
+
 export enum PreferenceScope {
   User = 'user',
   Workspace = 'workspace',
@@ -235,6 +280,129 @@ export interface EventEnvelope {
   confidence?: number;
   freshness?: Freshness;
   provenance: Provenance[];
+  integrityHash?: string;
+}
+
+export interface VersionedCursor {
+  connectorId: string;
+  capability: ConnectorCapability;
+  partition: string;
+  epoch: number;
+  sequence: number;
+  pageToken?: string;
+  watermark?: IsoTimestamp;
+  overlapFrom?: IsoTimestamp;
+  version: number;
+  updatedAt: IsoTimestamp;
+  integrityHash?: string;
+}
+
+export interface ExternalIdentityObservation {
+  connectorId: string;
+  namespace: string;
+  externalId: string;
+  entityType: EntityType;
+  displayName?: string;
+  attributes: JsonObject;
+  observedAt: IsoTimestamp;
+  confidence: number;
+  evidenceEventId: string;
+  claimedEntityId?: string;
+}
+
+export interface ExternalIdentityKey {
+  connectorId: string;
+  namespace: string;
+  externalId: string;
+}
+
+export interface ExternalRelationObservation {
+  from: ExternalIdentityKey;
+  to: ExternalIdentityKey;
+  type: RelationType;
+  attributes: JsonObject;
+  observedAt: IsoTimestamp;
+  evidenceEventId: string;
+}
+
+export interface ExternalIdentityLink {
+  id: string;
+  connectorId: string;
+  namespace: string;
+  externalId: string;
+  entityId: string;
+  status: ExternalIdentityLinkStatus;
+  firstObservedAt: IsoTimestamp;
+  lastObservedAt: IsoTimestamp;
+  evidenceEventIds: string[];
+  confidence: number;
+  provenance: Provenance[];
+  integrityHash?: string;
+}
+
+export interface ExternalIdentityReviewCandidate {
+  id: string;
+  kind: IdentityReviewKind;
+  connectorId: string;
+  namespace: string;
+  externalId: string;
+  observedEntityId: string;
+  candidateEntityIds: string[];
+  reason: string;
+  status: LifecycleStatus;
+  route: RouteType;
+  risk: RiskLevel;
+  evidenceEventIds: string[];
+  createdAt: IsoTimestamp;
+  provenance: Provenance[];
+}
+
+export interface CaptureFailure {
+  id: string;
+  connectorId: string;
+  capability: ConnectorCapability;
+  kind: CaptureFailureKind;
+  message: string;
+  retryable: boolean;
+  sourceEventId?: string;
+  status: LifecycleStatus;
+  route: RouteType;
+  risk: RiskLevel;
+  details: JsonObject;
+  reviewCandidate?: ExternalIdentityReviewCandidate;
+  occurredAt: IsoTimestamp;
+  provenance: Provenance[];
+  integrityHash?: string;
+}
+
+export interface NormalizedCapture {
+  event: EventEnvelope;
+  identities: ExternalIdentityObservation[];
+  relations: ExternalRelationObservation[];
+}
+
+export interface ChangeLog {
+  id: string;
+  sequence: number;
+  kind: ChangeLogKind;
+  connectorId?: string;
+  recordType: string;
+  recordId: string;
+  eventId?: string;
+  changedAt: IsoTimestamp;
+  payload: JsonObject;
+  integrityHash?: string;
+}
+
+export interface ConnectorLease {
+  id: string;
+  connectorId: string;
+  capability: ConnectorCapability;
+  ownerId: string;
+  leaseToken: string;
+  expiresAt: IsoTimestamp;
+  version: number;
+  updatedAt: IsoTimestamp;
   integrityHash?: string;
 }
 
@@ -647,9 +815,19 @@ export interface ConnectorHealth {
   latencyMs?: number;
   consecutiveFailures: number;
   freshness: Freshness;
+  capabilities: ConnectorCapabilityHealth[];
   details: JsonObject;
   provenance: Provenance[];
   integrityHash?: string;
+}
+
+export interface ConnectorCapabilityHealth {
+  capability: ConnectorCapability;
+  status: ConnectorHealthStatus;
+  checkedAt: IsoTimestamp;
+  lastSuccessAt?: IsoTimestamp;
+  lastFailureAt?: IsoTimestamp;
+  details: JsonObject;
 }
 
 export interface PreferenceChange {
@@ -711,6 +889,155 @@ export function assertEventEnvelope(value: unknown): asserts value is EventEnvel
   if (!isJsonValue(value)) {
     throw new TypeError('Event envelope must contain only JSON values');
   }
+}
+
+export function assertVersionedCursor(value: unknown): asserts value is VersionedCursor {
+  assertRecord(value, 'Connector cursor');
+  for (const field of ['connectorId', 'partition']) {
+    assertNonEmptyString(value[field], `Connector cursor ${field}`);
+  }
+  assertEnum(value.capability, ConnectorCapability, 'Connector cursor capability');
+  assertNonNegativeInteger(value.epoch, 'Connector cursor epoch');
+  assertNonNegativeInteger(value.sequence, 'Connector cursor sequence');
+  assertNonNegativeInteger(value.version, 'Connector cursor version');
+  for (const field of ['pageToken']) {
+    if (field in value) assertNonEmptyString(value[field], `Connector cursor ${field}`);
+  }
+  for (const field of ['watermark', 'overlapFrom', 'updatedAt']) {
+    if (field === 'updatedAt' || field in value) {
+      assertTimestamp(value[field], `Connector cursor ${field}`);
+    }
+  }
+  assertOptionalIntegrityHash(value, 'Connector cursor integrityHash');
+  assertJsonOnly(value, 'Connector cursor');
+}
+
+export function assertExternalIdentityObservation(
+  value: unknown,
+): asserts value is ExternalIdentityObservation {
+  assertRecord(value, 'External identity observation');
+  for (const field of ['connectorId', 'namespace', 'externalId', 'evidenceEventId']) {
+    assertNonEmptyString(value[field], `External identity observation ${field}`);
+  }
+  if ('displayName' in value) {
+    assertNonEmptyString(value.displayName, 'External identity observation displayName');
+  }
+  if ('claimedEntityId' in value) {
+    assertNonEmptyString(value.claimedEntityId, 'External identity observation claimedEntityId');
+  }
+  assertEnum(value.entityType, EntityType, 'External identity observation entityType');
+  assertJsonObject(value.attributes, 'External identity observation attributes');
+  assertTimestamp(value.observedAt, 'External identity observation observedAt');
+  assertRequiredConfidence(value.confidence, 'External identity observation confidence');
+  assertJsonOnly(value, 'External identity observation');
+}
+
+export function assertExternalRelationObservation(
+  value: unknown,
+): asserts value is ExternalRelationObservation {
+  assertRecord(value, 'External relation observation');
+  for (const [name, key] of [['from', value.from], ['to', value.to]] as const) {
+    assertRecord(key, `External relation observation ${name}`);
+    for (const field of ['connectorId', 'namespace', 'externalId']) {
+      assertNonEmptyString(key[field], `External relation observation ${name}.${field}`);
+    }
+  }
+  assertEnum(value.type, RelationType, 'External relation observation type');
+  assertJsonObject(value.attributes, 'External relation observation attributes');
+  assertTimestamp(value.observedAt, 'External relation observation observedAt');
+  assertNonEmptyString(value.evidenceEventId, 'External relation observation evidenceEventId');
+  assertJsonOnly(value, 'External relation observation');
+}
+
+export function assertExternalIdentityLink(value: unknown): asserts value is ExternalIdentityLink {
+  assertRecord(value, 'External identity link');
+  for (const field of ['id', 'connectorId', 'namespace', 'externalId', 'entityId']) {
+    assertNonEmptyString(value[field], `External identity link ${field}`);
+  }
+  assertEnum(value.status, ExternalIdentityLinkStatus, 'External identity link status');
+  assertTimestamp(value.firstObservedAt, 'External identity link firstObservedAt');
+  assertTimestamp(value.lastObservedAt, 'External identity link lastObservedAt');
+  assertDenseStringArray(value.evidenceEventIds, 'External identity link evidenceEventIds');
+  assertRequiredConfidence(value.confidence, 'External identity link confidence');
+  assertProvenanceList(value.provenance, 'External identity link provenance');
+  assertOptionalIntegrityHash(value, 'External identity link integrityHash');
+  assertJsonOnly(value, 'External identity link');
+}
+
+export function assertExternalIdentityReviewCandidate(
+  value: unknown,
+): asserts value is ExternalIdentityReviewCandidate {
+  assertRecord(value, 'External identity review candidate');
+  for (const field of ['id', 'connectorId', 'namespace', 'externalId', 'observedEntityId', 'reason']) {
+    assertNonEmptyString(value[field], `External identity review candidate ${field}`);
+  }
+  assertEnum(value.kind, IdentityReviewKind, 'External identity review candidate kind');
+  assertDenseStringArray(value.candidateEntityIds, 'External identity review candidate candidateEntityIds');
+  assertEnum(value.status, LifecycleStatus, 'External identity review candidate status');
+  assertEnum(value.route, RouteType, 'External identity review candidate route');
+  assertEnum(value.risk, RiskLevel, 'External identity review candidate risk');
+  assertDenseStringArray(value.evidenceEventIds, 'External identity review candidate evidenceEventIds');
+  assertTimestamp(value.createdAt, 'External identity review candidate createdAt');
+  assertProvenanceList(value.provenance, 'External identity review candidate provenance');
+  assertJsonOnly(value, 'External identity review candidate');
+}
+
+export function assertCaptureFailure(value: unknown): asserts value is CaptureFailure {
+  assertRecord(value, 'Capture failure');
+  for (const field of ['id', 'connectorId', 'message']) {
+    assertNonEmptyString(value[field], `Capture failure ${field}`);
+  }
+  if ('sourceEventId' in value) assertNonEmptyString(value.sourceEventId, 'Capture failure sourceEventId');
+  assertEnum(value.capability, ConnectorCapability, 'Capture failure capability');
+  assertEnum(value.kind, CaptureFailureKind, 'Capture failure kind');
+  if (typeof value.retryable !== 'boolean') throw new TypeError('Capture failure retryable must be boolean');
+  assertEnum(value.status, LifecycleStatus, 'Capture failure status');
+  assertEnum(value.route, RouteType, 'Capture failure route');
+  assertEnum(value.risk, RiskLevel, 'Capture failure risk');
+  assertJsonObject(value.details, 'Capture failure details');
+  if ('reviewCandidate' in value) assertExternalIdentityReviewCandidate(value.reviewCandidate);
+  assertTimestamp(value.occurredAt, 'Capture failure occurredAt');
+  assertProvenanceList(value.provenance, 'Capture failure provenance');
+  assertOptionalIntegrityHash(value, 'Capture failure integrityHash');
+  assertJsonOnly(value, 'Capture failure');
+}
+
+export function assertNormalizedCapture(value: unknown): asserts value is NormalizedCapture {
+  assertRecord(value, 'Normalized capture');
+  assertEventEnvelope(value.event);
+  if (!Array.isArray(value.identities)) throw new TypeError('Normalized capture identities must be an array');
+  value.identities.forEach(assertExternalIdentityObservation);
+  if (!Array.isArray(value.relations)) throw new TypeError('Normalized capture relations must be an array');
+  value.relations.forEach(assertExternalRelationObservation);
+  assertJsonOnly(value, 'Normalized capture');
+}
+
+export function assertChangeLog(value: unknown): asserts value is ChangeLog {
+  assertRecord(value, 'Change log');
+  for (const field of ['id', 'recordType', 'recordId']) {
+    assertNonEmptyString(value[field], `Change log ${field}`);
+  }
+  if ('connectorId' in value) assertNonEmptyString(value.connectorId, 'Change log connectorId');
+  if ('eventId' in value) assertNonEmptyString(value.eventId, 'Change log eventId');
+  assertPositiveInteger(value.sequence, 'Change log sequence');
+  assertEnum(value.kind, ChangeLogKind, 'Change log kind');
+  assertTimestamp(value.changedAt, 'Change log changedAt');
+  assertJsonObject(value.payload, 'Change log payload');
+  assertOptionalIntegrityHash(value, 'Change log integrityHash');
+  assertJsonOnly(value, 'Change log');
+}
+
+export function assertConnectorLease(value: unknown): asserts value is ConnectorLease {
+  assertRecord(value, 'Connector lease');
+  for (const field of ['id', 'connectorId', 'ownerId', 'leaseToken']) {
+    assertNonEmptyString(value[field], `Connector lease ${field}`);
+  }
+  assertEnum(value.capability, ConnectorCapability, 'Connector lease capability');
+  assertTimestamp(value.expiresAt, 'Connector lease expiresAt');
+  assertPositiveInteger(value.version, 'Connector lease version');
+  assertTimestamp(value.updatedAt, 'Connector lease updatedAt');
+  assertOptionalIntegrityHash(value, 'Connector lease integrityHash');
+  assertJsonOnly(value, 'Connector lease');
 }
 
 export function assertEntity(value: unknown): asserts value is Entity {
@@ -789,6 +1116,19 @@ export function assertConnectorHealth(
     );
   }
   assertFreshness(value.freshness, 'Connector health freshness');
+  if (!Array.isArray(value.capabilities)) {
+    throw new TypeError('Connector health capabilities must be an array');
+  }
+  for (const capability of value.capabilities) {
+    assertRecord(capability, 'Connector capability health');
+    assertEnum(capability.capability, ConnectorCapability, 'Connector capability health capability');
+    assertEnum(capability.status, ConnectorHealthStatus, 'Connector capability health status');
+    assertTimestamp(capability.checkedAt, 'Connector capability health checkedAt');
+    for (const field of ['lastSuccessAt', 'lastFailureAt']) {
+      if (field in capability) assertTimestamp(capability[field], `Connector capability health ${field}`);
+    }
+    assertJsonObject(capability.details, 'Connector capability health details');
+  }
   assertJsonObject(value.details, 'Connector health details');
   assertProvenanceList(value.provenance, 'Connector health provenance');
   assertOptionalIntegrityHash(value, 'Connector health integrityHash');
