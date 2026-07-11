@@ -460,6 +460,50 @@ describe('MissionRunner external action receipts', () => {
 });
 
 describe('MissionRunner runtime and cancellation fences', () => {
+  it('resumes only a pure concurrency checkpoint inside the exact approved plan', () => {
+    const store = setup();
+    store.enqueueAssignment(assignment());
+    const [leased] = store.leaseReadyAssignments({
+      workerId: 'worker-1', now: T1, leaseMs: 60_000, limit: 1,
+    });
+    store.pauseAssignmentForCheckpoint(
+      leased.id,
+      leased.leaseToken!,
+      [EscalationReason.ConcurrencyBudget],
+      '2026-07-11T00:01:01.000Z',
+    );
+    const proposal = store.listProposals()[0];
+    const mission = store.getMission('mission-v1')!;
+
+    expect(proposal.body).toMatchObject({
+      resumable: true,
+      requiresNewPlan: false,
+      planHash: mission.planHash,
+      planVersion: mission.version,
+    });
+    const resolved = store.resolveCheckpoint({
+      proposalId: proposal.id,
+      planHash: mission.planHash,
+      planVersion: mission.version,
+      resume: true,
+      decision: {
+        ...decision(),
+        id: 'checkpoint-resume-decision',
+        proposalId: proposal.id,
+        decidedAt: T2,
+      },
+    });
+
+    expect(resolved).toMatchObject({ resumed: true, requiresNewPlan: false });
+    expect(resolved.proposal.status).toBe(LifecycleStatus.Approved);
+    expect(resolved.assignment.status).toBe(LifecycleStatus.Queued);
+    expect(resolved.mission).toMatchObject({
+      status: LifecycleStatus.Active,
+      planHash: mission.planHash,
+      version: mission.version,
+    });
+  });
+
   it('rejects lease settings that cannot heartbeat safely before expiry', () => {
     const store = setup();
     expect(() => new MissionRunner(
@@ -611,6 +655,23 @@ describe('MissionRunner runtime and cancellation fences', () => {
     });
     expect(execute).not.toHaveBeenCalled();
     expect(verify).not.toHaveBeenCalled();
+    expect(store.listProposals()).toEqual([
+      expect.objectContaining({
+        assignmentId: 'assignment-1',
+        missionTaskId: 'task-1',
+        status: LifecycleStatus.PendingApproval,
+        body: expect.objectContaining({
+          checkpoint: true,
+          missionId: 'mission-v1',
+          assignmentId: 'assignment-1',
+          planHash: store.getMission('mission-v1')!.planHash,
+          planVersion: 1,
+          reasons: [EscalationReason.RuntimeBudget],
+          resumable: false,
+          requiresNewPlan: true,
+        }),
+      }),
+    ]);
   });
 
   it('aborts execution at the real mission deadline and checkpoints without committing output', async () => {
