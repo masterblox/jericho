@@ -177,6 +177,26 @@ export function ParticleField() {
         ctx.fillRect(x, y, psz[i], psz[i])
       }
 
+      // energy link: core -> selected node with calibration ticks (ported from realistic-hud)
+      const sel = nodes.find(n => n.id === selected)
+      if (sel) {
+        const hue = state === 'alert' || sel.status === 'degraded' ? RED : baseHue
+        ctx.lineWidth = 1
+        ctx.strokeStyle = `rgba(${hue},0.45)`
+        ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(sel.x, sel.y); ctx.stroke()
+        const d = Math.hypot(sel.x - cx, sel.y - cy) || 1
+        const px = -(sel.y - cy) / d, py = (sel.x - cx) / d
+        ctx.strokeStyle = `rgba(${hue},0.28)`
+        for (let k = 1; k < 8; k++) {
+          const f = k / 8
+          const tx = cx + (sel.x - cx) * f, ty = cy + (sel.y - cy) * f
+          ctx.beginPath()
+          ctx.moveTo(tx - px * 3, ty - py * 3)
+          ctx.lineTo(tx + px * 3, ty + py * 3)
+          ctx.stroke()
+        }
+      }
+
       raf = requestAnimationFrame(draw)
     }
 

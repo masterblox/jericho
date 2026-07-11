@@ -38,7 +38,7 @@ export default function Scene({ coreState, mode, selectedAgent, setSelectedAgent
         <ParticleField />
       </div>
       <div className="layer layer-far">
-        <IdCluster activeView={activeView} onView={setActiveView} />
+        <IdCluster activeView={activeView} onView={setActiveView} coreState={coreState} />
         <GaugeCluster />
       </div>
       <div className="layer layer-mid">

@@ -1,5 +1,5 @@
 import React from 'react'
-import { signals, tasks } from '../data'
+import { agents, signals, system, tasks } from '../data'
 import { StatusDot } from '../components'
 
 function Clock() {
@@ -13,11 +13,12 @@ function Clock() {
 
 const VIEWS = ['CORE', 'MISSIONS', 'SIGNALS']
 
-export function IdCluster({ activeView, onView }) {
+export function IdCluster({ activeView, onView, coreState = 'idle' }) {
   return <div className="cluster id-cluster">
     <div className="id-line">
       <span className="wordmark">JERICHO</span>
       <span className="micro"><StatusDot status="online" /> CONNECTED</span>
+      <span className="micro">CORE <b className={coreState === 'alert' ? 'fault' : 'cy'}>{coreState === 'idle' ? 'STABLE' : coreState.toUpperCase()}</b></span>
       <Clock />
     </div>
     <div className="view-tabs" role="tablist" aria-label="Projection">
@@ -47,11 +48,15 @@ function ArcGauge({ label, value, max, display, unit, warn }) {
 }
 
 export function GaugeCluster() {
+  const online = agents.filter(a => a.status === 'online').length
+  const avgLoad = Math.round(agents.reduce((sum, a) => sum + a.load, 0) / agents.length)
+  const blocked = tasks.filter(t => t.status === 'BLOCKED').length
+  const pad = n => String(n).padStart(2, '0')
   return <div className="cluster gauge-cluster">
-    <ArcGauge label="FLEET" value={4} max={6} display="04" unit="/06" />
-    <ArcGauge label="QUEUE" value={71} max={100} display="71" unit="" warn />
-    <ArcGauge label="LOAD" value={67} max={100} display="67" unit="%" />
-    <ArcGauge label="UPTIME" value={54} max={72} display="54" unit="H" />
+    <ArcGauge label="FLEET" value={online} max={agents.length} display={pad(online)} unit={`/${pad(agents.length)}`} warn={online < agents.length - 1} />
+    <ArcGauge label="QUEUE" value={system.deferred} max={100} display={String(system.deferred)} unit="" warn={blocked > 0} />
+    <ArcGauge label="LOAD" value={avgLoad} max={100} display={String(avgLoad)} unit="%" />
+    <ArcGauge label="UPTIME" value={system.uptimeHours} max={system.uptimeMax} display={String(system.uptimeHours)} unit="H" />
   </div>
 }
 

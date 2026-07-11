@@ -42,7 +42,8 @@
   color: var(--muted);
 }
 .micro b { color: var(--text); font-weight: 600; }
-.micro .cy { color: var(--cyan); }
+.micro .cy, .micro b.cy { color: var(--cyan); }
+.micro b.fault { color: var(--fault); }
 .mononum { font-family: var(--mono); font-variant-numeric: tabular-nums; }
 .rule { height: 1px; background: var(--stroke-dim); }
 
@@ -552,6 +553,8 @@ kbd.cap {
 .route-line { flex: 1; height: 1px; max-width: 70px; background: var(--stroke); position: relative; top: -14px; }
 .risk-note { margin-top: 26px; font-size: var(--micro); letter-spacing: var(--track); color: var(--muted); text-transform: uppercase; }
 .risk-note span { color: var(--ok); font-weight: 700; margin-right: 10px; }
+.risk-note.high { margin-top: 10px; }
+.risk-note.high span { color: var(--fault); }
 .dispatch-modal > footer { display: flex; justify-content: flex-end; gap: 10px; border-top: 1px solid var(--stroke); padding-top: 12px; margin-top: 16px; }
 .dispatch-modal > footer button { min-height: 44px; padding: 6px 22px; font-size: var(--micro); font-weight: 700; letter-spacing: var(--track); border: 1px solid var(--stroke-dim); color: var(--muted); transition: 120ms; }
 .dispatch-modal > footer button:hover { color: var(--text); border-color: var(--stroke); }

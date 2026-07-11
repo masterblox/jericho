@@ -24,3 +24,5 @@ export const signals = [
 ]
 
 export const navItems = ['COMMAND', 'MISSIONS', 'SIGNALS']
+
+export const system = { uptimeHours: 54, uptimeMax: 72, deferred: 71 }
