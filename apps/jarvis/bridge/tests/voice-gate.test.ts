@@ -11,6 +11,7 @@ vi.mock('@google/genai', () => ({
 }));
 
 import { JerichoStore } from '../src/core/store.js';
+import { IntakeProcessor } from '../src/orchestration/intake.js';
 import {
   createJerichoServer,
   type VoiceConnect,
@@ -82,6 +83,53 @@ describe('voice socket privacy gate', () => {
     expect(session.sendRealtimeInput).toHaveBeenCalledTimes(1);
   });
 
+  it('retains only finished active-turn input transcription as an encrypted spoken capture', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return {
+        sendRealtimeInput: vi.fn(),
+        sendToolResponse: vi.fn(),
+        close: vi.fn(),
+      };
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.address.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+    expect(voiceConnect.mock.calls[0][0].config).toMatchObject({
+      inputAudioTranscription: {},
+    });
+
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: 'standby private speech', finished: true } },
+    });
+    expect(runtime.store.listEvents({ limit: 10 })).toEqual([]);
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'armed', armed: true }));
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: 'Build a multi-step project ', finished: false } },
+    });
+    // Transcription ordering is independent of model turn completion.
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: 'for Jericho', finished: true } },
+    });
+
+    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1));
+    expect(runtime.store.listEvents({ limit: 10 })[0]).toMatchObject({
+      source: 'local:spoken',
+      type: 'local.capture.spoken',
+      payload: { transcript: 'Build a multi-step project for Jericho' },
+    });
+    expect(runtime.store.listMissions()).toHaveLength(1);
+    expect(messages()).not.toContainEqual(expect.objectContaining({
+      transcript: expect.anything(),
+    }));
+  });
+
   it('honors client standby and independently expires an abandoned active turn', async () => {
     const session = {
       sendRealtimeInput: vi.fn(),
@@ -123,6 +171,7 @@ describe('voice socket privacy gate', () => {
 async function startVoiceServer(voiceConnect: VoiceConnect, voiceActiveTurnMs = 1_000) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });
   openStores.push(store);
+  const intake = new IntakeProcessor({ store });
   const server = createJerichoServer({
     store,
     apiToken: TOKEN,
@@ -130,9 +179,11 @@ async function startVoiceServer(voiceConnect: VoiceConnect, voiceActiveTurnMs = 
     geminiApiKey: 'fake-key',
     voiceConnect,
     voiceActiveTurnMs,
+    intake,
   });
   openServers.push(server);
-  return server.listen(0);
+  const address = await server.listen(0);
+  return { ...address, address, store };
 }
 
 function connectSocket(port: number): Promise<WebSocket> {

@@ -518,6 +518,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let clientClosed = false;
   let active = false;
   let activeTimer: ReturnType<typeof setTimeout> | undefined;
+  let transcriptTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureTurn: { id: string; transcript: string } | undefined;
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
@@ -526,14 +528,56 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     active = false;
     if (activeTimer) clearTimeout(activeTimer);
     activeTimer = undefined;
+    if (captureTurn) {
+      if (transcriptTimer) clearTimeout(transcriptTimer);
+      // Input transcription is explicitly unordered with model completion.
+      transcriptTimer = setTimeout(() => { captureTurn = undefined; }, 5_000);
+    }
     if (turnComplete) send({ type: 'turn_complete' });
     send({ type: 'armed', armed: false });
   };
   const activate = () => {
     active = true;
+    if (transcriptTimer) clearTimeout(transcriptTimer);
+    transcriptTimer = undefined;
+    captureTurn = { id: randomUUID(), transcript: '' };
     if (activeTimer) clearTimeout(activeTimer);
     send({ type: 'armed', armed: true });
     activeTimer = setTimeout(() => deactivate(), activeTurnMs);
+  };
+  const captureInputTranscription = (value: unknown) => {
+    if (!captureTurn || !isRecord(value)) return;
+    if (typeof value.text === 'string') {
+      const combined = `${captureTurn.transcript}${value.text}`;
+      if (combined.length > 64 * 1024) {
+        captureTurn = undefined;
+        if (transcriptTimer) clearTimeout(transcriptTimer);
+        transcriptTimer = undefined;
+        send({ type: 'error', message: 'spoken capture exceeded the local limit' });
+        return;
+      }
+      captureTurn.transcript = combined;
+    }
+    if (value.finished !== true) return;
+    const turn = captureTurn;
+    captureTurn = undefined;
+    if (transcriptTimer) clearTimeout(transcriptTimer);
+    transcriptTimer = undefined;
+    const transcript = turn.transcript.replace(/\s+/gu, ' ').trim();
+    if (!transcript) return;
+    const occurredAt = new Date(options.clock?.() ?? new Date().toISOString()).toISOString();
+    try {
+      const result = options.store.commitLocalCapture(localCaptureEvent({
+        kind: 'spoken',
+        sourceEventId: `live-turn:${turn.id}`,
+        occurredAt,
+        payload: { transcript },
+      }));
+      options.intake?.processEvent(result.event.id);
+    } catch {
+      // Never echo or log transcript contents on a failed private capture.
+      send({ type: 'error', message: 'spoken capture unavailable' });
+    }
   };
   const connect = (voice: string) => {
     const connectionGeneration = ++generation;
@@ -546,6 +590,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       model: options.geminiModel ?? 'gemini-2.5-flash-native-audio-latest',
       config: {
         responseModalities: [Modality.AUDIO],
+        inputAudioTranscription: {},
         systemInstruction: options.systemInstruction,
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as never }],
@@ -556,6 +601,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         },
         onmessage: (message: any) => {
           if (connectionGeneration !== generation) return;
+          captureInputTranscription(message.serverContent?.inputTranscription);
           if (!active) return;
           if (message.serverContent?.interrupted) send({ type: 'interrupt' });
           for (const part of message.serverContent?.modelTurn?.parts ?? []) {
@@ -639,6 +685,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     clientClosed = true;
     generation += 1;
     if (activeTimer) clearTimeout(activeTimer);
+    if (transcriptTimer) clearTimeout(transcriptTimer);
+    captureTurn = undefined;
     session?.close();
   });
 }
