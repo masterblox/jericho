@@ -334,6 +334,7 @@ type RecordProjection = Record<string, string | number | null>;
 
 const STORE_UUID_NAME = 'store-uuid';
 const KEY_VERIFIER_NAME = 'key-verifier';
+const LOOKUP_TOKEN_MIGRATION_NAME = 'lookup-token-migration-v1';
 const STORE_UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const LEGACY_RECORD_TABLES = [
@@ -745,6 +746,15 @@ const MIGRATIONS: readonly Migration[] = [
       CREATE INDEX change_log_sequence_idx ON change_log (sequence);
     `,
   },
+  {
+    version: 7,
+    sql: `
+      CREATE INDEX receipts_destination_lookup_idx
+      ON receipts (connector_id, destination);
+      CREATE INDEX receipts_external_id_lookup_idx
+      ON receipts (connector_id, external_id);
+    `,
+  },
 ];
 
 export class JerichoStore {
@@ -763,6 +773,7 @@ export class JerichoStore {
 
     this.#database = new DatabaseSync(databasePath);
     this.#database.exec('PRAGMA busy_timeout = 5000');
+    this.#database.exec('PRAGMA secure_delete = ON');
     if (databasePath !== ':memory:') {
       chmodSync(databasePath, 0o600);
     }
@@ -775,6 +786,7 @@ export class JerichoStore {
       this.#crypto = this.#masterCrypto.deriveScoped(
         `jericho-store:${this.#storeUuid}`,
       );
+      this.#migratePrivateLookupColumns();
     } catch (error) {
       this.#database.close();
       throw error;
@@ -2047,7 +2059,8 @@ export class JerichoStore {
         stored.missionTaskId ?? null, stored.connectorId ?? null, stored.status,
         stored.route, stored.risk, stored.requestedAt, stored.startedAt ?? null,
         stored.completedAt ?? null, sealed.integrityHash, sealed.body,
-        stored.idempotencyKey, stored.destination, stored.externalId ?? null,
+        stored.idempotencyKey, sealed.projection.destination,
+        sealed.projection.external_id,
         stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt,
       );
       this.#appendChangeLog({
@@ -2815,7 +2828,15 @@ export class JerichoStore {
     const row = this.#database.prepare(`
       SELECT * FROM external_identities
       WHERE connector_id = ? AND namespace = ? AND external_id = ?
-    `).get(observation.connectorId, observation.namespace, observation.externalId);
+    `).get(
+      observation.connectorId,
+      observation.namespace,
+      this.#externalIdentityLookupToken(
+        observation.connectorId,
+        observation.namespace,
+        observation.externalId,
+      ),
+    );
     const provenance: Provenance = {
       source: observation.connectorId,
       sourceType: SourceType.Connector,
@@ -2934,6 +2955,17 @@ export class JerichoStore {
     return { link, reviewCandidate, failure };
   }
 
+  #externalIdentityLookupToken(
+    connectorId: string,
+    namespace: string,
+    externalId: string,
+  ): string {
+    return this.#crypto.lookupToken(
+      'external-identity',
+      canonicalJson([connectorId, namespace, externalId]),
+    );
+  }
+
   #resolveExternalRelation(
     observation: NormalizedCapture['relations'][number],
     committedAt: string,
@@ -2942,7 +2974,15 @@ export class JerichoStore {
       const row = this.#database.prepare(`
         SELECT * FROM external_identities
         WHERE connector_id = ? AND namespace = ? AND external_id = ?
-      `).get(key.connectorId, key.namespace, key.externalId);
+      `).get(
+        key.connectorId,
+        key.namespace,
+        this.#externalIdentityLookupToken(
+          key.connectorId,
+          key.namespace,
+          key.externalId,
+        ),
+      );
       return row ? this.#readRecord<ExternalIdentityLink>(
         'external_identities', String(row.id), row,
         (value) => assertExternalIdentityLink(value), (value) => value.id,
@@ -3159,7 +3199,8 @@ export class JerichoStore {
         integrity_hash = excluded.integrity_hash,
         body = excluded.body
     `).run(
-      stored.id, stored.connectorId, stored.namespace, stored.externalId,
+      stored.id, stored.connectorId, stored.namespace,
+      sealed.projection.external_id,
       stored.entityId, stored.status, stored.lastObservedAt,
       sealed.integrityHash, sealed.body,
     );
@@ -3618,7 +3659,8 @@ export class JerichoStore {
       stored.missionTaskId ?? null, stored.connectorId ?? null, stored.status,
       stored.route, stored.risk, stored.requestedAt, stored.startedAt ?? null,
       stored.completedAt ?? null, sealed.integrityHash, sealed.body,
-      stored.idempotencyKey, stored.destination, stored.externalId ?? null,
+      stored.idempotencyKey, sealed.projection.destination,
+      sealed.projection.external_id,
       stored.verified ? 1 : 0, stored.verifiedAt ?? null, stored.attempt, stored.id,
     );
     if (
@@ -3627,7 +3669,7 @@ export class JerichoStore {
       (previous.started_at ?? null) !== (stored.startedAt ?? null) ||
       (previous.completed_at ?? null) !== (stored.completedAt ?? null) ||
       Number(previous.verified ?? 0) !== (stored.verified ? 1 : 0) ||
-      (previous.external_id ?? null) !== (stored.externalId ?? null)
+      (previous.external_id ?? null) !== sealed.projection.external_id
     ) {
       this.#appendChangeLog({
         kind: ChangeLogKind.ReceiptChanged,
@@ -3710,13 +3752,19 @@ export class JerichoStore {
     table: EncryptedRecordTable,
     rowId: string,
     value: T,
-  ): { record: T; integrityHash: string; body: Buffer } {
+  ): {
+    record: T;
+    integrityHash: string;
+    body: Buffer;
+    projection: RecordProjection;
+  } {
     const integrityHash = this.#integrityHashFor(value);
     const record = { ...value, integrityHash } as T;
-    const projection = recordProjection(table, record);
+    const projection = this.#recordProjection(table, record);
     return {
       record,
       integrityHash,
+      projection,
       body: this.#crypto.encryptJson(
         record,
         recordAssociatedData(this.#storeUuid, table, rowId, projection),
@@ -3746,7 +3794,7 @@ export class JerichoStore {
     if (identity(record) !== rowId) {
       throw new Error(`${table}/${rowId} decrypted identity mismatch`);
     }
-    const expectedProjection = recordProjection(table, record);
+    const expectedProjection = this.#recordProjection(table, record);
     if (canonicalJson(expectedProjection) !== canonicalJson(visibleProjection)) {
       throw new Error(`${table}/${rowId} visible projection mismatch`);
     }
@@ -3758,6 +3806,12 @@ export class JerichoStore {
       throw new Error(`${table}/${rowId} integrity verification failed`);
     }
     return record;
+  }
+
+  #recordProjection(table: EncryptedRecordTable, value: object): RecordProjection {
+    return recordProjection(table, value, (scope, lookupValue) =>
+      this.#crypto.lookupToken(scope, lookupValue)
+    );
   }
 
   close(): void {
@@ -3825,6 +3879,167 @@ export class JerichoStore {
       this.#database.exec('ROLLBACK');
       throw error;
     }
+  }
+
+  #migratePrivateLookupColumns(): void {
+    const state = this.#writeTransaction(() => {
+      const current = this.#readLookupMigrationState();
+      if (current === 'complete' || current === 'rewritten') return current;
+
+      const externalRows = this.#database
+        .prepare('SELECT * FROM external_identities ORDER BY id')
+        .all();
+      const receiptRows = this.#database
+        .prepare('SELECT * FROM receipts ORDER BY id')
+        .all();
+      for (const row of externalRows) {
+        const record = this.#readLegacyRecord<ExternalIdentityLink>(
+          'external_identities',
+          String(row.id),
+          row,
+          (value) => assertExternalIdentityLink(value),
+          (value) => value.id,
+        );
+        const sealed = this.#sealRecord('external_identities', record.id, record);
+        this.#database.prepare(`
+          UPDATE external_identities
+          SET external_id = ?, integrity_hash = ?, body = ?
+          WHERE id = ?
+        `).run(
+          sealed.projection.external_id,
+          sealed.integrityHash,
+          sealed.body,
+          record.id,
+        );
+      }
+      for (const row of receiptRows) {
+        const record = this.#readLegacyRecord<ActionReceipt>(
+          'receipts',
+          String(row.id),
+          row,
+          (value) => assertActionReceipt(value),
+          (value) => value.id,
+        );
+        const sealed = this.#sealRecord('receipts', record.id, record);
+        this.#database.prepare(`
+          UPDATE receipts
+          SET destination = ?, external_id = ?, integrity_hash = ?, body = ?
+          WHERE id = ?
+        `).run(
+          sealed.projection.destination,
+          sealed.projection.external_id,
+          sealed.integrityHash,
+          sealed.body,
+          record.id,
+        );
+      }
+      const next = externalRows.length > 0 || receiptRows.length > 0
+        ? 'rewritten'
+        : 'complete';
+      this.#writeLookupMigrationState(next);
+      return next;
+    });
+    if (state === 'complete') return;
+
+    // Rewriting logical rows is not sufficient: old values can remain in WAL
+    // frames or free pages. Keep the durable state at `rewritten` until both
+    // artifacts are purged so a crash always resumes this scrub on next open.
+    this.#scrubPrivateLookupRemnants();
+    this.#writeTransaction(() => {
+      const current = this.#readLookupMigrationState();
+      if (current !== 'rewritten' && current !== 'complete') {
+        throw new Error('Jericho private lookup migration state is missing');
+      }
+      if (current === 'rewritten') this.#writeLookupMigrationState('complete');
+    });
+    withBusyRetry(() => this.#database.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
+  }
+
+  #readLegacyRecord<T extends { integrityHash?: string } & object>(
+    table: 'external_identities' | 'receipts',
+    rowId: string,
+    row: DatabaseRow,
+    validate: (value: unknown) => void,
+    identity: (value: T) => string,
+  ): T {
+    const visibleProjection = rowProjection(table, row, rowId);
+    const value = this.#crypto.decryptJson<unknown>(
+      asBuffer(row.body),
+      recordAssociatedData(this.#storeUuid, table, rowId, visibleProjection),
+    );
+    validate(value);
+    const record = value as T;
+    if (identity(record) !== rowId) {
+      throw new Error(`${table}/${rowId} decrypted identity mismatch`);
+    }
+    if (
+      canonicalJson(recordProjection(table, record)) !==
+      canonicalJson(visibleProjection)
+    ) {
+      throw new Error(`${table}/${rowId} legacy visible projection mismatch`);
+    }
+    const expected = this.#integrityHashFor(record);
+    if (
+      !digestsEqual(record.integrityHash, expected) ||
+      !digestsEqual(row.integrity_hash, expected)
+    ) {
+      throw new Error(`${table}/${rowId} integrity verification failed`);
+    }
+    return record;
+  }
+
+  #readLookupMigrationState(): 'rewritten' | 'complete' | undefined {
+    const row = this.#database
+      .prepare('SELECT value FROM store_metadata WHERE name = ?')
+      .get(LOOKUP_TOKEN_MIGRATION_NAME);
+    if (!row) return undefined;
+    try {
+      const marker = this.#crypto.decryptJson<{
+        purpose: string;
+        version: number;
+        storeUuid: string;
+        state: string;
+      }>(
+        asBuffer(row.value),
+        lookupMigrationAssociatedData(this.#storeUuid),
+      );
+      if (
+        marker.purpose !== 'jericho-private-lookup-migration' ||
+        marker.version !== 1 ||
+        marker.storeUuid !== this.#storeUuid ||
+        (marker.state !== 'rewritten' && marker.state !== 'complete')
+      ) throw new Error('Invalid private lookup migration marker');
+      return marker.state;
+    } catch (cause) {
+      throw new Error('Jericho private lookup migration metadata is corrupt', {
+        cause,
+      });
+    }
+  }
+
+  #writeLookupMigrationState(state: 'rewritten' | 'complete'): void {
+    const marker = {
+      purpose: 'jericho-private-lookup-migration',
+      version: 1,
+      storeUuid: this.#storeUuid,
+      state,
+    } as const;
+    this.#database.prepare(`
+      INSERT INTO store_metadata (name, value) VALUES (?, ?)
+      ON CONFLICT (name) DO UPDATE SET value = excluded.value
+    `).run(
+      LOOKUP_TOKEN_MIGRATION_NAME,
+      this.#crypto.encryptJson(
+        marker,
+        lookupMigrationAssociatedData(this.#storeUuid),
+      ),
+    );
+  }
+
+  #scrubPrivateLookupRemnants(): void {
+    withBusyRetry(() => this.#database.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
+    withBusyRetry(() => this.#database.exec('VACUUM'));
+    withBusyRetry(() => this.#database.exec('PRAGMA wal_checkpoint(TRUNCATE)'));
   }
 
   #tableExists(name: string): boolean {
@@ -3947,6 +4162,15 @@ function metadataAssociatedData(storeUuid: string, name: string): string {
   return JSON.stringify(['jericho-store-metadata', 2, storeUuid, name]);
 }
 
+function lookupMigrationAssociatedData(storeUuid: string): string {
+  return JSON.stringify([
+    'jericho-store-private-lookup-migration',
+    1,
+    storeUuid,
+    LOOKUP_TOKEN_MIGRATION_NAME,
+  ]);
+}
+
 function recordAssociatedData(
   storeUuid: string,
   table: EncryptedRecordTable,
@@ -3966,6 +4190,7 @@ function recordAssociatedData(
 function recordProjection(
   table: EncryptedRecordTable,
   value: object,
+  lookupToken?: (scope: string, value: string) => string,
 ): RecordProjection {
   switch (table) {
     case 'events': {
@@ -4129,6 +4354,20 @@ function recordProjection(
     }
     case 'receipts': {
       const receipt = value as ActionReceipt;
+      const destination = lookupToken
+        ? lookupToken(
+            'receipt-destination',
+            canonicalJson([receipt.connectorId ?? null, receipt.action, receipt.destination]),
+          )
+        : receipt.destination;
+      const externalId = receipt.externalId === undefined
+        ? null
+        : lookupToken
+          ? lookupToken(
+              'receipt-external-id',
+              canonicalJson([receipt.connectorId ?? null, receipt.action, receipt.externalId]),
+            )
+          : receipt.externalId;
       return {
         id: receipt.id,
         proposal_id: receipt.proposalId ?? null,
@@ -4142,8 +4381,8 @@ function recordProjection(
         started_at: receipt.startedAt ?? null,
         completed_at: receipt.completedAt ?? null,
         idempotency_key: receipt.idempotencyKey,
-        destination: receipt.destination,
-        external_id: receipt.externalId ?? null,
+        destination,
+        external_id: externalId,
         verified: receipt.verified ? 1 : 0,
         verified_at: receipt.verifiedAt ?? null,
         attempt: receipt.attempt,
@@ -4230,11 +4469,17 @@ function recordProjection(
     }
     case 'external_identities': {
       const link = value as ExternalIdentityLink;
+      const externalId = lookupToken
+        ? lookupToken(
+            'external-identity',
+            canonicalJson([link.connectorId, link.namespace, link.externalId]),
+          )
+        : link.externalId;
       return {
         id: link.id,
         connector_id: link.connectorId,
         namespace: link.namespace,
-        external_id: link.externalId,
+        external_id: externalId,
         entity_id: link.entityId,
         status: link.status,
         last_observed_at: link.lastObservedAt,

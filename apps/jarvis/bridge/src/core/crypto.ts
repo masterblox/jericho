@@ -135,6 +135,7 @@ function defaultSecurityCommand(args: readonly string[], input?: string): string
 export class CoreCrypto {
   readonly #key: Buffer;
   readonly #integrityKey: Buffer;
+  readonly #lookupKey: Buffer;
 
   constructor(key: Buffer) {
     if (key.length !== 32) {
@@ -150,12 +151,31 @@ export class CoreCrypto {
         32,
       ),
     );
+    this.#lookupKey = Buffer.from(
+      hkdfSync(
+        'sha256',
+        key,
+        Buffer.from('jericho-core:v1', 'utf8'),
+        Buffer.from('deterministic-lookup-hmac', 'utf8'),
+        32,
+      ),
+    );
   }
 
   integrityDigest(canonicalPayload: string): string {
     return createHmac('sha256', this.#integrityKey)
       .update(canonicalPayload, 'utf8')
       .digest('hex');
+  }
+
+  lookupToken(scope: string, value: string): string {
+    if (!scope || !value) {
+      throw new Error('Jericho lookup token scope and value must not be empty');
+    }
+    const digest = createHmac('sha256', this.#lookupKey)
+      .update(JSON.stringify([scope, value]), 'utf8')
+      .digest('hex');
+    return `hmac-sha256-v1:${digest}`;
   }
 
   deriveScoped(scope: string): CoreCrypto {

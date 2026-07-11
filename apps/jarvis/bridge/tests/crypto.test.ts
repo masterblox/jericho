@@ -74,6 +74,22 @@ describe('CoreCrypto', () => {
     ).toThrow('Encrypted payload authentication failed');
   });
 
+  it('derives deterministic domain-separated keyed lookup tokens', () => {
+    const firstStore = new CoreCrypto(Buffer.alloc(32, 21))
+      .deriveScoped('store:11111111');
+    const secondStore = new CoreCrypto(Buffer.alloc(32, 21))
+      .deriveScoped('store:22222222');
+    const value = 'carlos@example.test';
+
+    const token = firstStore.lookupToken('external-identity', value);
+
+    expect(token).toMatch(/^hmac-sha256-v1:[a-f0-9]{64}$/);
+    expect(firstStore.lookupToken('external-identity', value)).toBe(token);
+    expect(firstStore.lookupToken('receipt-destination', value)).not.toBe(token);
+    expect(secondStore.lookupToken('external-identity', value)).not.toBe(token);
+    expect(token).not.toContain(value);
+  });
+
   it('rejects injected keys that are not exactly 32 bytes', () => {
     expect(() => new CoreCrypto(Buffer.alloc(31))).toThrow(
       'Jericho master key must be exactly 32 bytes',

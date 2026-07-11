@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { isIP } from 'node:net';
 import { extname, join, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -129,6 +130,7 @@ export interface JerichoServerOptions {
 export interface JerichoServerAddress {
   address: string;
   port: number;
+  bootstrapUrl: string;
 }
 
 export interface JerichoServer {
@@ -156,11 +158,14 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     (!Number.isFinite(options.voiceActiveTurnMs) || options.voiceActiveTurnMs <= 0)
   ) throw new Error('Active voice turn duration must be positive');
   const host = options.host ?? '127.0.0.1';
+  requireLoopbackBind(host);
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const ssePollMs = options.ssePollMs ?? 250;
   const clock = options.clock ?? (() => new Date().toISOString());
   const decisionIdFactory = options.decisionIdFactory ?? randomUUID;
   const browserSessionToken = randomBytes(32).toString('base64url');
+  const browserBootstrapToken = randomBytes(32).toString('base64url');
+  let browserBootstrapAvailable = true;
   const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
   const tools = options.toolExecutor ?? createToolExecutor({ store: options.store });
   const httpServer = createServer((request, response) => {
@@ -196,6 +201,46 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     }
 
     const url = new URL(request.url ?? '/', `http://${hostHeader}`);
+    if (url.pathname.startsWith('/.jericho/bootstrap/')) {
+      response.setHeader('Cache-Control', 'no-store');
+      if (request.method !== 'GET') {
+        sendJson(response, 405, { error: 'method_not_allowed' });
+        return;
+      }
+      const supplied = url.pathname.slice('/.jericho/bootstrap/'.length);
+      if (!secretsEqual(supplied, browserBootstrapToken)) {
+        sendJson(response, 404, { error: 'not_found' });
+        return;
+      }
+      if (!browserBootstrapAvailable) {
+        sendJson(response, 410, { error: 'bootstrap_consumed' });
+        return;
+      }
+      browserBootstrapAvailable = false;
+      response.setHeader(
+        'Set-Cookie',
+        `jericho_session=${browserSessionToken}; Path=/; HttpOnly; SameSite=Strict`,
+      );
+      response.setHeader('Location', '/');
+      response.statusCode = 303;
+      response.end();
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/session') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!authorized(request.headers.authorization, options.apiToken)) {
+        response.setHeader('WWW-Authenticate', 'Bearer realm="jericho-local"');
+        sendJson(response, 401, { error: 'unauthorized' });
+        return;
+      }
+      response.setHeader(
+        'Set-Cookie',
+        `jericho_session=${browserSessionToken}; Path=/; HttpOnly; SameSite=Strict`,
+      );
+      response.statusCode = 204;
+      response.end();
+      return;
+    }
     if (url.pathname.startsWith('/api/v1/')) {
       response.setHeader('Cache-Control', 'no-store');
       if (
@@ -214,7 +259,6 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       response,
       options.frontendDir,
       url.pathname,
-      browserSessionToken,
     );
   }
 
@@ -700,18 +744,32 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   }
 
   return {
-    listen: (port, requestedHost = host) => new Promise((resolveListen, reject) => {
-      httpServer.once('error', reject);
-      httpServer.listen(port, requestedHost, () => {
-        httpServer.off('error', reject);
-        const address = httpServer.address();
-        if (!address || typeof address === 'string') {
-          reject(new Error('Jericho server did not bind a TCP address'));
-          return;
-        }
-        resolveListen({ address: address.address, port: address.port });
+    listen: (port, requestedHost = host) => {
+      try {
+        requireLoopbackBind(requestedHost);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      return new Promise((resolveListen, reject) => {
+        httpServer.once('error', reject);
+        httpServer.listen(port, requestedHost, () => {
+          httpServer.off('error', reject);
+          const address = httpServer.address();
+          if (!address || typeof address === 'string') {
+            reject(new Error('Jericho server did not bind a TCP address'));
+            return;
+          }
+          const urlHost = address.address.includes(':')
+            ? `[${address.address}]`
+            : address.address;
+          resolveListen({
+            address: address.address,
+            port: address.port,
+            bootstrapUrl: `http://${urlHost}:${address.port}/.jericho/bootstrap/${browserBootstrapToken}`,
+          });
+        });
       });
-    }),
+    },
     close: async () => {
       for (const client of sseClients) {
         clearInterval(client.timer);
@@ -979,7 +1037,6 @@ async function serveFrontend(
   response: ServerResponse,
   frontendDir: string | undefined,
   pathname: string,
-  browserSessionToken: string,
 ): Promise<void> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     sendJson(response, 405, { error: 'method_not_allowed' });
@@ -1029,10 +1086,6 @@ async function serveFrontend(
   const indexPath = join(root, 'index.html');
   if (existsSync(indexPath) && file === realpathSync(indexPath)) {
     response.setHeader('Cache-Control', 'no-store');
-    response.setHeader(
-      'Set-Cookie',
-      `jericho_session=${browserSessionToken}; Path=/; HttpOnly; SameSite=Strict`,
-    );
   }
   response.statusCode = 200;
   response.setHeader('Content-Type', contentType(file));
@@ -1069,10 +1122,28 @@ function hostAllowed(hostHeader: string, configuredHost: string): boolean {
   return hostname === configuredHost || hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
 }
 
+function requireLoopbackBind(host: string): void {
+  const normalized = host.startsWith('[') && host.endsWith(']')
+    ? host.slice(1, -1)
+    : host;
+  const lower = normalized.toLowerCase();
+  const ipv4 = isIP(normalized) === 4 ? normalized.split('.').map(Number) : undefined;
+  if (
+    lower === 'localhost' ||
+    lower === '::1' ||
+    (ipv4?.length === 4 && ipv4[0] === 127)
+  ) return;
+  throw new Error(`Jericho refuses non-loopback bind host ${host}`);
+}
+
 function authorized(header: string | undefined, token: string): boolean {
   if (!header?.startsWith('Bearer ')) return false;
-  const supplied = Buffer.from(header.slice(7));
-  const expected = Buffer.from(token);
+  return secretsEqual(header.slice(7), token);
+}
+
+function secretsEqual(value: string, expectedValue: string): boolean {
+  const supplied = Buffer.from(value);
+  const expected = Buffer.from(expectedValue);
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
@@ -1395,7 +1466,9 @@ async function main(): Promise<void> {
     reflectionIntervalMs: config.reflectionIntervalMs,
     obsidianVaultPath: config.obsidianVaultPath,
   });
-  const execution = createMissionExecutionRuntime(config, store);
+  const execution = createMissionExecutionRuntime(config, store, {
+    connectorActions: connectors.actionAdapters,
+  });
   const runtime = new ProductionRuntimeLifecycle({
     knowledge,
     connectors,
@@ -1438,6 +1511,7 @@ async function main(): Promise<void> {
   }
   if (shuttingDown) return;
   console.log(`[jericho] listening on http://${config.host}:${address.port}`);
+  console.log(`[jericho] one-time browser bootstrap ${address.bootstrapUrl}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

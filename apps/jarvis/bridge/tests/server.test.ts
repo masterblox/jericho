@@ -283,17 +283,28 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
-  it('issues a per-process HttpOnly strict session cookie for same-origin browser API and SSE use', async () => {
+  it('requires bearer bootstrap before issuing an HttpOnly strict browser session', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'jericho-browser-session-'));
     directories.push(directory);
     writeFileSync(join(directory, 'index.html'), '<main>Jericho browser</main>');
     const runtime = await startServer({ frontendDir: directory });
 
     const index = await fetch(`${runtime.url}/`);
-    const cookie = index.headers.get('set-cookie');
-    expect(cookie).toMatch(/^jericho_session=[^;]+; Path=\/; HttpOnly; SameSite=Strict$/);
+    expect(index.headers.get('set-cookie')).toBeNull();
     expect(index.headers.get('cache-control')).toBe('no-store');
     expect(await index.text()).not.toContain(TOKEN);
+
+    const unauthenticated = await fetch(`${runtime.url}/api/v1/session`, {
+      method: 'POST',
+    });
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get('set-cookie')).toBeNull();
+
+    const bootstrap = await api(runtime.url, '/api/v1/session', { method: 'POST' });
+    expect(bootstrap.status).toBe(204);
+    const cookie = bootstrap.headers.get('set-cookie');
+    expect(cookie).toMatch(/^jericho_session=[^;]+; Path=\/; HttpOnly; SameSite=Strict$/);
+    expect(await bootstrap.text()).toBe('');
     const cookieHeader = cookie!.split(';', 1)[0];
 
     const health = await fetch(`${runtime.url}/api/v1/health`, {
@@ -313,6 +324,64 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect((await fetch(`${runtime.url}/api/v1/health`, {
       headers: { cookie: cookieHeader, origin: 'https://evil.example' },
     })).status).toBe(403);
+  });
+
+  it('grants the operator bootstrap URL exactly once without exposing its secret', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'jericho-operator-bootstrap-'));
+    directories.push(directory);
+    writeFileSync(join(directory, 'index.html'), '<main>Jericho operator</main>');
+    const runtime = await startServer({ frontendDir: directory });
+    const bootstrap = new URL(runtime.bootstrapUrl);
+    const nonce = bootstrap.pathname.split('/').at(-1)!;
+
+    const index = await fetch(`${runtime.url}/`);
+    expect(await index.text()).not.toContain(nonce);
+    expect(index.headers.get('set-cookie')).toBeNull();
+    const health = await api(runtime.url, '/api/v1/health');
+    expect(await health.text()).not.toContain(nonce);
+
+    const wrong = await fetch(`${runtime.url}/.jericho/bootstrap/not-the-secret`, {
+      redirect: 'manual',
+    });
+    expect(wrong.status).toBe(404);
+    expect(wrong.headers.get('set-cookie')).toBeNull();
+
+    const granted = await fetch(runtime.bootstrapUrl, { redirect: 'manual' });
+    expect(granted.status).toBe(303);
+    expect(granted.headers.get('location')).toBe('/');
+    expect(granted.headers.get('cache-control')).toBe('no-store');
+    const cookie = granted.headers.get('set-cookie');
+    expect(cookie).toMatch(/^jericho_session=[^;]+; Path=\/; HttpOnly; SameSite=Strict$/);
+    expect(await granted.text()).not.toContain(nonce);
+
+    const replay = await fetch(runtime.bootstrapUrl, { redirect: 'manual' });
+    expect(replay.status).toBe(410);
+    expect(replay.headers.get('set-cookie')).toBeNull();
+    expect(await replay.text()).not.toContain(nonce);
+
+    expect((await fetch(`${runtime.url}/api/v1/health`, {
+      headers: { cookie: cookie!.split(';', 1)[0] },
+    })).status).toBe(200);
+  });
+
+  it('refuses every non-loopback bind, including a listen-time override', async () => {
+    const firstStore = new JerichoStore({ path: ':memory:', key: KEY });
+    stores.push(firstStore);
+    expect(() => createJerichoServer({
+      store: firstStore,
+      apiToken: TOKEN,
+      host: '0.0.0.0',
+    })).toThrow(/loopback/i);
+
+    const secondStore = new JerichoStore({ path: ':memory:', key: KEY });
+    stores.push(secondStore);
+    const server = createJerichoServer({
+      store: secondStore,
+      apiToken: TOKEN,
+      host: '127.0.0.1',
+    });
+    servers.push(server);
+    await expect(server.listen(0, '::')).rejects.toThrow(/loopback/i);
   });
 
   it('serves command-center/connectors/captures/search and invokes connector sync through injected ports', async () => {
@@ -619,6 +688,7 @@ async function startServer(overrides: StartOverrides = {}) {
     store,
     port: address.port,
     url: `http://127.0.0.1:${address.port}`,
+    bootstrapUrl: address.bootstrapUrl,
   };
 }
 
