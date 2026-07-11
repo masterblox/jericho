@@ -26,6 +26,7 @@ import {
   ReflectionReviewService,
   type MissionKnowledgeStore,
 } from '../src/retention/knowledge-services.js';
+import { KnowledgeRuntime } from '../src/retention/knowledge-runtime.js';
 import { ObsidianRetentionWriter } from '../src/retention/obsidian-writer.js';
 
 const NOW = '2026-07-11T07:00:00.000Z';
@@ -94,6 +95,30 @@ describe('reflection review publication', () => {
       body: { autoResolution: false, kind: 'contradictory_evidence' },
     });
     expect(store.listDecisions()).toEqual([]);
+  });
+
+  it('runs at startup on a review-only schedule without requiring an Obsidian vault', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 42) });
+    stores.push(store);
+    store.saveIntent(intent());
+    const runtime = new KnowledgeRuntime({
+      store,
+      reflectionIntervalMs: 60 * 60 * 1_000,
+      clock: () => NOW,
+    });
+
+    try {
+      await runtime.start();
+      expect(runtime.retention).toBeUndefined();
+      expect(store.listProposals()).toHaveLength(1);
+      expect(store.listProposals()[0]).toMatchObject({
+        body: { autoResolution: false },
+        status: LifecycleStatus.PendingApproval,
+      });
+      expect(store.listDecisions()).toEqual([]);
+    } finally {
+      await runtime.stop();
+    }
   });
 });
 

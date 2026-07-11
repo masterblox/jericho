@@ -128,7 +128,12 @@ export class ReflectionReviewService {
       missions: this.store.listMissions(),
       decisions: this.store.listDecisions(),
     }, observedAt);
-    return suggestions.map((item) => this.#publish(item));
+    return this.publish(suggestions);
+  }
+
+  /** Publish scheduler-produced suggestions without granting decision authority. */
+  publish(suggestions: readonly ReflectionSuggestion[]): Proposal[] {
+    return suggestions.map((suggestion) => this.#publish(suggestion));
   }
 
   #publish(suggestion: ReflectionSuggestion): Proposal {
