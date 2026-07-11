@@ -25,7 +25,10 @@ import {
 } from './connectors/adapters/telegram-gateway.js';
 import type { CaptureConnector, ConnectorDescriptor } from './connectors/contracts.js';
 import { CaptureConnectorRegistry } from './connectors/registry.js';
-import { ConnectorSupervisor } from './connectors/supervisor.js';
+import {
+  ConnectorSupervisor,
+  type ConnectorIntakePort,
+} from './connectors/supervisor.js';
 
 export interface ConnectorRuntime {
   registry: CaptureConnectorRegistry;
@@ -39,6 +42,7 @@ export interface ConnectorRuntime {
 export interface ConnectorRuntimeOptions {
   workerId?: string;
   fetch?: typeof globalThis.fetch;
+  intake?: ConnectorIntakePort;
 }
 
 export function createConnectorRuntime(
@@ -83,6 +87,7 @@ export function createConnectorRuntime(
   const supervisor = new ConnectorSupervisor({
     store,
     registry,
+    ...(options.intake ? { intake: options.intake } : {}),
     workerId: options.workerId ?? `jericho-${process.pid}-${randomUUID()}`,
     leaseMs: config.connectorLeaseMs,
     maxPages: config.connectorMaxPages,

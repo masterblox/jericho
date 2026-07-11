@@ -74,8 +74,12 @@ describe('connector runtime composition', () => {
       JERICHO_API_TOKEN: 'runtime-token',
       JERICHO_OBSIDIAN_VAULT: vault,
     }, []);
+    const processEvent = vi.fn(() => ({ status: 'understood' as const }));
 
-    const runtime = createConnectorRuntime(config, store, { workerId: 'runtime-test' });
+    const runtime = createConnectorRuntime(config, store, {
+      workerId: 'runtime-test',
+      intake: { processEvent },
+    });
 
     expect(runtime.descriptors.map((item) => item.id)).toEqual([
       'linear',
@@ -98,6 +102,7 @@ describe('connector runtime composition', () => {
     expect(store.listEvents({ limit: 10 })).toContainEqual(expect.objectContaining({
       type: 'obsidian.note.snapshot',
     }));
+    expect(processEvent).toHaveBeenCalledWith(expect.stringMatching(/^obsidian[-:]/));
   });
 });
 

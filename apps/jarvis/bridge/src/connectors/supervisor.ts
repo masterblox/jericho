@@ -22,10 +22,15 @@ import type { CaptureConnectorRegistry } from './registry.js';
 export interface ConnectorSupervisorOptions {
   store: JerichoStore;
   registry: CaptureConnectorRegistry;
+  intake?: ConnectorIntakePort;
   workerId: string;
   clock?: () => string;
   leaseMs: number;
   maxPages: number;
+}
+
+export interface ConnectorIntakePort {
+  processEvent(eventId: string): { status: 'understood' | 'review' | 'planned' | 'failed' };
 }
 
 export interface ConnectorSyncResult {
@@ -33,6 +38,9 @@ export interface ConnectorSyncResult {
   pages: number;
   captures: number;
   failures: number;
+  processed: number;
+  reviews: number;
+  processingFailures: number;
 }
 
 export class ConnectorSupervisor {
@@ -65,11 +73,19 @@ export class ConnectorSupervisor {
       now: startedAt,
       leaseMs: this.options.leaseMs,
     });
-    if (!lease) return { status: 'busy', pages: 0, captures: 0, failures: 0 };
+    if (!lease) {
+      return {
+        status: 'busy', pages: 0, captures: 0, failures: 0,
+        processed: 0, reviews: 0, processingFailures: 0,
+      };
+    }
 
     let pages = 0;
     let captures = 0;
     let failures = 0;
+    let processed = 0;
+    let reviews = 0;
+    let processingFailures = 0;
     let hasMore = false;
     try {
       const probe = await connector.probe(signal);
@@ -78,7 +94,10 @@ export class ConnectorSupervisor {
         probe.status === ConnectorHealthStatus.Disabled
       ) {
         this.#recordHealth(connectorId, probe.status, probe.details, startedAt, false);
-        return { status: 'unavailable', pages, captures, failures };
+        return {
+          status: 'unavailable', pages, captures, failures,
+          processed, reviews, processingFailures,
+        };
       }
       if (probe.status === ConnectorHealthStatus.Unauthorized) {
         throw new ConnectorUnauthorizedError(`${connectorId} is unauthorized`);
@@ -111,7 +130,7 @@ export class ConnectorSupervisor {
           version: (cursor?.version ?? 0) + 1,
           updatedAt: observedAt,
         };
-        this.options.store.commitCaptureBatch({
+        const committed = this.options.store.commitCaptureBatch({
           connectorId,
           capability: ConnectorCapability.Capture,
           partition,
@@ -122,6 +141,22 @@ export class ConnectorSupervisor {
           leaseToken: lease.leaseToken,
           committedAt: observedAt,
         });
+        if (this.options.intake) {
+          for (const event of committed.events) {
+            try {
+              const projection = this.options.intake.processEvent(event.event.id);
+              if (projection.status === 'failed') processingFailures += 1;
+              else {
+                processed += 1;
+                if (projection.status === 'review') reviews += 1;
+              }
+            } catch {
+              // The immutable connector commit and cursor are authoritative. A
+              // downstream projection failure must never roll either back.
+              processingFailures += 1;
+            }
+          }
+        }
         pages += 1;
         captures += page.captures.length;
         failures += page.failures.length;
@@ -138,7 +173,10 @@ export class ConnectorSupervisor {
         throw new Error(`Connector ${connectorId} exceeded its page limit`);
       }
       this.#recordHealth(connectorId, ConnectorHealthStatus.Healthy, {}, this.#clock(), true);
-      return { status: 'completed', pages, captures, failures };
+      return {
+        status: 'completed', pages, captures, failures,
+        processed, reviews, processingFailures,
+      };
     } catch (error) {
       const status = error instanceof ConnectorUnauthorizedError
         ? ConnectorHealthStatus.Unauthorized

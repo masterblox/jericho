@@ -25,6 +25,12 @@ import {
   JerichoStore,
   MissionDecisionConflictError,
 } from './core/store.js';
+import {
+  IntakeProcessor,
+  type IntakeProcessingResult,
+  type IntakeRecoveryResult,
+  type MissionQueueResult,
+} from './orchestration/intake.js';
 import { createConnectorRuntime } from './runtime.js';
 import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
 
@@ -34,6 +40,12 @@ export interface SyncPort {
 
 export interface ObsidianSearchPort {
   search(query: string, limit: number): Promise<unknown>;
+}
+
+export interface IntakePort {
+  processEvent(eventId: string): IntakeProcessingResult;
+  queueApprovedMission(missionId: string): MissionQueueResult;
+  recover(): IntakeRecoveryResult;
 }
 
 export interface VoiceSessionPort {
@@ -72,6 +84,7 @@ export interface JerichoServerOptions {
   supervisor?: SyncPort;
   connectorDescriptors?: readonly unknown[];
   obsidianSearch?: ObsidianSearchPort;
+  intake?: IntakePort;
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
   clock?: () => string;
@@ -237,6 +250,9 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         input.version,
         decision,
       );
+      const queue = input.outcome === DecisionOutcome.Approved
+        ? options.intake?.queueApprovedMission(decidedMission.id)
+        : undefined;
       const snapshot = buildCommandCenterSnapshot(options.store, now());
       const projectedMission = snapshot.missions.find((item) => item.id === decidedMission.id);
       if (!projectedMission) throw new Error(`Decided mission ${missionId} is not projectable`);
@@ -247,7 +263,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         mission: projectedMission,
         snapshot,
       };
-      sendJson(response, 200, result);
+      sendJson(response, 200, { ...result, ...(queue ? { queue } : {}) });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/connectors') {
@@ -302,7 +318,25 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const receivedAt = new Date(clock()).toISOString();
       const event = localCaptureEvent(body);
       const result = options.store.commitLocalCapture(event);
-      sendJson(response, result.inserted ? 201 : 200, { ...result, receivedAt });
+      let processing: IntakeProcessingResult | undefined;
+      if (options.intake) {
+        try {
+          processing = options.intake.processEvent(result.event.id);
+        } catch (error) {
+          processing = {
+            status: 'failed',
+            failure: undefined,
+          };
+          if (process.env.NODE_ENV !== 'test') {
+            console.error('[jericho] local capture intake failed', error);
+          }
+        }
+      }
+      sendJson(response, result.inserted ? 201 : 200, {
+        ...result,
+        receivedAt,
+        ...(processing ? { processing } : {}),
+      });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/captures') {
@@ -890,7 +924,9 @@ function contentType(path: string): string {
 async function main(): Promise<void> {
   const config = loadConfig();
   const store = new JerichoStore();
-  const connectors = createConnectorRuntime(config, store);
+  const intake = new IntakeProcessor({ store });
+  intake.recover();
+  const connectors = createConnectorRuntime(config, store, { intake });
   const server = createJerichoServer({
     store,
     apiToken: config.apiToken,
@@ -905,6 +941,7 @@ async function main(): Promise<void> {
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,
     obsidianSearch: connectors.obsidianSearch,
+    intake,
   });
   const address = await server.listen(config.port, config.host);
   let shuttingDown = false;

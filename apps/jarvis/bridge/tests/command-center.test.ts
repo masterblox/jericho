@@ -34,6 +34,7 @@ import {
 import { buildCommandCenterSnapshot } from '../src/command-center.js';
 import { JerichoStore } from '../src/core/store.js';
 import { CapabilityRegistry } from '../src/orchestration/capability-registry.js';
+import { IntakeProcessor } from '../src/orchestration/intake.js';
 import { createMissionPlan, type MissionPlanInput } from '../src/orchestration/planner.js';
 import { createJerichoServer } from '../src/server.js';
 
@@ -394,7 +395,18 @@ describe('command-center truth projection', () => {
       mission: { id: mission.id, status: LifecycleStatus.Approved },
       snapshot: { approvals: [] },
     });
-    expect(store.listAssignments({ missionId: mission.id })).toEqual([]);
+    expect(store.listAssignments({ missionId: mission.id })).toEqual([
+      expect.objectContaining({
+        missionId: mission.id,
+        missionTaskId: 'pending-task',
+        agentId: 'dev-agent',
+        capabilityIds: ['cap-dev'],
+        status: LifecycleStatus.Queued,
+        instructions: mission.taskGraph[0].input,
+        evidenceEventIds: mission.taskGraph[0].evidenceEventIds,
+        maxAttempts: mission.budget.maxRetriesPerAssignment + 1,
+      }),
+    ]);
     expect((await api(url, `/api/v1/missions/${mission.id}/decisions`, {
       method: 'POST', body: JSON.stringify({
         outcome: DecisionOutcome.Rejected, planHash: mission.planHash, version: mission.version,
@@ -647,9 +659,10 @@ function decision(
 }
 
 async function startServer(store: JerichoStore, decisionIdFactory: () => string): Promise<string> {
+  const intake = new IntakeProcessor({ store });
   const server = createJerichoServer({
     store, apiToken: TOKEN, host: '127.0.0.1', geminiApiKey: undefined,
-    clock: () => NOW, decisionIdFactory,
+    clock: () => NOW, decisionIdFactory, intake,
   });
   servers.push(server);
   const address = await server.listen(0);

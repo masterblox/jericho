@@ -13,6 +13,7 @@ import {
 
 import { loadApiToken, loadConfig } from '../src/config.js';
 import { JerichoStore } from '../src/core/store.js';
+import { IntakeProcessor } from '../src/orchestration/intake.js';
 import { createJerichoServer } from '../src/server.js';
 
 const KEY = Buffer.alloc(32, 71);
@@ -242,7 +243,10 @@ describe('authenticated local Core HTTP/SSE server', () => {
       kind: 'spoken',
       sourceEventId: 'utterance-42',
       occurredAt: T0,
-      payload: { transcript: 'Show today’s priorities' },
+      payload: {
+        transcript: 'Build a multi-step project for Jericho',
+        requiredCapabilities: ['code.repo'],
+      },
     };
     const created = await api(runtime.url, '/api/v1/captures', {
       method: 'POST',
@@ -254,7 +258,13 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(createdBody).toMatchObject({ inserted: true, event: {
       source: 'local:spoken', sourceEventId: 'utterance-42',
       type: 'local.capture.spoken', payload: body.payload,
+    }, processing: {
+      status: 'planned',
+      intent: { route: 'project', confidence: expect.any(Number) },
+      mission: { status: 'pending_approval' },
     } });
+    expect(createdBody.processing.intent.confidence).toBeGreaterThanOrEqual(0.95);
+    expect(runtime.store.listMissions()).toHaveLength(1);
     expect(await readUntil(live.reader, 'event: change')).toContain(createdBody.event.id);
     live.abort();
 
@@ -366,6 +376,7 @@ function localEvent(index: number): EventEnvelope {
 async function startServer(overrides: StartOverrides = {}) {
   const store = new JerichoStore({ path: ':memory:', key: KEY });
   stores.push(store);
+  const intake = new IntakeProcessor({ store });
   const server = createJerichoServer({
     store,
     apiToken: TOKEN,
@@ -373,6 +384,7 @@ async function startServer(overrides: StartOverrides = {}) {
     allowedOrigins: [],
     geminiApiKey: undefined,
     ssePollMs: 10,
+    intake,
     ...overrides,
   });
   servers.push(server);

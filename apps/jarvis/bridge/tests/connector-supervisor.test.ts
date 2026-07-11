@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  CaptureFailureKind,
   ConnectorCapability,
   ConnectorHealthStatus,
+  IntentRoute,
   SourceType,
   type NormalizedCapture,
 } from '@jericho/shared';
@@ -14,6 +16,7 @@ import {
 } from '../src/connectors/contracts.js';
 import { CaptureConnectorRegistry } from '../src/connectors/registry.js';
 import { ConnectorSupervisor } from '../src/connectors/supervisor.js';
+import { IntakeProcessor } from '../src/orchestration/intake.js';
 
 const KEY = Buffer.alloc(32, 21);
 const T0 = '2026-07-11T00:00:00.000Z';
@@ -36,6 +39,68 @@ describe('CaptureConnectorRegistry', () => {
 });
 
 describe('ConnectorSupervisor', () => {
+  it('projects committed captures through intake before the sync request returns', async () => {
+    const store = openStore();
+    const connector = fakeConnector('fixture', [
+      { captures: [projectCapture('evt-project')], sequence: 1, hasMore: false },
+    ]);
+    const supervisor = new ConnectorSupervisor({
+      store,
+      registry: new CaptureConnectorRegistry([connector]),
+      intake: new IntakeProcessor({ store }),
+      workerId: 'supervisor-a',
+      clock: () => T0,
+      leaseMs: 30_000,
+      maxPages: 10,
+    });
+
+    const result = await supervisor.sync('fixture', 'primary');
+
+    expect(result).toMatchObject({
+      status: 'completed', processed: 1, reviews: 0, processingFailures: 0,
+    });
+    expect(store.listIntents()).toEqual([
+      expect.objectContaining({ eventId: 'evt-project', route: IntentRoute.Project }),
+    ]);
+    expect(store.listMissions()).toHaveLength(1);
+  });
+
+  it('keeps connector truth and cursor progress when downstream classification fails', async () => {
+    const store = openStore();
+    const connector = fakeConnector('fixture', [
+      { captures: [projectCapture('evt-processing-failure')], sequence: 1, hasMore: false },
+    ]);
+    const supervisor = new ConnectorSupervisor({
+      store,
+      registry: new CaptureConnectorRegistry([connector]),
+      intake: new IntakeProcessor({
+        store,
+        classifier: () => { throw new Error('classifier unavailable'); },
+      }),
+      workerId: 'supervisor-a',
+      clock: () => T0,
+      leaseMs: 30_000,
+      maxPages: 10,
+    });
+
+    await expect(supervisor.sync('fixture', 'primary')).resolves.toMatchObject({
+      status: 'completed', processed: 0, processingFailures: 1,
+    });
+    expect(store.getEvent('evt-processing-failure')).toBeDefined();
+    expect(store.getConnectorCursor('fixture', ConnectorCapability.Capture, 'primary')).toMatchObject({
+      version: 1, sequence: 1,
+    });
+    expect(store.listCaptureFailures('fixture')).toEqual([
+      expect.objectContaining({
+        kind: CaptureFailureKind.Processing,
+        sourceEventId: 'evt-processing-failure',
+      }),
+    ]);
+    expect(store.listConnectorHealth()[0]).toMatchObject({
+      status: ConnectorHealthStatus.Healthy,
+    });
+  });
+
   it('captures every page under one lease and atomically advances the durable cursor', async () => {
     const store = openStore();
     const connector = fakeConnector('fixture', [
@@ -227,4 +292,14 @@ function capture(id: string): NormalizedCapture {
     identities: [],
     relations: [],
   };
+}
+
+function projectCapture(id: string): NormalizedCapture {
+  const value = capture(id);
+  value.event.confidence = 0.9;
+  value.event.payload = {
+    text: 'Build a multi-step project from connector truth',
+    requiredCapabilities: ['code.repo'],
+  };
+  return value;
 }

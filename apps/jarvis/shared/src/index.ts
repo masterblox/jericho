@@ -226,6 +226,7 @@ export enum CaptureFailureKind {
   Authorization = 'authorization',
   CursorConflict = 'cursor_conflict',
   ContradictoryHistory = 'contradictory_history',
+  Processing = 'processing',
 }
 
 export enum ChangeLogKind {
