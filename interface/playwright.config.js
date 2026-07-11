@@ -8,18 +8,10 @@ export default defineConfig({
     screenshot: 'only-on-failure',
   },
   reporter: [['list']],
-  webServer: [
-    {
-      command: 'npm run dev:a',
-      url: 'http://127.0.0.1:4173',
-      reuseExistingServer: true,
-      timeout: 30_000,
-    },
-    {
-      command: 'npm run dev:b',
-      url: 'http://127.0.0.1:4174',
-      reuseExistingServer: true,
-      timeout: 30_000,
-    },
-  ],
+  webServer: {
+    command: 'npm run dev',
+    url: 'http://127.0.0.1:4173',
+    reuseExistingServer: true,
+    timeout: 30_000,
+  },
 })

@@ -1,15 +1,15 @@
 import React from 'react'
 import Scene from './Scene'
 import { DispatchModal, Toast } from './components'
-import { DevPanel } from './components/DevPanel'
-import { store, api, installJerichoApi } from './jericho-api'
+import { store, api, installJerichoApi, setDirectiveHandler } from './jericho-api'
 
 const VIEW_KEYS = { '1': 'CORE', '2': 'MISSIONS', '3': 'SIGNALS' }
 
-export default function App() {
+export default function App({ liveData, onDirective }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
 
   React.useEffect(() => installJerichoApi(), [])
+  React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
 
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
   React.useEffect(() => {
@@ -41,10 +41,10 @@ export default function App() {
         setSelectedAgent={api.select}
         activeView={state.activeView}
         setActiveView={api.summon}
+        liveData={liveData}
       />
       <DispatchModal directive={state.directive} onClose={api.cancelDispatch} onDispatch={api.confirmDispatch} />
       <Toast message={state.toast} />
-      <DevPanel />
     </main>
   )
 }

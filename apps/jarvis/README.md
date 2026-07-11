@@ -57,6 +57,12 @@ authenticated re-encryption migration.
 
 ## Command center
 
+The default surface is the interface-v2 intelligence sphere backed by the same
+authenticated Core snapshot and live change stream. `/?view=command` retains
+the detailed three-bay operator view, and `/?lab=gestures` retains the isolated
+hardware test surface. The sphere never imports the design fixture missions or
+signals; its projections are derived from persisted Core missions and history.
+
 The desktop/TV layout has three evidence-backed bays:
 
 - Left: Today, ranked communications, people, tasks, and commitments.
