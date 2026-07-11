@@ -25,6 +25,11 @@ import {
 import { JerichoStore } from '../src/core/store.js';
 import { CapabilityRegistry } from '../src/orchestration/capability-registry.js';
 import { createMissionPlan } from '../src/orchestration/planner.js';
+import {
+  RoutedArtifactVerifier,
+  RoutedAssignmentExecutor,
+} from '../src/orchestration/connector-action-executor.js';
+import { MissionRunner } from '../src/orchestration/runner.js';
 import { ConnectorUnauthorizedError } from '../src/connectors/contracts.js';
 import {
   TelegramGatewayAdapter,
@@ -170,6 +175,193 @@ describe('TelegramGatewayAdapter', () => {
     expect(transport.sendMessage).not.toHaveBeenCalled();
     expect(store.getReceipt('receipt-1')).toMatchObject({ status: ReceiptStatus.Pending });
     expect(store.getReceipt('receipt-1')).not.toHaveProperty('startedAt');
+  });
+
+  it('executes an approved send through MissionRunner while the runner remains the sole receipt completion owner', async () => {
+    const store = approvedTelegramStore('none');
+    const transport = telegramTransport();
+    transport.sendMessage.mockResolvedValue({
+      status: 200,
+      chatId: 'person-carlos',
+      messageId: 'message-runner-1',
+    });
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+    const runner = new MissionRunner(
+      store,
+      new RoutedAssignmentExecutor(store, { telegram: adapter }, { now: () => T1 }),
+      new RoutedArtifactVerifier(store),
+      {
+        workerId: 'telegram-production-runner',
+        leaseMs: 30_000,
+        clock: () => T1,
+      },
+    );
+
+    const outcome = await runner.runNext();
+
+    expect(outcome).toEqual({ kind: 'completed', assignmentId: 'assignment-1', reasons: [] });
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+    const receipt = store.getReceiptByIdempotencyKey('telegram-send-key');
+    expect(receipt).toMatchObject({
+      status: ReceiptStatus.Succeeded,
+      verified: true,
+      externalId: 'person-carlos/message-runner-1',
+      result: { chatId: 'person-carlos', messageId: 'message-runner-1' },
+    });
+    expect(receipt?.evidenceEventIds).toHaveLength(1);
+    expect(store.getEvent(receipt!.evidenceEventIds[0])).toMatchObject({
+      source: 'telegram',
+      type: 'telegram.message.sent',
+      status: LifecycleStatus.Succeeded,
+      payload: {
+        missionId: 'mission-v1',
+        assignmentId: 'assignment-1',
+        receiptId: receipt!.id,
+        destination: 'person-carlos',
+        result: { chatId: 'person-carlos', messageId: 'message-runner-1' },
+      },
+    });
+    expect(store.getAssignment('assignment-1')).toMatchObject({
+      status: LifecycleStatus.Succeeded,
+      artifact: {
+        type: 'receipt',
+        data: { chatId: 'person-carlos', messageId: 'message-runner-1' },
+        verified: true,
+      },
+    });
+
+    expect(await runner.runNext()).toMatchObject({ kind: 'idle' });
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('checkpoints a previously started runner receipt without ever resending it', async () => {
+    const store = approvedTelegramStore();
+    store.startReceipt('receipt-1', T1);
+    const transport = telegramTransport();
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+    const runner = new MissionRunner(
+      store,
+      new RoutedAssignmentExecutor(store, { telegram: adapter }, { now: () => T1 }),
+      new RoutedArtifactVerifier(store),
+      { workerId: 'telegram-recovery-runner', leaseMs: 30_000, clock: () => T1 },
+    );
+
+    await expect(runner.runNext()).resolves.toMatchObject({
+      kind: 'checkpoint',
+      reasons: [EscalationReason.UncertainExternalAction],
+    });
+    expect(transport.sendMessage).not.toHaveBeenCalled();
+    expect(store.getAssignment('assignment-1')?.status).toBe(LifecycleStatus.Paused);
+  });
+
+  it('leaves an unauthorized gateway attempt durably uncertain and cannot retry it', async () => {
+    const store = approvedTelegramStore('none');
+    const transport = telegramTransport();
+    transport.sendMessage.mockResolvedValue({ status: 401 });
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'expired-token', transport,
+    });
+    const runner = new MissionRunner(
+      store,
+      new RoutedAssignmentExecutor(store, { telegram: adapter }, { now: () => T1 }),
+      new RoutedArtifactVerifier(store),
+      { workerId: 'telegram-auth-runner', leaseMs: 30_000, clock: () => T1 },
+    );
+
+    await expect(runner.runNext()).resolves.toMatchObject({
+      kind: 'checkpoint',
+      reasons: [EscalationReason.UncertainExternalAction],
+    });
+    const receipt = store.getReceiptByIdempotencyKey('telegram-send-key');
+    expect(receipt).toMatchObject({ status: ReceiptStatus.Pending, startedAt: T1 });
+    expect(receipt?.evidenceEventIds).toEqual([]);
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+
+    await expect(adapter.executeApproved(store, {
+      assignmentId: 'assignment-1',
+      missionPlanHash: store.getMission('mission-v1')!.planHash,
+      receiptId: receipt!.id,
+      recipient: 'person-carlos', text: 'Approved message', now: T2,
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/uncertain|resend|bound/i);
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an unregistered connector and a task-scope mismatch before any gateway call', async () => {
+    const store = approvedTelegramStore();
+    const transport = telegramTransport();
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+    const executor = new RoutedAssignmentExecutor(store, { telegram: adapter });
+    const assignment = store.getAssignment('assignment-1')!;
+    const mission = store.getMission('mission-v1')!;
+    const task = store.getMissionTask('task-1')!;
+    const signal = new AbortController().signal;
+
+    expect(() => executor.descriptorFor({
+      assignment: {
+        ...assignment,
+        externalAction: { ...assignment.externalAction!, connectorId: 'unsupported-chat' },
+      },
+      mission,
+      task,
+      signal,
+    })).toThrow(/unsupported.*connector/i);
+
+    await expect(executor.execute({
+      assignment,
+      mission,
+      task: {
+        ...task,
+        externalAction: { ...task.externalAction!, recipient: 'person-paula' },
+      },
+      signal,
+    })).rejects.toThrow(/approved.*task|differs/i);
+    expect(transport.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['system', 'whatsapp'],
+    ['channel', 'whatsapp'],
+    ['tool', 'whatsapp.send'],
+    ['credentialRef', 'whatsapp-gateway'],
+    ['dataScope', 'telegram:all'],
+  ] as const)('rejects an approved-plan %s binding that is not the Telegram gateway contract', async (field, value) => {
+    const store = approvedTelegramStore();
+    const assignment = store.getAssignment('assignment-1')!;
+    const mission = store.getMission('mission-v1')!;
+    const receipt = store.getReceipt('receipt-1')!;
+    const alteredAction = { ...assignment.externalAction!, [field]: value };
+    const fakeStore = {
+      getAssignment: () => ({ ...assignment, externalAction: alteredAction }),
+      getMission: () => ({
+        ...mission,
+        taskGraph: mission.taskGraph.map((task) => (
+          task.id === assignment.missionTaskId ? { ...task, externalAction: alteredAction } : task
+        )),
+      }),
+      getReceipt: () => receipt,
+    } as unknown as JerichoStore;
+    const transport = telegramTransport();
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+
+    await expect(adapter.executeApproved(fakeStore, {
+      assignmentId: assignment.id,
+      missionPlanHash: mission.planHash,
+      receiptId: receipt.id,
+      recipient: 'person-carlos',
+      text: 'Approved message',
+      now: T1,
+      signal: new AbortController().signal,
+    })).rejects.toThrow(/approved|bound|scope/i);
+    expect(transport.sendMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -358,7 +550,7 @@ function request(overrides: Record<string, unknown> = {}) {
   } as never;
 }
 
-function approvedTelegramStore(receiptKind: 'fresh' | 'uncertain' = 'fresh'): JerichoStore {
+function approvedTelegramStore(receiptKind: 'fresh' | 'uncertain' | 'none' = 'fresh'): JerichoStore {
   const store = new JerichoStore({ path: ':memory:', key: KEY });
   stores.push(store);
   store.saveIntent(intent());
@@ -375,7 +567,11 @@ function approvedTelegramStore(receiptKind: 'fresh' | 'uncertain' = 'fresh'): Je
       lane: AgentLane.Angela, selectedAgentId: 'angela', capabilityIds: ['cap-send'],
       requiredActions: ['send_message'], requiredTools: ['telegram.send'], model: 'local',
       maxTokens: 1_000, writableScope: permissions(), dependsOn: [], evidenceEventIds: [],
-      expectedArtifact: { type: 'receipt', description: 'Delivery', verification: ['verified'], requiredEvidence: ['delivery'] },
+      expectedArtifact: {
+        type: 'receipt', description: 'Delivery',
+        verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+        requiredEvidence: ['destination-receipt'],
+      },
       externalAction: {
         connectorId: 'telegram', action: 'send_message', destination: 'person-carlos',
         idempotencyKey: 'telegram-send-key', system: 'telegram', channel: 'telegram',
@@ -394,7 +590,9 @@ function approvedTelegramStore(receiptKind: 'fresh' | 'uncertain' = 'fresh'): Je
   store.createMissionPlan(plan);
   store.approveMission(plan.id, plan.planHash, decision());
   store.enqueueAssignment(assignment());
-  store.reserveReceipt(receipt(receiptKind === 'uncertain' ? 'receipt-uncertain' : 'receipt-1'));
+  if (receiptKind !== 'none') {
+    store.reserveReceipt(receipt(receiptKind === 'uncertain' ? 'receipt-uncertain' : 'receipt-1'));
+  }
   return store;
 }
 
@@ -424,7 +622,11 @@ function assignment(): Assignment {
     id: 'assignment-1', missionId: 'mission-v1', missionTaskId: 'task-1', agentId: 'angela',
     capabilityIds: ['cap-send'], status: LifecycleStatus.Queued, route: RouteType.Agent,
     risk: RiskLevel.Low, instructions: { text: 'Approved message' }, evidenceEventIds: [],
-    expectedArtifact: { type: 'receipt', description: 'Delivery', verification: ['verified'], requiredEvidence: ['delivery'] },
+    expectedArtifact: {
+      type: 'receipt', description: 'Delivery',
+      verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+      requiredEvidence: ['destination-receipt'],
+    },
     externalAction: {
       connectorId: 'telegram', action: 'send_message', destination: 'person-carlos',
       idempotencyKey: 'telegram-send-key', system: 'telegram', channel: 'telegram',

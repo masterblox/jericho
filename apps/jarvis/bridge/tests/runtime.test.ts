@@ -108,6 +108,8 @@ describe('connector runtime composition', () => {
       'telegram',
       'whatsapp',
     ]);
+    expect(runtime.actionAdapters.telegram.descriptor.id).toBe('telegram');
+    expect(runtime.actionAdapters.whatsapp.descriptor.id).toBe('whatsapp');
     await expect(runtime.supervisor.sync('telegram', 'primary')).resolves.toMatchObject({
       status: 'unavailable',
     });
@@ -247,6 +249,19 @@ describe('production mission execution lifecycle', () => {
       status: ConnectorHealthStatus.Unavailable,
       details: { reason: 'missing_manifest', executable: false, protocolVersion: 1 },
     }]);
+  });
+
+  it('creates connector-action execution without requiring a Hermes code workspace', () => {
+    const store = new JerichoStore({ path: ':memory:', key: KEY });
+    resources.push(() => store.close());
+    const config = loadConfig({ JERICHO_API_TOKEN: 'runtime-token' }, []);
+    const connectors = createConnectorRuntime(config, store);
+
+    const runtime = createMissionExecutionRuntime(config, store, {
+      connectorActions: connectors.actionAdapters,
+    });
+
+    expect(runtime).toBeDefined();
   });
 
   it('creates a bounded executor only after a fresh Hermes v1 capability handshake', async () => {

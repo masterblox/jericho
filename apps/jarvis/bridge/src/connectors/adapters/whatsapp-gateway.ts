@@ -1,7 +1,7 @@
 import {
   ConnectorHealthStatus,
   EntityType,
-  LifecycleStatus,
+  MutationClass,
   ReceiptStatus,
   RelationType,
   type ActionReceipt,
@@ -19,6 +19,12 @@ import {
 } from '../contracts.js';
 import { stableConnectorEvent } from '../normalization.js';
 import type { JerichoStore } from '../../core/store.js';
+import {
+  appendConnectorDeliveryEvent,
+  validateApprovedConnectorSend,
+  type ApprovedConnectorExecutionResult,
+  type ApprovedConnectorSendInput,
+} from '../../orchestration/connector-action-executor.js';
 
 export interface WhatsAppMediaReference {
   reference: string;
@@ -84,15 +90,7 @@ export interface WhatsAppGatewayAdapterOptions {
   transport: WhatsAppGatewayTransport;
 }
 
-export interface ApprovedWhatsAppSend {
-  assignmentId: string;
-  missionPlanHash: string;
-  receiptId: string;
-  recipient: string;
-  text: string;
-  now: string;
-  signal: AbortSignal;
-}
+export interface ApprovedWhatsAppSend extends ApprovedConnectorSendInput {}
 
 export class WhatsAppGatewayAdapter implements CaptureConnector {
   readonly descriptor = {
@@ -198,35 +196,28 @@ export class WhatsAppGatewayAdapter implements CaptureConnector {
   async sendApproved(store: JerichoStore, input: ApprovedWhatsAppSend): Promise<ActionReceipt> {
     this.assertConfigured();
     input.signal.throwIfAborted();
-    const assignment = store.getAssignment(input.assignmentId);
-    const mission = assignment ? store.getMission(assignment.missionId) : undefined;
-    const receipt = store.getReceipt(input.receiptId);
-    const action = assignment?.externalAction;
-    if (
-      !assignment || !mission ||
-      (mission.status !== LifecycleStatus.Approved && mission.status !== LifecycleStatus.Active) ||
-      mission.planHash !== input.missionPlanHash ||
-      action?.connectorId !== this.descriptor.id ||
-      action.action !== 'send_message' ||
-      action.system !== 'whatsapp' ||
-      action.channel !== 'whatsapp' ||
-      action.tool !== 'whatsapp.send' ||
-      action.credentialRef !== 'whatsapp-gateway' ||
-      action.recipient !== input.recipient ||
-      action.destination !== input.recipient ||
-      !input.text.trim() ||
-      assignment.instructions.text !== input.text ||
-      !receipt ||
-      receipt.assignmentId !== assignment.id ||
-      receipt.missionTaskId !== assignment.missionTaskId ||
-      receipt.connectorId !== this.descriptor.id ||
-      receipt.action !== 'send_message' ||
-      receipt.destination !== input.recipient ||
-      receipt.idempotencyKey !== action.idempotencyKey
-    ) {
-      throw new Error('WhatsApp outbox action is not bound to the approved mission and receipt');
-    }
+    const { receipt } = validateApprovedConnectorSend(store, input, WHATSAPP_BINDING);
     if (receipt.status === ReceiptStatus.Succeeded && receipt.verified) return receipt;
+    const executed = await this.executeApproved(store, input);
+    return store.completeReceipt(receipt.id, {
+      status: ReceiptStatus.Succeeded,
+      externalId: executed.externalId,
+      result: executed.result,
+      verified: true,
+      verifiedAt: input.now,
+      completedAt: input.now,
+      evidenceEventIds: executed.evidenceEventIds,
+    });
+  }
+
+  async executeApproved(
+    store: JerichoStore,
+    input: ApprovedWhatsAppSend,
+  ): Promise<ApprovedConnectorExecutionResult> {
+    this.assertConfigured();
+    input.signal.throwIfAborted();
+    const bound = validateApprovedConnectorSend(store, input, WHATSAPP_BINDING);
+    const { receipt } = bound;
     if (receipt.status !== ReceiptStatus.Pending || receipt.startedAt) {
       throw new Error('WhatsApp outbox receipt is uncertain; refusing to resend');
     }
@@ -256,15 +247,18 @@ export class WhatsAppGatewayAdapter implements CaptureConnector {
     ) {
       throw new Error('WhatsApp gateway result is uncertain or mismatched');
     }
-    return store.completeReceipt(receipt.id, {
-      status: ReceiptStatus.Succeeded,
-      externalId: `${response.chatId}/${response.messageId}`,
-      result: { chatId: response.chatId, messageId: response.messageId },
-      verified: true,
-      verifiedAt: input.now,
-      completedAt: input.now,
-      evidenceEventIds: [`whatsapp:${response.chatId}/${response.messageId}`],
+    const result = { chatId: response.chatId, messageId: response.messageId };
+    const externalId = `${response.chatId}/${response.messageId}`;
+    const event = appendConnectorDeliveryEvent(store, {
+      connectorId: this.descriptor.id,
+      ...bound,
+      recipient: input.recipient,
+      text: input.text,
+      externalId,
+      result,
+      occurredAt: input.now,
     });
+    return { externalId, result, evidenceEventIds: [event.id] };
   }
 
   private get configured(): boolean {
@@ -277,6 +271,16 @@ export class WhatsAppGatewayAdapter implements CaptureConnector {
     }
   }
 }
+
+const WHATSAPP_BINDING = {
+  connectorId: 'whatsapp',
+  system: 'whatsapp',
+  channel: 'whatsapp',
+  tool: 'whatsapp.send',
+  credentialRef: 'whatsapp-gateway',
+  dataScope: 'whatsapp:selected',
+  mutationClass: MutationClass.Reversible,
+} as const;
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';

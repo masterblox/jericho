@@ -46,12 +46,21 @@ import {
   HermesResultVerifier,
   inspectHermesProtocol,
 } from './orchestration/hermes-filesystem-executor.js';
+import {
+  RoutedArtifactVerifier,
+  RoutedAssignmentExecutor,
+  type ConnectorActionAdapters,
+} from './orchestration/connector-action-executor.js';
 import { MissionRunner, type RunnerOutcome } from './orchestration/runner.js';
 
 export interface ConnectorRuntime {
   registry: CaptureConnectorRegistry;
   supervisor: ConnectorSupervisor;
   descriptors: ConnectorDescriptor[];
+  actionAdapters: Readonly<{
+    telegram: TelegramGatewayAdapter;
+    whatsapp: WhatsAppGatewayAdapter;
+  }>;
   obsidianSearch?: ObsidianConnector;
   start(): Promise<void>;
   stop(): Promise<void>;
@@ -69,17 +78,19 @@ export function createConnectorRuntime(
   options: ConnectorRuntimeOptions = {},
 ): ConnectorRuntime {
   const fetchImplementation = options.fetch ?? globalThis.fetch;
+  const telegram = new TelegramGatewayAdapter({
+    gatewayUrl: config.telegramGatewayUrl,
+    gatewayToken: config.telegramGatewayToken,
+    transport: new HttpTelegramGatewayTransport(fetchImplementation),
+  });
+  const whatsapp = new WhatsAppGatewayAdapter({
+    gatewayUrl: config.whatsappGatewayUrl,
+    gatewayToken: config.whatsappGatewayToken,
+    transport: new HttpWhatsAppGatewayTransport(fetchImplementation),
+  });
   const connectors: CaptureConnector[] = [
-    new TelegramGatewayAdapter({
-      gatewayUrl: config.telegramGatewayUrl,
-      gatewayToken: config.telegramGatewayToken,
-      transport: new HttpTelegramGatewayTransport(fetchImplementation),
-    }),
-    new WhatsAppGatewayAdapter({
-      gatewayUrl: config.whatsappGatewayUrl,
-      gatewayToken: config.whatsappGatewayToken,
-      transport: new HttpWhatsAppGatewayTransport(fetchImplementation),
-    }),
+    telegram,
+    whatsapp,
     new LinearAdapter({
       apiKey: config.linearApiKey,
       transport: new LinearGraphqlTransport(fetchImplementation),
@@ -124,6 +135,7 @@ export function createConnectorRuntime(
     registry,
     supervisor,
     descriptors,
+    actionAdapters: Object.freeze({ telegram, whatsapp }),
     ...(obsidian ? { obsidianSearch: obsidian } : {}),
     start: () => scheduler.start(),
     stop: () => scheduler.stop(),
@@ -413,6 +425,7 @@ export interface MissionExecutionRuntime {
 
 export interface MissionExecutionRuntimeFactoryOptions {
   now?: () => string;
+  connectorActions?: ConnectorActionAdapters;
 }
 
 export function createMissionExecutionRuntime(
@@ -421,24 +434,39 @@ export function createMissionExecutionRuntime(
   options: MissionExecutionRuntimeFactoryOptions = {},
 ): MissionExecutionRuntime | undefined {
   const workspaceFields = [config.hermesBusRoot, config.hermesRepo, config.hermesBranch];
-  if (workspaceFields.every((value) => value === undefined)) return undefined;
-  if (workspaceFields.some((value) => value === undefined)) {
+  const hasNoHermesWorkspace = workspaceFields.every((value) => value === undefined);
+  if (!hasNoHermesWorkspace && workspaceFields.some((value) => value === undefined)) {
     throw new Error('Hermes execution requires an explicit bus root, repository, and branch');
   }
   const now = options.now ?? (() => new Date().toISOString());
-  const compatibility = inspectHermesProtocol(config.hermesBusRoot!, now());
-  recordHermesExecutionHealth(store, compatibility, now());
-  if (!compatibility.compatible) return undefined;
-  const executor = new HermesFilesystemExecutor({
-    busRoot: config.hermesBusRoot!,
+  let hermesExecutor: HermesFilesystemExecutor | undefined;
+  let hermesVerifier: HermesResultVerifier | undefined;
+  if (!hasNoHermesWorkspace) {
+    const compatibility = inspectHermesProtocol(config.hermesBusRoot!, now());
+    recordHermesExecutionHealth(store, compatibility, now());
+    if (compatibility.compatible) {
+      hermesExecutor = new HermesFilesystemExecutor({
+        busRoot: config.hermesBusRoot!,
+        store,
+        workspace: { repo: config.hermesRepo!, branch: config.hermesBranch! },
+        pollIntervalMs: config.hermesPollIntervalMs,
+        maxWaitMs: config.hermesMaxWaitMs,
+        now,
+      });
+      hermesVerifier = new HermesResultVerifier(store);
+    }
+  }
+  if (!options.connectorActions && !hermesExecutor) return undefined;
+  const executor = new RoutedAssignmentExecutor(
     store,
-    workspace: { repo: config.hermesRepo!, branch: config.hermesBranch! },
-    pollIntervalMs: config.hermesPollIntervalMs,
-    maxWaitMs: config.hermesMaxWaitMs,
-    now,
+    options.connectorActions ?? {},
+    { ...(hermesExecutor ? { fallback: hermesExecutor } : {}), now },
+  );
+  const verifier = new RoutedArtifactVerifier(store, {
+    ...(hermesVerifier ? { fallback: hermesVerifier } : {}),
   });
-  const runner = new MissionRunner(store, executor, new HermesResultVerifier(store), {
-    workerId: `jericho-hermes-${process.pid}-${randomUUID()}`,
+  const runner = new MissionRunner(store, executor, verifier, {
+    workerId: `jericho-mission-${process.pid}-${randomUUID()}`,
     leaseMs: config.connectorLeaseMs,
     retryDelayMs: config.hermesPollIntervalMs,
   });

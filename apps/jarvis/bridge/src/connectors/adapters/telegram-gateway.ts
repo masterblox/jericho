@@ -1,7 +1,7 @@
 import {
   ConnectorHealthStatus,
   EntityType,
-  LifecycleStatus,
+  MutationClass,
   ReceiptStatus,
   RelationType,
   type ActionReceipt,
@@ -18,6 +18,12 @@ import {
   type ConnectorProbe,
 } from '../contracts.js';
 import { stableConnectorEvent } from '../normalization.js';
+import {
+  appendConnectorDeliveryEvent,
+  validateApprovedConnectorSend,
+  type ApprovedConnectorExecutionResult,
+  type ApprovedConnectorSendInput,
+} from '../../orchestration/connector-action-executor.js';
 
 export interface TelegramGatewayUpdate {
   epoch: number;
@@ -61,15 +67,7 @@ export interface TelegramGatewayAdapterOptions {
   transport: TelegramGatewayTransport;
 }
 
-export interface ApprovedTelegramSend {
-  assignmentId: string;
-  missionPlanHash: string;
-  receiptId: string;
-  recipient: string;
-  text: string;
-  now: string;
-  signal: AbortSignal;
-}
+export interface ApprovedTelegramSend extends ApprovedConnectorSendInput {}
 
 export class TelegramGatewayAdapter implements CaptureConnector {
   readonly descriptor = {
@@ -123,42 +121,49 @@ export class TelegramGatewayAdapter implements CaptureConnector {
 
   async sendApproved(store: JerichoStore, input: ApprovedTelegramSend): Promise<ActionReceipt> {
     this.assertConfigured();
-    const assignment = store.getAssignment(input.assignmentId);
-    const mission = assignment ? store.getMission(assignment.missionId) : undefined;
-    const receipt = store.getReceipt(input.receiptId);
-    if (
-      !assignment || !mission ||
-      (mission.status !== LifecycleStatus.Approved && mission.status !== LifecycleStatus.Active) ||
-      mission.planHash !== input.missionPlanHash ||
-      assignment.externalAction?.connectorId !== this.descriptor.id ||
-      assignment.externalAction.recipient !== input.recipient ||
-      assignment.externalAction.destination !== input.recipient ||
-      !input.text.trim() ||
-      assignment.instructions.text !== input.text ||
-      !receipt ||
-      receipt.assignmentId !== assignment.id ||
-      receipt.missionTaskId !== assignment.missionTaskId ||
-      receipt.connectorId !== this.descriptor.id ||
-      receipt.destination !== input.recipient ||
-      receipt.idempotencyKey !== assignment.externalAction.idempotencyKey
-    ) {
-      throw new Error('Telegram outbox action is not bound to the approved mission and receipt');
-    }
+    const { receipt } = validateApprovedConnectorSend(store, input, TELEGRAM_BINDING);
     if (receipt.status === ReceiptStatus.Succeeded && receipt.verified) return receipt;
+    const executed = await this.executeApproved(store, input);
+    return store.completeReceipt(receipt.id, {
+      status: ReceiptStatus.Succeeded,
+      externalId: executed.externalId,
+      result: executed.result,
+      verified: true,
+      verifiedAt: input.now,
+      completedAt: input.now,
+      evidenceEventIds: executed.evidenceEventIds,
+    });
+  }
+
+  async executeApproved(
+    store: JerichoStore,
+    input: ApprovedTelegramSend,
+  ): Promise<ApprovedConnectorExecutionResult> {
+    this.assertConfigured();
+    input.signal.throwIfAborted();
+    const bound = validateApprovedConnectorSend(store, input, TELEGRAM_BINDING);
+    const { receipt } = bound;
     if (receipt.status !== ReceiptStatus.Pending || receipt.startedAt) {
       throw new Error('Telegram outbox receipt is uncertain; refusing to resend');
     }
-
     store.startReceipt(receipt.id, input.now);
-    const response = await this.options.transport.sendMessage({
-      gatewayUrl: this.options.gatewayUrl!,
-      gatewayToken: this.options.gatewayToken!,
-      recipient: input.recipient,
-      text: input.text,
-      idempotencyKey: receipt.idempotencyKey,
-      signal: input.signal,
-    });
-    if (response.status === 401) throw new ConnectorUnauthorizedError('Telegram gateway unauthorized');
+    let response: Awaited<ReturnType<TelegramGatewayTransport['sendMessage']>>;
+    try {
+      response = await this.options.transport.sendMessage({
+        gatewayUrl: this.options.gatewayUrl!,
+        gatewayToken: this.options.gatewayToken!,
+        recipient: input.recipient,
+        text: input.text,
+        idempotencyKey: receipt.idempotencyKey,
+        signal: input.signal,
+      });
+    } catch (error) {
+      if (input.signal.aborted || isAbortError(error)) throw error;
+      throw new Error('Telegram gateway send is uncertain');
+    }
+    if (response.status === 401 || response.status === 403) {
+      throw new ConnectorUnauthorizedError('Telegram gateway unauthorized');
+    }
     if (
       response.status < 200 || response.status >= 300 ||
       response.chatId !== input.recipient ||
@@ -166,15 +171,18 @@ export class TelegramGatewayAdapter implements CaptureConnector {
     ) {
       throw new Error('Telegram gateway result is uncertain or mismatched');
     }
-    return store.completeReceipt(receipt.id, {
-      status: ReceiptStatus.Succeeded,
-      externalId: `${response.chatId}/${response.messageId}`,
-      result: { chatId: response.chatId, messageId: response.messageId },
-      verified: true,
-      verifiedAt: input.now,
-      completedAt: input.now,
-      evidenceEventIds: [`telegram:${response.chatId}/${response.messageId}`],
+    const result = { chatId: response.chatId, messageId: response.messageId };
+    const externalId = `${response.chatId}/${response.messageId}`;
+    const event = appendConnectorDeliveryEvent(store, {
+      connectorId: this.descriptor.id,
+      ...bound,
+      recipient: input.recipient,
+      text: input.text,
+      externalId,
+      result,
+      occurredAt: input.now,
     });
+    return { externalId, result, evidenceEventIds: [event.id] };
   }
 
   private get configured(): boolean {
@@ -186,6 +194,20 @@ export class TelegramGatewayAdapter implements CaptureConnector {
       throw new ConnectorUnavailableError('Telegram Hermes gateway config is unavailable');
     }
   }
+}
+
+const TELEGRAM_BINDING = {
+  connectorId: 'telegram',
+  system: 'telegram',
+  channel: 'telegram',
+  tool: 'telegram.send',
+  credentialRef: 'telegram-gateway',
+  dataScope: 'telegram:selected',
+  mutationClass: MutationClass.Reversible,
+} as const;
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
 }
 
 function normalizeTelegramUpdate(update: TelegramGatewayUpdate): NormalizedCapture {

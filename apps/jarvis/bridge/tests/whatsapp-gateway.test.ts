@@ -28,6 +28,11 @@ import { JerichoStore } from '../src/core/store.js';
 import { CapabilityRegistry } from '../src/orchestration/capability-registry.js';
 import { createMissionPlan } from '../src/orchestration/planner.js';
 import {
+  RoutedArtifactVerifier,
+  RoutedAssignmentExecutor,
+} from '../src/orchestration/connector-action-executor.js';
+import { MissionRunner } from '../src/orchestration/runner.js';
+import {
   WhatsAppGatewayAdapter,
   type WhatsAppGatewayTransport,
 } from '../src/connectors/adapters/whatsapp-gateway.js';
@@ -356,6 +361,107 @@ describe('WhatsAppGatewayAdapter', () => {
     }));
   });
 
+  it('exposes a runner-owned execution primitive that starts but does not complete the receipt', async () => {
+    const store = approvedWhatsAppStore();
+    const transport = whatsappTransport();
+    transport.sendMessage.mockResolvedValue({
+      status: 200,
+      chatId: 'wa-contact-carlos',
+      messageId: 'wa-message-runner-1',
+    });
+    const adapter = configuredAdapter(transport);
+
+    const result = await adapter.executeApproved(store, {
+      assignmentId: 'wa-assignment-1',
+      missionPlanHash: store.getMission('wa-mission-v1')!.planHash,
+      receiptId: 'wa-receipt-1',
+      recipient: 'wa-contact-carlos',
+      text: 'Approved WhatsApp message',
+      now: T1,
+      signal: signal(),
+    });
+
+    expect(result).toMatchObject({
+      externalId: 'wa-contact-carlos/wa-message-runner-1',
+      result: { chatId: 'wa-contact-carlos', messageId: 'wa-message-runner-1' },
+    });
+    expect(result.evidenceEventIds).toHaveLength(1);
+    expect(store.getReceipt('wa-receipt-1')).toMatchObject({
+      status: ReceiptStatus.Pending,
+      startedAt: T1,
+      verified: false,
+    });
+    expect(store.getEvent(result.evidenceEventIds[0])).toMatchObject({
+      source: 'whatsapp',
+      type: 'whatsapp.message.sent',
+      payload: {
+        missionId: 'wa-mission-v1',
+        assignmentId: 'wa-assignment-1',
+        receiptId: 'wa-receipt-1',
+        destination: 'wa-contact-carlos',
+      },
+    });
+
+    const verifier = new RoutedArtifactVerifier(store);
+    await expect(verifier.verify({
+      assignment: store.getAssignment('wa-assignment-1')!,
+      mission: store.getMission('wa-mission-v1')!,
+      task: store.getMissionTask('wa-task-1')!,
+      artifact: { type: 'receipt', data: result.result },
+      requirement: {
+        type: 'receipt', description: 'Forged unrelated proof',
+        verification: ['tests-pass'], requiredEvidence: ['source-code-report'],
+      },
+      signal: signal(),
+    })).resolves.toEqual({ verified: false, checks: [], evidence: [] });
+
+    const recoveryRunner = new MissionRunner(
+      store,
+      new RoutedAssignmentExecutor(store, { whatsapp: adapter }, { now: () => T1 }),
+      verifier,
+      { workerId: 'whatsapp-crash-recovery', leaseMs: 30_000, clock: () => T1 },
+    );
+    await expect(recoveryRunner.runNext()).resolves.toMatchObject({
+      kind: 'checkpoint',
+      reasons: [EscalationReason.UncertainExternalAction],
+    });
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('runs an approved WhatsApp send end-to-end with one durable receipt and event', async () => {
+    const store = approvedWhatsAppStore(false);
+    const transport = whatsappTransport();
+    transport.sendMessage.mockResolvedValue({
+      status: 200,
+      chatId: 'wa-contact-carlos',
+      messageId: 'wa-message-production-1',
+    });
+    const adapter = configuredAdapter(transport);
+    const runner = new MissionRunner(
+      store,
+      new RoutedAssignmentExecutor(store, { whatsapp: adapter }, { now: () => T1 }),
+      new RoutedArtifactVerifier(store),
+      { workerId: 'whatsapp-production-runner', leaseMs: 30_000, clock: () => T1 },
+    );
+
+    await expect(runner.runNext()).resolves.toEqual({
+      kind: 'completed', assignmentId: 'wa-assignment-1', reasons: [],
+    });
+    const receipt = store.getReceiptByIdempotencyKey('whatsapp-send-key');
+    expect(receipt).toMatchObject({
+      status: ReceiptStatus.Succeeded,
+      verified: true,
+      externalId: 'wa-contact-carlos/wa-message-production-1',
+    });
+    expect(receipt?.evidenceEventIds).toHaveLength(1);
+    expect(store.getEvent(receipt!.evidenceEventIds[0])).toMatchObject({
+      source: 'whatsapp',
+      type: 'whatsapp.message.sent',
+      status: LifecycleStatus.Succeeded,
+    });
+    expect(transport.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects any send that differs from the approved recipient or exact text', async () => {
     const store = approvedWhatsAppStore();
     const transport = whatsappTransport();
@@ -432,7 +538,7 @@ function signal(): AbortSignal {
   return new AbortController().signal;
 }
 
-function approvedWhatsAppStore(): JerichoStore {
+function approvedWhatsAppStore(reserve = true): JerichoStore {
   const store = new JerichoStore({ path: ':memory:', key: KEY });
   stores.push(store);
   store.saveIntent(whatsAppIntent());
@@ -455,8 +561,9 @@ function approvedWhatsAppStore(): JerichoStore {
       requiredActions: ['send_message'], requiredTools: ['whatsapp.send'], model: 'local',
       maxTokens: 1_000, writableScope: whatsAppPermissions(), dependsOn: [], evidenceEventIds: [],
       expectedArtifact: {
-        type: 'receipt', description: 'Delivery', verification: ['verified'],
-        requiredEvidence: ['delivery'],
+        type: 'receipt', description: 'Delivery',
+        verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+        requiredEvidence: ['destination-receipt'],
       },
       externalAction: {
         connectorId: 'whatsapp', action: 'send_message', destination: 'wa-contact-carlos',
@@ -480,7 +587,7 @@ function approvedWhatsAppStore(): JerichoStore {
   store.createMissionPlan(plan);
   store.approveMission(plan.id, plan.planHash, whatsAppDecision());
   store.enqueueAssignment(whatsAppAssignment());
-  store.reserveReceipt(whatsAppReceipt());
+  if (reserve) store.reserveReceipt(whatsAppReceipt());
   return store;
 }
 
@@ -517,8 +624,9 @@ function whatsAppAssignment(): Assignment {
     route: RouteType.Agent, risk: RiskLevel.Low,
     instructions: { text: 'Approved WhatsApp message' }, evidenceEventIds: [],
     expectedArtifact: {
-      type: 'receipt', description: 'Delivery', verification: ['verified'],
-      requiredEvidence: ['delivery'],
+      type: 'receipt', description: 'Delivery',
+      verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+      requiredEvidence: ['destination-receipt'],
     },
     externalAction: {
       connectorId: 'whatsapp', action: 'send_message', destination: 'wa-contact-carlos',
