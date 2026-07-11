@@ -239,6 +239,36 @@ export enum ChangeLogKind {
   HealthChanged = 'health_changed',
 }
 
+export enum CommandCenterActionKind {
+  ApproveMission = 'approve_mission',
+  RejectMission = 'reject_mission',
+}
+
+export enum CommandCenterMissionStage {
+  Plan = 'plan',
+  Approve = 'approve',
+  Execute = 'execute',
+  Present = 'present',
+  Review = 'review',
+}
+
+export enum CommandCenterTimelineKind {
+  Capture = 'capture',
+  Mission = 'mission',
+  Decision = 'decision',
+  Assignment = 'assignment',
+  Outcome = 'outcome',
+  Receipt = 'receipt',
+}
+
+export enum NucleusNodeKind {
+  Entity = 'entity',
+  Mission = 'mission',
+  Agent = 'agent',
+  Assignment = 'assignment',
+  Receipt = 'receipt',
+}
+
 export enum PreferenceScope {
   User = 'user',
   Workspace = 'workspace',
@@ -795,6 +825,7 @@ export interface DecisionRecord {
   decidedBy: string;
   outcome: DecisionOutcome;
   planHash?: string;
+  planVersion?: number;
   rationale: string;
   assumptions: string[];
   evidenceEventIds: string[];
@@ -804,6 +835,225 @@ export interface DecisionRecord {
   decidedAt: IsoTimestamp;
   provenance: Provenance[];
   integrityHash?: string;
+}
+
+export interface ActionDescriptor {
+  id: string;
+  kind: CommandCenterActionKind;
+  label: string;
+  targetType: 'mission';
+  targetId: string;
+  method: 'POST';
+  endpoint: string;
+  enabled: boolean;
+  requiresConfirmation: boolean;
+  payload: {
+    outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected;
+    planHash: string;
+    version: number;
+  };
+  disabledReason?: string;
+}
+
+export interface CommandCenterEntityCard {
+  id: string;
+  entityType: EntityType;
+  label: string;
+  rank: number;
+  status?: LifecycleStatus;
+  risk?: RiskLevel;
+  confidence?: number;
+  freshness: Freshness;
+  evidenceEventIds: string[];
+  attributes: JsonObject;
+  updatedAt: IsoTimestamp;
+}
+
+export interface CommandCenterToday {
+  date: string;
+  taskIds: string[];
+  commitmentIds: string[];
+  activeMissionIds: string[];
+  pendingApprovalIds: string[];
+}
+
+export interface CommandCenterMissionTask {
+  id: string;
+  title: string;
+  status: LifecycleStatus;
+  sequence: number;
+  dependsOn: string[];
+  lane: AgentLane;
+  agentId: string;
+  capabilityIds: string[];
+  estimatedCostMicroUsd: number;
+  expectedArtifact: ArtifactRequirement;
+  externalAction?: ExternalActionSpec;
+}
+
+export interface CommandCenterMissionBudget {
+  limits: MissionBudget;
+  plannedCostMicroUsd: number;
+  recordedEstimatedCostMicroUsd: number;
+  actualCostMicroUsd: number;
+  elapsedRuntimeMs: number;
+  activeAssignments: number;
+  assignmentAttempts: number;
+}
+
+export interface CommandCenterTimelineEntry {
+  id: string;
+  kind: CommandCenterTimelineKind;
+  occurredAt: IsoTimestamp;
+  title: string;
+  recordType: string;
+  recordId: string;
+  missionId?: string;
+  status?: LifecycleStatus | ReceiptStatus;
+  actor?: string;
+  reason?: string;
+  evidenceEventIds: string[];
+  verified: boolean;
+}
+
+export interface CommandCenterMission {
+  id: string;
+  seriesId: string;
+  version: number;
+  planHash: string;
+  title: string;
+  objective: string;
+  status: LifecycleStatus;
+  stage: CommandCenterMissionStage;
+  risk: RiskLevel;
+  confidence?: number;
+  taskGraph: CommandCenterMissionTask[];
+  agents: AgentSelection[];
+  budget: CommandCenterMissionBudget;
+  acceptanceTests: AcceptanceTest[];
+  escalationConditions: EscalationReason[];
+  timeline: CommandCenterTimelineEntry[];
+  createdAt: IsoTimestamp;
+  updatedAt: IsoTimestamp;
+}
+
+export interface CommandCenterAffectedParty {
+  entityId: string;
+  label?: string;
+  entityType?: EntityType;
+}
+
+export interface CommandCenterApproval {
+  id: string;
+  missionId: string;
+  planHash: string;
+  version: number;
+  title: string;
+  objective: string;
+  risk: RiskLevel;
+  affectedParties: CommandCenterAffectedParty[];
+  affectedSystems: string[];
+  externalActions: ExternalActionSpec[];
+  agents: AgentSelection[];
+  cost: {
+    maximumMicroUsd: number;
+    plannedMicroUsd: number;
+    actualMicroUsd: number;
+  };
+  time: {
+    maximumRuntimeMs: number;
+    elapsedRuntimeMs: number;
+  };
+  acceptanceTests: AcceptanceTest[];
+  rollback: RollbackPlan;
+  actions: ActionDescriptor[];
+}
+
+export interface CommandCenterOutcome {
+  id: string;
+  missionId: string;
+  missionTaskId: string;
+  assignmentId: string;
+  status: LifecycleStatus;
+  artifact?: JsonValue;
+  completedAt?: IsoTimestamp;
+  evidenceEventIds: string[];
+  receiptIds: string[];
+  verified: boolean;
+}
+
+export interface NucleusNode {
+  id: string;
+  kind: NucleusNodeKind;
+  recordType: string;
+  recordId: string;
+  label: string;
+  entityType?: EntityType;
+  status?: LifecycleStatus | ReceiptStatus;
+  risk?: RiskLevel;
+  updatedAt: IsoTimestamp;
+  evidenceEventIds: string[];
+  verified: true;
+}
+
+export interface NucleusEdge {
+  id: string;
+  fromNodeId: string;
+  toNodeId: string;
+  relation: string;
+  evidenceEventIds: string[];
+  verified: true;
+}
+
+export interface NucleusActivityPulse {
+  id: string;
+  kind: CommandCenterTimelineKind;
+  occurredAt: IsoTimestamp;
+  nodeId?: string;
+  edgeId?: string;
+  label: string;
+  evidenceEventIds: string[];
+  verified: true;
+}
+
+export interface CommandCenterNucleus {
+  nodes: NucleusNode[];
+  edges: NucleusEdge[];
+  activityPulses: NucleusActivityPulse[];
+}
+
+export interface CommandCenterSnapshot {
+  revision: string;
+  generatedAt: IsoTimestamp;
+  today: CommandCenterToday;
+  tasks: CommandCenterEntityCard[];
+  communications: CommandCenterEntityCard[];
+  people: CommandCenterEntityCard[];
+  commitments: CommandCenterEntityCard[];
+  missions: CommandCenterMission[];
+  approvals: CommandCenterApproval[];
+  proposals: Proposal[];
+  activeAssignments: Assignment[];
+  outcomes: CommandCenterOutcome[];
+  receipts: ActionReceipt[];
+  history: CommandCenterTimelineEntry[];
+  connectors: ConnectorHealth[];
+  captureFailures: CaptureFailure[];
+  lastChangeSequence: number;
+  nucleus: CommandCenterNucleus;
+}
+
+export interface MissionDecisionRequest {
+  outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected;
+  planHash: string;
+  version: number;
+  reason?: string;
+}
+
+export interface MissionDecisionResponse {
+  decision: DecisionRecord;
+  mission: CommandCenterMission;
+  snapshot: CommandCenterSnapshot;
 }
 
 export interface ConnectorHealth {
@@ -1337,6 +1587,7 @@ export function assertDecisionRecord(value: unknown): asserts value is DecisionR
   for (const field of ['id', 'decidedBy', 'rationale']) assertNonEmptyString(value[field], `Decision ${field}`);
   for (const field of ['intentId', 'missionId', 'missionTaskId', 'proposalId', 'preferenceChangeId']) if (field in value) assertNonEmptyString(value[field], `Decision ${field}`);
   if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
+  if ('planVersion' in value) assertPositiveInteger(value.planVersion, 'Decision planVersion');
   assertEnum(value.outcome, DecisionOutcome, 'Decision outcome');
   assertDenseStringArray(value.assumptions, 'Decision assumptions');
   assertDenseStringArray(value.evidenceEventIds, 'Decision evidenceEventIds');

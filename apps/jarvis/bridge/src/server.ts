@@ -1,4 +1,4 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
@@ -7,10 +7,24 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GoogleGenAI, Modality, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { EntityType, SourceType, type EventEnvelope, type JsonValue } from '@jericho/shared';
+import {
+  DecisionOutcome,
+  SourceType,
+  RouteType,
+  type DecisionRecord,
+  type EventEnvelope,
+  type JsonValue,
+  type MissionDecisionRequest,
+  type MissionDecisionResponse,
+} from '@jericho/shared';
 
+import { buildCommandCenterSnapshot } from './command-center.js';
 import { loadConfig } from './config.js';
-import { EventConflictError, JerichoStore } from './core/store.js';
+import {
+  EventConflictError,
+  JerichoStore,
+  MissionDecisionConflictError,
+} from './core/store.js';
 import { createConnectorRuntime } from './runtime.js';
 import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
 
@@ -38,6 +52,7 @@ export interface JerichoServerOptions {
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
   clock?: () => string;
+  decisionIdFactory?: () => string;
 }
 
 export interface JerichoServerAddress {
@@ -69,6 +84,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const ssePollMs = options.ssePollMs ?? 250;
   const clock = options.clock ?? (() => new Date().toISOString());
+  const decisionIdFactory = options.decisionIdFactory ?? randomUUID;
   const browserSessionToken = randomBytes(32).toString('base64url');
   const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
   const tools = options.toolExecutor ?? createToolExecutor({ store: options.store });
@@ -141,14 +157,68 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
-      sendJson(response, 200, {
-        tasks: options.store.listEntities({ type: EntityType.Task }),
-        missions: options.store.listMissions(),
-        proposals: options.store.listProposals(),
-        connectors: options.store.listConnectorHealth(),
-        captureFailures: options.store.listCaptureFailures(),
-        lastChangeSequence: options.store.getLatestChangeSequence(),
-      });
+      sendJson(response, 200, buildCommandCenterSnapshot(options.store, now()));
+      return;
+    }
+    const missionDecisionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/decisions$/);
+    if (request.method === 'POST' && missionDecisionMatch) {
+      let missionId: string;
+      try {
+        missionId = decodeURIComponent(missionDecisionMatch[1]);
+      } catch {
+        throw new HttpError(400, 'invalid_mission_id');
+      }
+      if (!missionId || missionId.length > 512) {
+        throw new HttpError(400, 'invalid_mission_id');
+      }
+      const mission = options.store.getMission(missionId);
+      if (!mission) throw new HttpError(404, 'mission_not_found');
+      const input = missionDecisionRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      const decisionId = decisionIdFactory();
+      if (!decisionId.trim() || decisionId.length > 512) {
+        throw new Error('Mission decision ID factory returned an invalid ID');
+      }
+      const intent = options.store.getIntent(mission.intentId);
+      const decision: DecisionRecord = {
+        id: decisionId,
+        missionId,
+        decidedBy: 'carlos',
+        outcome: input.outcome,
+        planHash: input.planHash,
+        planVersion: input.version,
+        rationale: input.reason ?? (input.outcome === DecisionOutcome.Approved
+          ? 'Approved the bounded mission plan'
+          : 'Rejected the bounded mission plan'),
+        assumptions: intent?.assumptions.map((assumption) => assumption.text) ?? [],
+        evidenceEventIds: [...mission.evidenceEventIds],
+        route: RouteType.HumanApproval,
+        risk: mission.risk,
+        decidedAt,
+        provenance: [{
+          source: 'local:command-center',
+          sourceType: SourceType.User,
+          sourceEventId: decisionId,
+          observedAt: decidedAt,
+        }],
+      };
+      const decidedMission = options.store.decideMission(
+        missionId,
+        input.planHash,
+        input.version,
+        decision,
+      );
+      const snapshot = buildCommandCenterSnapshot(options.store, now());
+      const projectedMission = snapshot.missions.find((item) => item.id === decidedMission.id);
+      if (!projectedMission) throw new Error(`Decided mission ${missionId} is not projectable`);
+      const storedDecision = options.store.getDecision(decisionId);
+      if (!storedDecision) throw new Error(`Decision ${decisionId} was not retained`);
+      const result: MissionDecisionResponse = {
+        decision: storedDecision,
+        mission: projectedMission,
+        snapshot,
+      };
+      sendJson(response, 200, result);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/connectors') {
@@ -228,6 +298,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     sendJson(response, 404, { error: 'not_found' });
+  }
+
+  function now(): string {
+    return new Date(clock()).toISOString();
   }
 
   function openEventStream(request: IncomingMessage, response: ServerResponse): void {
@@ -632,6 +706,9 @@ class HttpError extends Error {
 function httpFailure(error: unknown): { status: number; code: string } {
   if (error instanceof HttpError) return error;
   if (error instanceof EventConflictError) return { status: 409, code: 'event_conflict' };
+  if (error instanceof MissionDecisionConflictError) {
+    return { status: 409, code: 'mission_decision_conflict' };
+  }
   if (error instanceof TypeError) return { status: 400, code: 'invalid_request' };
   return { status: 500, code: 'internal_error' };
 }
@@ -652,6 +729,37 @@ function findConnectorDescriptor(
     };
   }
   return undefined;
+}
+
+function missionDecisionRequest(body: Record<string, unknown>): MissionDecisionRequest {
+  const allowedFields = new Set(['outcome', 'planHash', 'version', 'reason']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'mission_decision_field_not_allowed');
+  }
+  if (
+    body.outcome !== DecisionOutcome.Approved &&
+    body.outcome !== DecisionOutcome.Rejected
+  ) {
+    throw new HttpError(400, 'invalid_mission_decision_outcome');
+  }
+  if (typeof body.planHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.planHash)) {
+    throw new HttpError(400, 'invalid_mission_plan_hash');
+  }
+  if (!Number.isInteger(body.version) || (body.version as number) < 1) {
+    throw new HttpError(400, 'invalid_mission_plan_version');
+  }
+  if (
+    body.reason !== undefined &&
+    (typeof body.reason !== 'string' || !body.reason.trim() || body.reason.length > 2_000)
+  ) {
+    throw new HttpError(400, 'invalid_mission_decision_reason');
+  }
+  return {
+    outcome: body.outcome,
+    planHash: body.planHash,
+    version: body.version as number,
+    ...(typeof body.reason === 'string' ? { reason: body.reason.trim() } : {}),
+  };
 }
 
 function localCaptureEvent(body: Record<string, unknown>): EventEnvelope {

@@ -208,6 +208,13 @@ export class MissionPlanConflictError extends Error {
   }
 }
 
+export class MissionDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Mission ${id} decision ${reason}`);
+    this.name = 'MissionDecisionConflictError';
+  }
+}
+
 export class AssignmentLeaseError extends Error {
   constructor(id: string) {
     super(`Assignment ${id} lease fencing token is invalid`);
@@ -1586,32 +1593,72 @@ export class JerichoStore {
     expectedPlanHash: string,
     decision: DecisionRecord,
   ): MissionPlan {
+    const mission = this.getMission(missionId);
+    if (!mission) throw new Error(`Mission ${missionId} does not exist`);
+    if (decision.outcome !== DecisionOutcome.Approved) {
+      throw new Error('Mission approval requires an approved decision');
+    }
+    return this.decideMission(
+      missionId,
+      expectedPlanHash,
+      mission.version,
+      decision,
+    );
+  }
+
+  decideMission(
+    missionId: string,
+    expectedPlanHash: string,
+    expectedPlanVersion: number,
+    decision: DecisionRecord,
+  ): MissionPlan {
+    if (!Number.isInteger(expectedPlanVersion) || expectedPlanVersion < 1) {
+      throw new TypeError('Mission decision plan version is invalid');
+    }
     return this.#writeTransaction(() => {
       const mission = this.getMission(missionId);
       if (!mission) throw new Error(`Mission ${missionId} does not exist`);
+      if (mission.version !== expectedPlanVersion) {
+        throw new MissionDecisionConflictError(missionId, 'version does not match');
+      }
       if (mission.planHash !== expectedPlanHash || computeMissionPlanHash(mission) !== expectedPlanHash) {
-        throw new Error(`Mission ${missionId} approval hash does not match`);
+        throw new MissionDecisionConflictError(missionId, 'hash does not match');
       }
       if (mission.status !== LifecycleStatus.PendingApproval) {
-        throw new Error(`Mission ${missionId} is not pending approval`);
+        throw new MissionDecisionConflictError(missionId, 'requires a pending plan');
       }
-      if (decision.outcome !== DecisionOutcome.Approved) {
-        throw new Error('Mission approval requires an approved decision');
+      if (
+        decision.outcome !== DecisionOutcome.Approved &&
+        decision.outcome !== DecisionOutcome.Rejected
+      ) {
+        throw new MissionDecisionConflictError(missionId, 'must approve or reject the pending plan');
+      }
+      if (
+        (decision.missionId !== undefined && decision.missionId !== missionId) ||
+        (decision.planHash !== undefined && decision.planHash !== expectedPlanHash) ||
+        (decision.planVersion !== undefined && decision.planVersion !== expectedPlanVersion)
+      ) {
+        throw new MissionDecisionConflictError(missionId, 'binding does not match');
       }
       const boundDecision = normalizeDecision({
         ...decision,
         missionId,
         planHash: expectedPlanHash,
+        planVersion: expectedPlanVersion,
       });
       this.#insertDecision(boundDecision);
-      const approved: MissionPlan = {
+      const decided: MissionPlan = {
         ...mission,
-        status: LifecycleStatus.Approved,
-        approvalDecisionId: boundDecision.id,
-        approvedAt: boundDecision.decidedAt,
+        status: decision.outcome === DecisionOutcome.Approved
+          ? LifecycleStatus.Approved
+          : LifecycleStatus.Rejected,
+        ...(decision.outcome === DecisionOutcome.Approved ? {
+          approvalDecisionId: boundDecision.id,
+          approvedAt: boundDecision.decidedAt,
+        } : {}),
         updatedAt: boundDecision.decidedAt,
       };
-      this.#writeMissionRecord(approved);
+      this.#writeMissionRecord(decided);
       return this.getMission(missionId)!;
     });
   }
