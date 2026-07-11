@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AgentLane,
   CaptureFailureKind,
+  ChangeLogKind,
   CostClass,
   DecisionOutcome,
   IntentRoute,
@@ -12,8 +13,10 @@ import {
   RouteType,
   SourceType,
   type AgentCapability,
+  type ChangeLog,
   type DecisionRecord,
   type EventEnvelope,
+  type IntentEnvelope,
   type MissionPermissions,
 } from '@jericho/shared';
 
@@ -319,7 +322,123 @@ describe('production intake pipeline', () => {
     expect(processor.recover()).toMatchObject({ planned: 1, failed: 0 });
     expect(store.listMissions()).toHaveLength(1);
   });
+
+  it('pages durable capture changes beyond 10,000 events and reruns idempotently with bounded reads', () => {
+    const fixture = recoveryStoreFixture(10_001);
+    const processor = new IntakeProcessor({ store: fixture.store });
+
+    expect(processor.recover()).toMatchObject({
+      processed: 10_001,
+      planned: 0,
+      review: 0,
+      failed: 0,
+    });
+    expect(processor.recover()).toMatchObject({ processed: 0, failed: 0 });
+
+    expect(fixture.savedIntentIds.size).toBe(10_001);
+    expect(fixture.saveCalls()).toBe(10_001);
+    expect(fixture.changeLogLimits.length).toBeGreaterThan(20);
+    expect(Math.max(...fixture.changeLogLimits)).toBeLessThanOrEqual(1_000);
+    expect(Math.max(...fixture.eventListLimits)).toBeLessThanOrEqual(1_000);
+  });
+
+  it('uses a bounded compatibility scan for legacy events without EventCaptured changes', () => {
+    const store = openStore();
+    const legacy = store.appendEvent(connectorProject('legacy-without-change-log')).event;
+
+    const recovered = new IntakeProcessor({ store }).recover();
+
+    expect(recovered).toMatchObject({ processed: 1, review: 1, failed: 0 });
+    expect(store.listIntents()).toEqual([
+      expect.objectContaining({ eventId: legacy.id, route: IntentRoute.Review }),
+    ]);
+  });
+
+  it('attempts a failed capture once per recovery run and retains one idempotent failure', () => {
+    const store = openStore();
+    const event = store.commitLocalCapture(localProject('recover-failure-once')).event;
+    const classifier = vi.fn(() => { throw new Error('classifier remains unavailable'); });
+    const processor = new IntakeProcessor({ store, classifier });
+
+    expect(processor.recover()).toMatchObject({ processed: 0, failed: 1 });
+    expect(classifier).toHaveBeenCalledTimes(1);
+    expect(store.listCaptureFailures(event.source)).toHaveLength(1);
+
+    expect(processor.recover()).toMatchObject({ processed: 0, failed: 1 });
+    expect(classifier).toHaveBeenCalledTimes(2);
+    expect(store.listCaptureFailures(event.source)).toHaveLength(1);
+  });
 });
+
+function recoveryStoreFixture(eventCount: number): {
+  store: JerichoStore;
+  savedIntentIds: Set<string>;
+  saveCalls: () => number;
+  changeLogLimits: number[];
+  eventListLimits: number[];
+} {
+  const events = Array.from({ length: eventCount }, (_, index) => localProject(
+    `paged-${String(index).padStart(5, '0')}`,
+    { text: 'Status change observed' },
+  ));
+  const eventById = new Map(events.map((event) => [event.id, event]));
+  const changes = events.map((event, index): ChangeLog => ({
+    id: `change:${index + 1}`,
+    sequence: index + 1,
+    kind: ChangeLogKind.EventCaptured,
+    connectorId: 'local',
+    recordType: 'event',
+    recordId: event.id,
+    eventId: event.id,
+    changedAt: event.ingestedAt,
+    payload: { eventType: event.type },
+    integrityHash: `hash:${index + 1}`,
+  }));
+  const capabilities = new Map<string, AgentCapability>();
+  const intents = new Map<string, IntentEnvelope>();
+  const savedIntentIds = new Set<string>();
+  const changeLogLimits: number[] = [];
+  const eventListLimits: number[] = [];
+  let saveCalls = 0;
+
+  const store = {
+    getAgentCapability: (id: string) => capabilities.get(id),
+    registerAgentCapability: (value: AgentCapability) => {
+      capabilities.set(value.id, value);
+      return value;
+    },
+    listAgentCapabilities: () => [...capabilities.values()],
+    getLatestChangeSequence: () => changes.at(-1)?.sequence ?? 0,
+    listChangeLog: (options: { afterSequence?: number; limit?: number } = {}) => {
+      const after = options.afterSequence ?? 0;
+      const limit = options.limit ?? 1_000;
+      changeLogLimits.push(limit);
+      return changes.filter((change) => change.sequence > after).slice(0, limit);
+    },
+    listEvents: (options: { limit?: number } = {}) => {
+      const limit = options.limit ?? 100;
+      eventListLimits.push(limit);
+      return events.slice(0, limit);
+    },
+    getEvent: (id: string) => eventById.get(id),
+    getIntent: (id: string) => intents.get(id),
+    saveIntent: (intent: IntentEnvelope) => {
+      saveCalls += 1;
+      savedIntentIds.add(intent.id);
+      intents.set(intent.id, intent);
+      return intent;
+    },
+    listMissions: () => [],
+  } as unknown as JerichoStore;
+
+  return {
+    store,
+    savedIntentIds,
+    saveCalls: () => saveCalls,
+    changeLogLimits,
+    eventListLimits,
+  };
+}
 
 function openStore(): JerichoStore {
   const store = new JerichoStore({ path: ':memory:', key: KEY });

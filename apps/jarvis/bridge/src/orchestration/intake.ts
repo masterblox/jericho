@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import {
   AgentLane,
   CaptureFailureKind,
+  ChangeLogKind,
   ConnectorCapability,
   CostClass,
   EscalationReason,
@@ -46,6 +47,8 @@ const BUILT_IN_REGISTRY_VERSION = 2;
 const BUILT_IN_CREATED_AT = '2026-01-01T00:00:00.000Z';
 const DIRECT_CAPTURE_CONFIDENCE = 0.98;
 const DEFAULT_MODEL = 'local';
+const RECOVERY_CHANGE_PAGE_SIZE = 1_000;
+const LEGACY_RECOVERY_SCAN_LIMIT = 1_000;
 const BUILT_IN_AGENT_IDS: Record<AgentLane, string> = {
   [AgentLane.Dev]: 'DEV',
   [AgentLane.Angela]: 'Angela',
@@ -198,22 +201,19 @@ export class IntakeProcessor {
       queued: 0,
       failed: 0,
     };
-    for (const event of this.#store.listEvents({ limit: 10_000 })) {
-      const existingIntent = this.#store.getIntent(deterministicId('intent', event.id));
-      const complete = existingIntent !== undefined && (
-        existingIntent.route !== IntentRoute.Project ||
-        this.#store.getMission(deterministicId('mission', existingIntent.id)) !== undefined
-      );
-      if (complete) continue;
-      const processed = this.processEvent(event.id);
-      if (processed.status === 'failed') {
-        result.failed += 1;
-        continue;
-      }
-      result.processed += 1;
-      if (processed.status === 'planned') result.planned += 1;
-      if (processed.status === 'review') result.review += 1;
+    // Take the durable high-water before any recovery work can append its own
+    // intent, mission, or failure changes.
+    const highWaterSequence = this.#store.getLatestChangeSequence();
+
+    // appendEvent predates the durable EventCaptured change. Keep a deliberately
+    // bounded compatibility window for those legacy/direct-import records; all
+    // current connector and local capture paths recover through the paged log.
+    const compatibilityAttempted = new Set<string>();
+    for (const event of this.#store.listEvents({ limit: LEGACY_RECOVERY_SCAN_LIMIT })) {
+      compatibilityAttempted.add(event.id);
+      this.#recoverEvent(event, result);
     }
+    this.#recoverCapturedEvents(result, highWaterSequence, compatibilityAttempted);
 
     const queueable = [
       ...this.#store.listMissions({ status: LifecycleStatus.Approved }),
@@ -225,6 +225,53 @@ export class IntakeProcessor {
       result.failed += queued.failed;
     }
     return result;
+  }
+
+  #recoverCapturedEvents(
+    result: IntakeRecoveryResult,
+    highWaterSequence: number,
+    compatibilityAttempted: ReadonlySet<string>,
+  ): void {
+    // Intake itself appends changes, so following the live tail could otherwise
+    // keep one recovery run open indefinitely under continuous capture or failure.
+    let afterSequence = 0;
+    while (afterSequence < highWaterSequence) {
+      const changes = this.#store.listChangeLog({
+        afterSequence,
+        limit: RECOVERY_CHANGE_PAGE_SIZE,
+      });
+      if (changes.length === 0) break;
+
+      let advanced = false;
+      for (const change of changes) {
+        if (change.sequence > highWaterSequence) break;
+        afterSequence = change.sequence;
+        advanced = true;
+        if (change.kind !== ChangeLogKind.EventCaptured) continue;
+        if (compatibilityAttempted.has(change.recordId)) continue;
+        const event = this.#store.getEvent(change.recordId);
+        if (event) this.#recoverEvent(event, result);
+      }
+      if (!advanced) break;
+    }
+  }
+
+  #recoverEvent(event: EventEnvelope, result: IntakeRecoveryResult): void {
+    const existingIntent = this.#store.getIntent(deterministicId('intent', event.id));
+    const complete = existingIntent !== undefined && (
+      existingIntent.route !== IntentRoute.Project ||
+      this.#store.getMission(deterministicId('mission', existingIntent.id)) !== undefined
+    );
+    if (complete) return;
+
+    const processed = this.processEvent(event.id);
+    if (processed.status === 'failed') {
+      result.failed += 1;
+      return;
+    }
+    result.processed += 1;
+    if (processed.status === 'planned') result.planned += 1;
+    if (processed.status === 'review') result.review += 1;
   }
 
   #understand(event: EventEnvelope, intentId: string): IntentEnvelope {
