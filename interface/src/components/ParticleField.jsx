@@ -114,6 +114,7 @@ export function ParticleField() {
     let raf = 0
     let last = performance.now()
     let frame = 0
+    let lvl = 0 // smoothed level
 
     function draw(now) {
       const dt = Math.min((now - last) / 1000, 0.05)
@@ -125,17 +126,18 @@ export function ParticleField() {
       const state = el?.dataset.coreState || 'idle'
       const mode = el?.dataset.mode || 'jarvis'
       const level = parseFloat(el?.style.getPropertyValue('--core-level')) || 0
+      lvl += (level - lvl) * 0.12
       const t = now / 1000
 
       let speedM = 1, briM = 1
       if (state === 'listening') { speedM = 1.15; briM = 1.25 }
       else if (state === 'thinking') { speedM = 2.2; briM = 1.15 }
-      else if (state === 'speaking') { speedM = 1 + level * 1.2; briM = 0.9 + level * 0.9 }
+      else if (state === 'speaking') { speedM = 1 + lvl * 1.2; briM = 0.9 + lvl * 0.9 }
       else if (state === 'alert') { speedM = 1.35; briM = 1.25 }
 
       const baseHue = state === 'alert' ? RED : mode === 'megatron' ? ORANGE : BLUE
       const selected = store.getSnapshot().selectedAgent
-      const jitter = state === 'alert' ? 1.4 : 0
+      const shards = state === 'alert' // alarm changes the particle SHAPE, not the motion
 
       // precompute every fill style once per frame — zero string work in the hot loop
       const coreStyle = BUCKETS.map(b => `rgba(${baseHue},${Math.min(1, b.a * briM).toFixed(2)})`)
@@ -174,8 +176,14 @@ export function ParticleField() {
           x = cx + r * Math.cos(pth[i])
           y = cy + r * Math.sin(pth[i])
         }
-        if (jitter) { x += (Math.random() - 0.5) * jitter; y += (Math.random() - 0.5) * jitter }
-        ctx.fillRect(x, y, psz[i], psz[i])
+        if (shards) {
+          // cross shards instead of points
+          const s = psz[i]
+          ctx.fillRect(x - s, y, s * 3, 1)
+          ctx.fillRect(x, y - s, 1, s * 3)
+        } else {
+          ctx.fillRect(x, y, psz[i], psz[i])
+        }
       }
 
       // energy link: core -> selected node with calibration ticks (ported from realistic-hud)

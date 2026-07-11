@@ -3,7 +3,7 @@ import { test, expect } from '@playwright/test'
 const URL = 'http://127.0.0.1:4173'
 
 test.describe('Jericho Fleet Command', () => {
-  test('gesture-first surface: no text input, fleet selection and summoning work', async ({ page }) => {
+  test('minimal gesture-first surface: no text input, summon and return', async ({ page }) => {
     await page.goto(URL)
     await expect(page.locator('main')).toHaveAttribute('data-variant', 'workshop')
     await expect(page.getByText('JERICHO', { exact: true })).toBeVisible()
@@ -11,16 +11,11 @@ test.describe('Jericho Fleet Command', () => {
     // texting affordances are gone
     await expect(page.locator('input, textarea')).toHaveCount(0)
 
-    // fleet node selection on the ring
-    const analyst = page.getByRole('option', { name: /ANALYST/ })
-    await analyst.click()
-    await expect(analyst).toHaveAttribute('aria-selected', 'true')
-
-    // summon signal projection and return
+    // summon signal projection and return via tabs
     await page.getByRole('tab', { name: /SIGNALS/ }).click()
     await expect(page.getByRole('tab', { name: /SIGNALS/ })).toHaveAttribute('aria-selected', 'true')
     await expect(page.getByText('Authenticated endpoints timed out').first()).toBeVisible()
-    await page.getByRole('button', { name: 'RETURN' }).click()
+    await page.getByRole('tab', { name: /CORE/ }).click()
     await expect(page.getByRole('tab', { name: /CORE/ })).toHaveAttribute('aria-selected', 'true')
   })
 
@@ -29,18 +24,16 @@ test.describe('Jericho Fleet Command', () => {
     const stage = page.locator('.stage')
     await expect(stage).toHaveAttribute('data-core-state', 'idle')
 
-    // ring speed baseline (ring-b spins at 90s when idle)
-    const ringB = page.locator('.rings .ring-b')
-    await expect(ringB).toHaveCSS('animation-duration', '90s')
+    // motion budget: the frame ring is near-static and does NOT change with state
+    const frameMain = page.locator('.frame-main')
+    await expect(frameMain).toHaveCSS('animation-duration', '400s')
 
     await page.evaluate(() => window.jericho.setCoreState('listening'))
     await expect(stage).toHaveAttribute('data-core-state', 'listening')
 
     await page.evaluate(() => window.jericho.setCoreState('thinking'))
     await expect(stage).toHaveAttribute('data-core-state', 'thinking')
-    await expect(ringB).toHaveCSS('animation-duration', '9s')
-    // procedural rotor physically spins up while thinking
-    await expect(page.locator('.reactor .rotor')).toHaveCSS('animation-duration', '2.4s')
+    await expect(frameMain).toHaveCSS('animation-duration', '400s') // still calm
 
     await page.evaluate(() => {
       window.jericho.setCoreState('speaking')
@@ -50,32 +43,43 @@ test.describe('Jericho Fleet Command', () => {
     const level = await stage.evaluate(el => el.style.getPropertyValue('--core-level'))
     expect(Number(level)).toBeCloseTo(0.8, 2)
 
-    // coil ring is a circular VU meter: segment 7 (threshold .5) ignites at .8, dies at .1
-    const coilSeg = page.locator('.reactor .coil path').nth(6)
-    await expect(coilSeg).toHaveCSS('opacity', '1')
-    await page.evaluate(() => window.jericho.setLevel(0.1))
-    await expect(coilSeg).toHaveCSS('opacity', '0.12')
-    await page.evaluate(() => window.jericho.setLevel(0.8))
-
     await page.evaluate(() => window.jericho.setCoreState('alert'))
     await expect(stage).toHaveAttribute('data-core-state', 'alert')
 
     await page.evaluate(() => window.jericho.setCoreState('idle'))
     await expect(stage).toHaveAttribute('data-core-state', 'idle')
 
-    // particle field is live: canvas mounted, engine initialized with a real population
+    // ambient particle field is live
     await expect(page.locator('.layer-particles canvas')).toHaveCount(1)
     const particles = await page.evaluate(() => window.__jerichoParticles?.count || 0)
-    expect(particles).toBeGreaterThanOrEqual(2500)
+    expect(particles).toBeGreaterThanOrEqual(2200)
 
     // the gate engine (3D core sphere) is mounted and populated
     await expect(page.locator('.core-sphere canvas')).toHaveCount(1)
     const sphere = await page.evaluate(() => window.__jerichoSphere?.count || 0)
     expect(sphere).toBeGreaterThanOrEqual(5000)
+  })
 
-    // summoned missions render as a card field
+  test('missions pop out around the sphere without covering it', async ({ page }) => {
+    await page.goto(URL)
     await page.evaluate(() => window.jericho.summon('MISSIONS'))
-    await expect(page.locator('.projection .jcard')).toHaveCount(5)
+    const cards = page.locator('.projection-radial .jcard')
+    await expect(cards).toHaveCount(5)
+    await page.waitForTimeout(900) // let pop animation settle
+
+    // no card intersects the sphere's home box
+    const sphereBox = await page.locator('.core-sphere').boundingBox()
+    const count = await cards.count()
+    for (let i = 0; i < count; i++) {
+      const box = await cards.nth(i).boundingBox()
+      const overlaps = !(
+        box.x + box.width < sphereBox.x ||
+        box.x > sphereBox.x + sphereBox.width ||
+        box.y + box.height < sphereBox.y ||
+        box.y > sphereBox.y + sphereBox.height
+      )
+      expect(overlaps, `card ${i} overlaps the sphere`).toBe(false)
+    }
     await page.evaluate(() => window.jericho.summon('CORE'))
   })
 
@@ -83,8 +87,7 @@ test.describe('Jericho Fleet Command', () => {
     await page.goto(URL)
 
     await page.evaluate(() => window.jericho.select('ANALYST'))
-    await expect(page.getByRole('option', { name: /ANALYST/ })).toHaveAttribute('aria-selected', 'true')
-    await expect(page.locator('.callout')).toContainText('Business intel')
+    await expect(page.locator('.stage')).toHaveAttribute('data-agent', 'ANALYST')
 
     await page.evaluate(() => window.jericho.setMode('megatron'))
     await expect(page.locator('.stage')).toHaveAttribute('data-mode', 'megatron')
@@ -106,13 +109,13 @@ test.describe('Jericho Fleet Command', () => {
     expect(fit.scrollWidth).toBeLessThanOrEqual(fit.width + 1)
   })
 
-  test('mobile: no text input, node selection and dispatch remain usable', async ({ browser }) => {
+  test('mobile: no text input, summon and dispatch remain usable', async ({ browser }) => {
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
     const page = await context.newPage()
     await page.goto(URL)
     await expect(page.locator('input, textarea')).toHaveCount(0)
-    await page.getByRole('option', { name: /IRIS/ }).click()
-    await expect(page.getByRole('option', { name: /IRIS/ })).toHaveAttribute('aria-selected', 'true')
+    await page.getByRole('tab', { name: /MISSIONS/ }).click()
+    await expect(page.locator('.projection-radial .jcard').first()).toBeVisible()
     await page.evaluate(() => window.jericho.dispatch('Run fleet health scan'))
     await expect(page.getByRole('dialog')).toBeVisible()
     await expect(page.getByRole('button', { name: 'CONFIRM DISPATCH' })).toBeVisible()

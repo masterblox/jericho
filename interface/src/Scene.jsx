@@ -1,9 +1,9 @@
 import React from 'react'
 import { CoreAssembly } from './components/CoreAssembly'
 import { ParticleField } from './components/ParticleField'
-import { IdCluster, GaugeCluster, MissionsCluster, SignalsCluster, MissionsProjection, SignalsProjection } from './components/peripherals'
+import { IdCluster, MissionsProjection, SignalsProjection } from './components/peripherals'
 
-export default function Scene({ coreState, mode, selectedAgent, setSelectedAgent, activeView, setActiveView }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
 
@@ -25,30 +25,22 @@ export default function Scene({ coreState, mode, selectedAgent, setSelectedAgent
       className={`stage ${summoned ? 'summoned' : ''}`}
       data-core-state={coreState}
       data-mode={mode}
+      data-agent={selectedAgent}
       ref={stage}
       onPointerMove={onPointerMove}
     >
-      <svg className="traces" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
-        <polyline pathLength="100" points="4,9 26,9 34,20" />
-        <polyline pathLength="100" points="96,7 78,7 68,18" />
-        <polyline pathLength="100" points="4,84 24,84 35,72" />
-        <polyline pathLength="100" points="96,84 76,84 65,72" />
-      </svg>
       <div className="layer layer-particles" aria-hidden="true">
         <ParticleField />
       </div>
       <div className="layer layer-far">
         <IdCluster activeView={activeView} onView={setActiveView} coreState={coreState} />
-        <GaugeCluster />
       </div>
       <div className="layer layer-mid">
-        <CoreAssembly selected={selectedAgent} onSelect={setSelectedAgent} />
+        <CoreAssembly />
       </div>
       <div className="layer layer-near">
-        {activeView === 'MISSIONS' && <MissionsProjection onReturn={() => setActiveView('CORE')} />}
-        {activeView === 'SIGNALS' && <SignalsProjection onReturn={() => setActiveView('CORE')} />}
-        <MissionsCluster onSummon={() => setActiveView('MISSIONS')} />
-        <SignalsCluster onSummon={() => setActiveView('SIGNALS')} />
+        {activeView === 'MISSIONS' && <MissionsProjection />}
+        {activeView === 'SIGNALS' && <SignalsProjection />}
       </div>
     </div>
   )

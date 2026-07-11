@@ -93,27 +93,35 @@ export function CoreSphere() {
     const stage = () => document.querySelector('.stage')
     let raf = 0
     let rot = 0
+    let lvl = 0 // smoothed voice level — no per-frame shake
     let last = performance.now()
 
     function frame(now) {
       const dt = Math.min((now - last) / 1000, 0.05)
       last = now
+      const t = now / 1000
 
       const el = stage()
       const state = el?.dataset.coreState || 'idle'
       const mode = el?.dataset.mode || 'jarvis'
       const level = parseFloat(el?.style.getPropertyValue('--core-level')) || 0
+      lvl += (level - lvl) * 0.12
 
       let speed = 0.1, bloom = 0.9
       if (state === 'listening') { speed = 0.18; bloom = 1.2 }
       else if (state === 'thinking') { speed = 0.42; bloom = 1.5 }
-      else if (state === 'speaking') { speed = 0.14 + level * 0.2; bloom = 0.9 + level * 1.4 }
+      else if (state === 'speaking') { speed = 0.14 + lvl * 0.2; bloom = 0.9 + lvl * 1.4 }
       else if (state === 'alert') { speed = 0.26; bloom = 1.7 }
       material.color.setHex(state === 'alert' ? HUES.alert : HUES[mode] || HUES.jarvis)
       bloomPass.strength = bloom
       rot += speed * dt
       group.rotation.y = rot
-      group.scale.setScalar(1 + level * 0.08)
+
+      // listening: the whole shell pulsates; speaking: smooth radiance swell
+      const listening = state === 'listening'
+      const alert = state === 'alert'
+      const shellPulse = listening ? 1 + 0.04 * Math.sin(t * 2.86) : 1
+      group.scale.setScalar((1 + lvl * 0.08) * shellPulse)
 
       // cursor into group-local frame (inverse Y rotation)
       local.copy(mouse3D)
@@ -122,10 +130,17 @@ export function CoreSphere() {
       for (let i = 0; i < COUNT; i++) {
         const phi = Math.acos(-1 + (2 * i) / COUNT)
         const theta = Math.sqrt(COUNT * Math.PI) * phi
+        // listening: particles deconstruct off the shell — breathing radius
+        // plus an escape cohort that streams outward and returns
+        let radius = SPHERE_RADIUS
+        if (listening) {
+          radius *= 1 + 0.3 * Math.sin(t * 1.4 + i * 0.37)
+          if (i % 7 === 0) radius *= 1.9
+        }
         target.set(
-          SPHERE_RADIUS * Math.cos(theta) * Math.sin(phi),
-          SPHERE_RADIUS * Math.sin(theta) * Math.sin(phi),
-          SPHERE_RADIUS * Math.cos(phi),
+          radius * Math.cos(theta) * Math.sin(phi),
+          radius * Math.sin(theta) * Math.sin(phi),
+          radius * Math.cos(phi),
         )
 
         const p = positions[i], v = velocities[i]
@@ -154,7 +169,9 @@ export function CoreSphere() {
 
         dummy.position.copy(p)
         const s = scales[i]
-        dummy.scale.set(s, s, s)
+        // alert: anisotropic scale turns points into needle shards
+        if (alert) dummy.scale.set(s * 0.5, s * 2.3, s * 0.5)
+        else dummy.scale.set(s, s, s)
         dummy.updateMatrix()
         mesh.setMatrixAt(i, dummy.matrix)
       }
