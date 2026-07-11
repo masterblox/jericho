@@ -125,7 +125,7 @@ export class VaultGatewayService {
     const cache = this.#readCache(now);
     try {
       const result = await this.#runner.run([
-        'git', '-C', this.options.vaultPath, 'log', '-1', '--format=%aI',
+        'git', '-C', this.options.vaultPath, 'log', '-1', '--format=%cI',
       ], { timeoutMs: this.options.timeoutMs, maxOutputBytes: 4 * 1024 });
       const lastCommit = timestamp(result.stdout.trim(), 'Vault commit timestamp');
       const syncAgeMs = Math.max(0, now.getTime() - lastCommit.getTime());

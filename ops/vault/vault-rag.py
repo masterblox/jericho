@@ -23,12 +23,17 @@ def words(value: str) -> list[str]:
 
 
 def vault_path() -> Path:
-    return Path(os.environ.get("VAULT_PATH", "/opt/brain")).resolve()
+    # Preserve the deployed legacy default. The gateway service explicitly
+    # configures /opt/brain through VAULT_PATH.
+    return Path(os.environ.get(
+        "JERICHO_VAULT_PATH", os.environ.get("VAULT_PATH", "/root/brain-vault")
+    )).resolve()
 
 
 def index_path() -> Path:
     return Path(os.environ.get(
-        "VAULT_RAG_INDEX_PATH", "/opt/data/vault-rag-index/bm25_index.json"
+        "JERICHO_VAULT_RAG_INDEX",
+        os.environ.get("VAULT_RAG_INDEX_PATH", "/opt/data/vault-rag-index/bm25_index.json"),
     )).resolve()
 
 
@@ -145,6 +150,41 @@ def search(query: str, limit: int) -> list[dict[str, Any]]:
     } for score, document in scored[:limit]]
 
 
+def legacy_search(query: str, limit: int) -> list[dict[str, Any]]:
+    """Preserve the live `search QUERY -n N` JSON-array contract."""
+    normalized = re.sub(r"\s+", " ", query).strip()
+    if not normalized or len(normalized) > MAX_QUERY_CHARS:
+        raise SystemExit("query is invalid")
+    root = vault_path()
+    if not root.is_dir():
+        raise SystemExit("vault path is unavailable")
+    needle = normalized.casefold()
+    results: list[dict[str, Any]] = []
+    for path in sorted(root.rglob("*.md")):
+        if any(part in {".git", ".obsidian"} for part in path.parts):
+            continue
+        try:
+            resolved = path.resolve(strict=True)
+            if root not in resolved.parents or resolved.stat().st_size > MAX_NOTE_BYTES:
+                continue
+            lines = resolved.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeError):
+            continue
+        matching = next((line.strip() for line in lines if needle in line.casefold()), None)
+        if matching is None:
+            continue
+        title = re.sub(r"^[\d\s\-_.]+", "", resolved.stem).strip() or resolved.name
+        results.append({
+            "title": title,
+            "content": matching[:200],
+            "path": resolved.relative_to(root).as_posix(),
+            "score": round(max(0.0, 1.0 - len(results) * 0.05), 6),
+        })
+        if len(results) >= limit:
+            break
+    return results
+
+
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     actions = command.add_subparsers(dest="action", required=True)
@@ -161,13 +201,12 @@ def main() -> None:
     arguments = parser().parse_args()
     if arguments.action == "index":
         result: Any = build_index()
-    else:
+    elif arguments.json:
         result = {"results": search(arguments.query, arguments.limit)}
-    if arguments.json:
+    else:
+        result = legacy_search(arguments.query, arguments.limit)
+    if arguments.json or arguments.action == "search":
         print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
-    elif arguments.action == "search":
-        for item in result["results"]:
-            print(f"{item['path']}\n{item['excerpt']}\n")
     else:
         print(f"Indexed {result['documents']} documents ({result['index_size_mb']:.2f} MB)")
 

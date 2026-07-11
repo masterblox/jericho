@@ -31,6 +31,38 @@ afterEach(async () => {
 });
 
 describe('voice socket privacy gate', () => {
+  it('binds Gemini search_vault calls to the configured bounded gateway port', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const search = vi.fn(async () => ({
+      cached: false,
+      results: [{ path: 'Evidence.md', title: 'Evidence', excerpt: 'Verified.', score: 1 }],
+    }));
+    const runtime = await startVoiceServer(voiceConnect, 1_000, { vaultSearch: { search } });
+    const socket = await connectSocket(runtime.port);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await flushIo();
+
+    callbacks?.onmessage({
+      toolCall: { functionCalls: [{ id: 'call-1', name: 'search_vault', args: { query: ' evidence ' } }] },
+    });
+
+    await vi.waitFor(() => expect(search).toHaveBeenCalledWith('evidence', 5, expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(session.sendToolResponse).toHaveBeenCalledWith({
+      functionResponses: [expect.objectContaining({
+        id: 'call-1', name: 'search_vault',
+        response: expect.objectContaining({ available: true, count: 1 }),
+      })],
+    }));
+  });
+
   it('rejects a forged same-origin header without a bearer or browser session credential', async () => {
     const voiceConnect = vi.fn<VoiceConnect>();
     const runtime = await startVoiceServer(voiceConnect);
@@ -218,7 +250,8 @@ async function startVoiceServer(
     defaultPersonaMode: 'jarvis' | 'megatron';
     megatronVoice: string;
     personaAutoRevertMs: number;
-  } | undefined = undefined,
+    vaultSearch?: { search(query: string, limit: number, signal: AbortSignal): Promise<any> };
+  } | { vaultSearch: { search(query: string, limit: number, signal: AbortSignal): Promise<any> } } | undefined = undefined,
 ) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });
   openStores.push(store);

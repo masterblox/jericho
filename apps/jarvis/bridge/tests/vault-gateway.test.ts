@@ -37,7 +37,7 @@ function fixture() {
   execFileSync('git', ['-C', vaultPath, 'commit', '-qm', 'vault sync'], {
     env: {
       ...process.env,
-      GIT_AUTHOR_DATE: '2026-07-11T02:30:00Z',
+      GIT_AUTHOR_DATE: '2020-01-01T00:00:00Z',
       GIT_COMMITTER_DATE: '2026-07-11T02:30:00Z',
     },
   });
@@ -107,7 +107,7 @@ describe('vault gateway service', () => {
   });
 
   it('reports Git commit freshness without exposing an absolute vault path', async () => {
-    const { service, vaultPath } = serviceFixture();
+    const { service, vaultPath, commandRunner } = serviceFixture();
 
     await expect(service.health()).resolves.toMatchObject({
       status: 'healthy',
@@ -115,6 +115,9 @@ describe('vault gateway service', () => {
       syncAgeMs: 30 * 60 * 1_000,
       reason: 'ok',
     });
+    expect(commandRunner.calls[0]).toEqual([
+      'git', '-C', vaultPath, 'log', '-1', '--format=%cI',
+    ]);
     expect(JSON.stringify(await service.health())).not.toContain(vaultPath);
   });
 
@@ -222,7 +225,7 @@ describe('vault gateway deployment config', () => {
   it('loads fixed-path defaults and requires an explicit token', () => {
     expect(loadVaultGatewayConfig({ JERICHO_VAULT_GATEWAY_TOKEN: TOKEN })).toMatchObject({
       host: '127.0.0.1', port: 8790, token: TOKEN,
-      vaultPath: '/opt/brain', ragScriptPath: '/opt/data/scripts/vault-rag.py',
+      vaultPath: '/opt/brain', ragScriptPath: '/opt/data/scripts/jericho-vault-rag.py',
       cachePath: '/opt/data/jericho/intel/rag-cache.json',
       indexPath: '/opt/data/vault-rag-index/bm25_index.json',
       cacheTtlMs: 24 * 60 * 60_000, staleAfterMs: 60 * 60_000,

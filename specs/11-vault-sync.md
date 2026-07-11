@@ -26,7 +26,7 @@ privacy-safe timestamps, age, index metadata, and a stable reason code.
 ### Health Check
 ```bash
 # Check last commit time
-git -C /opt/brain log -1 --format=%aI
+git -C /opt/brain log -1 --format=%cI
 ```
 
 ### Verification

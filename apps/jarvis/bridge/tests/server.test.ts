@@ -420,11 +420,14 @@ describe('authenticated local Core HTTP/SSE server', () => {
 
   it('serves command-center/connectors/captures/search and invokes connector sync through injected ports', async () => {
     const sync = vi.fn().mockResolvedValue({ status: 'completed', pages: 1, captures: 0, failures: 0 });
-    const search = vi.fn().mockResolvedValue([{ path: 'Project.md', title: 'Project', excerpt: 'match' }]);
+    const search = vi.fn().mockResolvedValue({
+      cached: true,
+      results: [{ path: 'Project.md', title: 'Project', excerpt: 'match', score: 2 }],
+    });
     const runtime = await startServer({
       supervisor: { sync },
       connectorDescriptors: [{ id: 'fixture', partitions: ['primary'] }],
-      obsidianSearch: { search },
+      vaultSearch: { search },
     });
 
     expect((await apiJson(runtime.url, '/api/v1/command-center'))).toMatchObject({
@@ -441,8 +444,13 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(sync).toHaveBeenCalledWith('fixture', 'primary', expect.any(AbortSignal));
     expect((await apiJson(runtime.url, '/api/v1/captures')).events).toEqual([]);
     expect(await apiJson(runtime.url, '/api/v1/obsidian/search?q=project&limit=5')).toEqual({
-      results: [{ path: 'Project.md', title: 'Project', excerpt: 'match' }],
+      available: true,
+      cached: true,
+      count: 1,
+      results: [{ path: 'Project.md', title: 'Project', excerpt: 'match', score: 2 }],
     });
+    expect(search).toHaveBeenCalledWith('project', 5, expect.any(AbortSignal));
+    expect((await api(runtime.url, '/api/v1/obsidian/search?q=project&limit=11')).status).toBe(400);
   });
 
   it('streams resumable change-log events, signals cursor gaps, and delivers live captures', async () => {
@@ -698,6 +706,7 @@ interface StartOverrides {
   supervisor?: { sync: ReturnType<typeof vi.fn> };
   connectorDescriptors?: Array<{ id: string; partitions: string[] }>;
   obsidianSearch?: { search: ReturnType<typeof vi.fn> };
+  vaultSearch?: { search: ReturnType<typeof vi.fn> };
   frontendDir?: string;
   clock?: () => string;
   retention?: { retainMission: ReturnType<typeof vi.fn> };

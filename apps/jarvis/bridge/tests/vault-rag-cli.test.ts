@@ -21,7 +21,18 @@ describe('vendored vault-rag CLI', () => {
     mkdirSync(vault);
     writeFileSync(join(vault, 'Today.md'), '# Today\nShip Jericho private intelligence operating system.');
     writeFileSync(join(vault, 'Other.md'), '# Other\nUnrelated grocery list.');
-    const environment = { ...process.env, VAULT_PATH: vault, VAULT_RAG_INDEX_PATH: index };
+    const environment = {
+      ...process.env,
+      JERICHO_VAULT_PATH: vault,
+      JERICHO_VAULT_RAG_INDEX: index,
+    };
+
+    const legacy = JSON.parse(execFileSync('python3', [
+      SCRIPT, 'search', 'private intelligence', '-n', '1',
+    ], { encoding: 'utf8', env: environment }));
+    expect(legacy).toEqual([expect.objectContaining({
+      path: 'Today.md', title: 'Today', content: expect.stringContaining('private intelligence'),
+    })]);
 
     const indexed = JSON.parse(execFileSync('python3', [SCRIPT, 'index', '--json'], {
       encoding: 'utf8', env: environment,

@@ -11,7 +11,8 @@ vault search, Git-backed health, and index rebuild.
 ## Deployment
 
 1. Deploy this repository at `/opt/jericho` and install
-   `ops/vault/vault-rag.py` as `/opt/data/scripts/vault-rag.py` mode `0755`.
+   `ops/vault/vault-rag.py` as `/opt/data/scripts/jericho-vault-rag.py` mode
+   `0755`. Do not overwrite `/opt/data/scripts/vault-rag.py`.
 2. Copy `ops/vault/jericho-vault-gateway.env.example` to
    `/etc/jericho/vault-gateway.env`, set a unique token, and apply mode `0600`.
 3. Install `ops/vault/jericho-vault-gateway.service` under systemd. Keep the
@@ -21,6 +22,12 @@ vault search, Git-backed health, and index rebuild.
 
 The gateway paths are fixed by environment at startup. Requests cannot choose
 an executable, script, vault, index, cache, or Git repository path.
+
+The existing live script inspected on 2026-07-11 had SHA-256
+`abd84ad51355bc45d34e1a5abc21571fdcd84de2c6002b7a9ed23b531f44bd42` and
+implements legacy grep search for existing callers. It remains untouched. The
+separately named Jericho BM25 script supports a compatibility JSON-array mode,
+but the gateway uses only `index --json` and structured `search … --json`.
 
 ## Runtime behavior
 

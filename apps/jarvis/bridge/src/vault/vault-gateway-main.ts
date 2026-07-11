@@ -29,7 +29,7 @@ export function loadVaultGatewayConfig(
     port: boundedInteger(environment.JERICHO_VAULT_GATEWAY_PORT ?? '8790', 0, 65_535, 'port'),
     token,
     vaultPath: environment.JERICHO_VAULT_PATH?.trim() || '/opt/brain',
-    ragScriptPath: environment.JERICHO_VAULT_RAG_SCRIPT?.trim() || '/opt/data/scripts/vault-rag.py',
+    ragScriptPath: environment.JERICHO_VAULT_RAG_SCRIPT?.trim() || '/opt/data/scripts/jericho-vault-rag.py',
     cachePath: environment.JERICHO_VAULT_RAG_CACHE?.trim() || '/opt/data/jericho/intel/rag-cache.json',
     indexPath: environment.JERICHO_VAULT_RAG_INDEX?.trim() || '/opt/data/vault-rag-index/bm25_index.json',
     cacheTtlMs: boundedInteger(environment.JERICHO_VAULT_CACHE_TTL_MS ?? '86400000', 1, Number.MAX_SAFE_INTEGER, 'cache TTL'),

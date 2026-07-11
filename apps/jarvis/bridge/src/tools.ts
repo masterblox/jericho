@@ -42,12 +42,32 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
     description: 'Report actual connector and registered agent capability health.',
     parameters: { type: 'object', properties: {} },
   },
+  {
+    name: 'search_vault',
+    description: 'Search verified Obsidian vault evidence through the bounded private RAG gateway.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Vault evidence query, at most 500 characters' },
+        limit: { type: 'integer', description: 'Maximum results from 1 to 10' },
+      },
+      required: ['query'],
+    },
+  },
 ];
+
+export interface VaultToolSearchPort {
+  search(query: string, limit: number, signal: AbortSignal): Promise<{
+    cached: boolean;
+    results: Array<{ path: string; title: string; excerpt: string; score: number }>;
+  }>;
+}
 
 export interface ToolExecutorOptions {
   store: JerichoStore;
   clock?: () => string;
   idFactory?: () => string;
+  vaultSearch?: VaultToolSearchPort;
 }
 
 export interface ToolExecutor {
@@ -147,11 +167,78 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
           }
           return { connectors, agents: [...agentsById.values()] };
         }
+        case 'search_vault': {
+          return executeVaultSearch(options.vaultSearch, args);
+        }
         default:
           return { error: `unknown tool: ${name}` };
       }
     },
   };
+}
+
+export async function executeVaultSearch(
+  port: VaultToolSearchPort | undefined,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const query = boundedQuery(args.query);
+  const limit = boundedLimit(args.limit);
+  if (!port) return vaultUnavailable();
+  try {
+    const response = await port.search(query, limit, new AbortController().signal);
+    const results = response.results.slice(0, limit).map((result) => ({
+      path: relativeVaultPath(result.path),
+      title: boundedResultString(result.title, 500, 'title'),
+      excerpt: boundedResultString(result.excerpt, 4_000, 'excerpt'),
+      score: boundedScore(result.score),
+    }));
+    return {
+      available: true,
+      cached: response.cached,
+      count: results.length,
+      results,
+    };
+  } catch {
+    return vaultUnavailable();
+  }
+}
+
+function boundedQuery(value: unknown): string {
+  const query = requiredString(value, 'query').replace(/\s+/gu, ' ');
+  if (query.length > 500 || /[\u0000-\u001f\u007f]/u.test(query)) {
+    throw new Error('query must be at most 500 printable characters');
+  }
+  return query;
+}
+
+function boundedLimit(value: unknown): number {
+  if (value === undefined) return 5;
+  if (!Number.isInteger(value) || (value as number) < 1 || (value as number) > 10) {
+    throw new Error('limit must be an integer from 1 to 10');
+  }
+  return value as number;
+}
+
+function relativeVaultPath(value: string): string {
+  if (!value || value.length > 1_024 || value.startsWith('/') || value.includes('\\')
+    || value.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new Error('Vault result path is invalid');
+  }
+  return value;
+}
+
+function boundedResultString(value: string, maximum: number, field: string): string {
+  if (!value?.trim() || value.length > maximum) throw new Error(`Vault result ${field} is invalid`);
+  return value;
+}
+
+function boundedScore(value: number): number {
+  if (!Number.isFinite(value) || value < 0) throw new Error('Vault result score is invalid');
+  return value;
+}
+
+function vaultUnavailable(): Record<string, unknown> {
+  return { available: false, error: 'vault_search_unavailable', count: 0, results: [] };
 }
 
 function requiredString(value: unknown, field: string): string {

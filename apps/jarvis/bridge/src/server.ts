@@ -60,7 +60,13 @@ import {
   createConnectorRuntime,
   createMissionExecutionRuntime,
 } from './runtime.js';
-import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
+import {
+  createToolExecutor,
+  executeVaultSearch,
+  FUNCTION_DECLARATIONS,
+  type ToolExecutor,
+  type VaultToolSearchPort,
+} from './tools.js';
 
 export interface SyncPort {
   sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
@@ -127,6 +133,7 @@ export interface JerichoServerOptions {
   supervisor?: SyncPort;
   connectorDescriptors?: readonly unknown[];
   obsidianSearch?: ObsidianSearchPort;
+  vaultSearch?: VaultToolSearchPort;
   intake?: IntakePort;
   retention?: MissionRetentionPort;
   reflection?: ReflectionReviewPort;
@@ -182,7 +189,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const browserBootstrapToken = randomBytes(32).toString('base64url');
   let browserBootstrapAvailable = true;
   const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
-  const tools = options.toolExecutor ?? createToolExecutor({ store: options.store });
+  const tools = options.toolExecutor ?? createToolExecutor({
+    store: options.store,
+    ...(options.vaultSearch ? { vaultSearch: options.vaultSearch } : {}),
+  });
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
       const failure = httpFailure(error);
@@ -808,15 +818,17 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/obsidian/search') {
-      if (!options.obsidianSearch) {
-        sendJson(response, 503, { error: 'obsidian_search_unavailable' });
+      if (!options.vaultSearch) {
+        sendJson(response, 503, {
+          available: false, error: 'vault_search_unavailable', count: 0, results: [],
+        });
         return;
       }
       const query = url.searchParams.get('q') ?? '';
       if (!query.trim()) throw new HttpError(400, 'invalid_search_query');
-      const limit = boundedInteger(url.searchParams.get('limit'), 10, 1, 50);
-      const results = await options.obsidianSearch.search(query, limit);
-      sendJson(response, 200, { results });
+      const limit = boundedInteger(url.searchParams.get('limit'), 5, 1, 10);
+      const result = await executeVaultSearch(options.vaultSearch, { query, limit });
+      sendJson(response, result.available === true ? 200 : 503, result);
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/events') {
@@ -1750,7 +1762,7 @@ async function main(): Promise<void> {
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,
-    obsidianSearch: connectors.obsidianSearch,
+    vaultSearch: connectors.vaultGateway,
     intake,
     ...(knowledge.retention ? { retention: knowledge.retention } : {}),
     reflection: knowledge.reflection,
