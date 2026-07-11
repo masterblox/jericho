@@ -6,6 +6,7 @@ import {
   CommandCenterTimelineKind,
   DecisionOutcome,
   EntityType,
+  IntentRoute,
   LifecycleStatus,
   NucleusNodeKind,
   ReceiptStatus,
@@ -65,6 +66,7 @@ export function buildCommandCenterSnapshot(
   const decisions = store.listDecisions();
   const connectors = store.listConnectorHealth();
   const captureFailures = store.listCaptureFailures();
+  const reviewIntents = store.listIntents({ route: IntentRoute.Review });
   const costs = new Map(missions.map((mission) => [mission.id, store.listCosts(mission.id)]));
   const knownEventIds = new Set(events.map((event) => event.id));
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
@@ -132,6 +134,7 @@ export function buildCommandCenterSnapshot(
     decisions,
     connectors,
     captureFailures,
+    reviewIntents,
     costs: [...costs.values()],
     lastChangeSequence: store.getLatestChangeSequence(),
   };
@@ -161,6 +164,7 @@ export function buildCommandCenterSnapshot(
     history,
     connectors,
     captureFailures,
+    reviewIntents,
     lastChangeSequence: source.lastChangeSequence,
     nucleus,
   };

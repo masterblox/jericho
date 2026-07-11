@@ -1046,6 +1046,8 @@ export interface CommandCenterSnapshot {
   history: CommandCenterTimelineEntry[];
   connectors: ConnectorHealth[];
   captureFailures: CaptureFailure[];
+  /** Persisted intents that safety routing held for explicit human review. */
+  reviewIntents?: IntentEnvelope[];
   lastChangeSequence: number;
   nucleus: CommandCenterNucleus;
 }

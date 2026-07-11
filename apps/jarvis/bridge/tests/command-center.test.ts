@@ -50,6 +50,29 @@ afterEach(async () => {
 });
 
 describe('command-center truth projection', () => {
+  it('exposes persisted Review intents without projecting them as missions', () => {
+    const store = openStore();
+    store.saveIntent({
+      ...intent('intent-review'),
+      route: IntentRoute.Review,
+      routeRuleId: 'safety:low-confidence',
+      status: LifecycleStatus.PendingApproval,
+      confidence: 0.4,
+    });
+
+    const snapshot = buildCommandCenterSnapshot(store, NOW);
+
+    expect(snapshot.reviewIntents).toEqual([
+      expect.objectContaining({
+        id: 'intent-review',
+        route: IntentRoute.Review,
+        status: LifecycleStatus.PendingApproval,
+        routeRuleId: 'safety:low-confidence',
+      }),
+    ]);
+    expect(snapshot.missions).toEqual([]);
+  });
+
   it('returns a typed, revisioned empty snapshot without fixture activity', () => {
     const store = openStore();
 
