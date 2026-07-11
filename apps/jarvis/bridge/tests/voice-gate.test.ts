@@ -44,6 +44,20 @@ describe('voice socket privacy gate', () => {
     expect(voiceConnect).not.toHaveBeenCalled();
   });
 
+  it('accepts a bearer header supplied by the local development reverse proxy', async () => {
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      request.callbacks.onopen();
+      return {
+        sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+      };
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocketWithBearer(runtime.port);
+
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+    socket.close();
+  });
+
   it('drops standby audio and closes the active gate when Gemini completes a turn', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
@@ -189,6 +203,17 @@ async function startVoiceServer(voiceConnect: VoiceConnect, voiceActiveTurnMs = 
 function connectSocket(port: number): Promise<WebSocket> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${TOKEN}`);
+    openSockets.push(socket);
+    socket.once('open', () => resolve(socket));
+    socket.once('error', reject);
+  });
+}
+
+function connectSocketWithBearer(port: number): Promise<WebSocket> {
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(`ws://127.0.0.1:${port}/ws`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
     openSockets.push(socket);
     socket.once('open', () => resolve(socket));
     socket.once('error', reject);
