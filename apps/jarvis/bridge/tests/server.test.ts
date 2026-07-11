@@ -44,6 +44,7 @@ describe('runtime config', () => {
       JERICHO_OBSIDIAN_VAULT: '/vault',
       JERICHO_ALLOWED_ORIGINS: 'http://localhost:5173',
       JERICHO_CONNECTOR_POLL_INTERVAL_MS: '15000',
+      JERICHO_VOICE_ACTIVE_TURN_MS: '45000',
     }, ['--port', '0'])).toMatchObject({
       port: 0,
       geminiApiKey: undefined,
@@ -56,10 +57,20 @@ describe('runtime config', () => {
       obsidianVaultPath: '/vault',
       allowedOrigins: ['http://localhost:5173'],
       connectorPollIntervalMs: 15_000,
+      voiceActiveTurnMs: 45_000,
     });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, CONDUCTOR_PORT: '4100', PORT: '4200' }, [])).toMatchObject({ port: 4100 });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, PORT: '4200' }, [])).toMatchObject({ port: 4200 });
-    expect(loadConfig({ JERICHO_API_TOKEN: TOKEN }, [])).toMatchObject({ port: 8787, host: '127.0.0.1' });
+    const defaults = loadConfig({ JERICHO_API_TOKEN: TOKEN }, []);
+    expect(defaults).toMatchObject({
+      port: 8787,
+      host: '127.0.0.1',
+      voiceActiveTurnMs: 30_000,
+    });
+    expect(defaults.systemInstruction).toContain('client and server voice gates');
+    expect(defaults.systemInstruction).not.toMatch(
+      /stay completely silent unless|unless Carlos says|say(?:s)? “?JARVIS/i,
+    );
     expect(() => loadConfig({
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',

@@ -36,6 +36,29 @@ export interface ObsidianSearchPort {
   search(query: string, limit: number): Promise<unknown>;
 }
 
+export interface VoiceSessionPort {
+  sendRealtimeInput(input: unknown): void;
+  sendToolResponse(input: unknown): void;
+  close(): void;
+}
+
+export interface VoiceConnectionCallbacks {
+  onopen(): void;
+  onmessage(message: any): void;
+  onerror(error?: unknown): void;
+  onclose(): void;
+}
+
+export interface VoiceConnectionRequest {
+  model: string;
+  config: Record<string, unknown>;
+  callbacks: VoiceConnectionCallbacks;
+}
+
+export type VoiceConnect = (
+  request: VoiceConnectionRequest,
+) => Promise<VoiceSessionPort>;
+
 export interface JerichoServerOptions {
   store: JerichoStore;
   apiToken: string;
@@ -53,6 +76,8 @@ export interface JerichoServerOptions {
   toolExecutor?: ToolExecutor;
   clock?: () => string;
   decisionIdFactory?: () => string;
+  voiceConnect?: VoiceConnect;
+  voiceActiveTurnMs?: number;
 }
 
 export interface JerichoServerAddress {
@@ -80,6 +105,10 @@ export const VOICES = [
 
 export function createJerichoServer(options: JerichoServerOptions): JerichoServer {
   if (!options.apiToken) throw new Error('Local Core API token is required');
+  if (
+    options.voiceActiveTurnMs !== undefined &&
+    (!Number.isFinite(options.voiceActiveTurnMs) || options.voiceActiveTurnMs <= 0)
+  ) throw new Error('Active voice turn duration must be positive');
   const host = options.host ?? '127.0.0.1';
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const ssePollMs = options.ssePollMs ?? 250;
@@ -443,22 +472,43 @@ function attachVoice(
 }
 
 function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, tools: ToolExecutor): void {
-  const ai = new GoogleGenAI({ apiKey: options.geminiApiKey! });
-  let session: Session | undefined;
+  const ai = options.voiceConnect
+    ? undefined
+    : new GoogleGenAI({ apiKey: options.geminiApiKey! });
+  const voiceConnect: VoiceConnect = options.voiceConnect ?? (async (request) =>
+    ai!.live.connect(request as never) as unknown as Promise<Session>);
+  const activeTurnMs = options.voiceActiveTurnMs ?? 30_000;
+  let session: VoiceSessionPort | undefined;
   let currentVoice = options.geminiVoice ?? 'Algieba';
   let generation = 0;
   let clientClosed = false;
+  let active = false;
+  let activeTimer: ReturnType<typeof setTimeout> | undefined;
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
   };
+  const deactivate = (turnComplete = false) => {
+    active = false;
+    if (activeTimer) clearTimeout(activeTimer);
+    activeTimer = undefined;
+    if (turnComplete) send({ type: 'turn_complete' });
+    send({ type: 'armed', armed: false });
+  };
+  const activate = () => {
+    active = true;
+    if (activeTimer) clearTimeout(activeTimer);
+    send({ type: 'armed', armed: true });
+    activeTimer = setTimeout(() => deactivate(), activeTurnMs);
+  };
   const connect = (voice: string) => {
     const connectionGeneration = ++generation;
+    if (active) deactivate();
     session?.close();
     session = undefined;
     currentVoice = voice;
     send({ type: 'voice_switching', voice });
-    void ai.live.connect({
+    void voiceConnect({
       model: options.geminiModel ?? 'gemini-2.5-flash-native-audio-latest',
       config: {
         responseModalities: [Modality.AUDIO],
@@ -472,6 +522,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         },
         onmessage: (message: any) => {
           if (connectionGeneration !== generation) return;
+          if (!active) return;
           if (message.serverContent?.interrupted) send({ type: 'interrupt' });
           for (const part of message.serverContent?.modelTurn?.parts ?? []) {
             if (part.inlineData?.data) {
@@ -498,12 +549,16 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
               }
             }).catch(() => send({ type: 'error', message: 'tool execution failed' }));
           }
+          if (message.serverContent?.turnComplete) deactivate(true);
         },
         onerror: () => {
           if (connectionGeneration === generation) send({ type: 'error', message: 'voice unavailable' });
         },
         onclose: () => {
-          if (!clientClosed && connectionGeneration === generation) send({ type: 'closed' });
+          if (!clientClosed && connectionGeneration === generation) {
+            if (active) deactivate();
+            send({ type: 'closed' });
+          }
         },
       },
     }).then((connected) => {
@@ -518,12 +573,17 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
 
   send({ type: 'voices', voices: [...VOICES], active: currentVoice });
+  send({ type: 'armed', armed: false });
   connect(currentVoice);
   webSocket.on('message', (raw) => {
     try {
       const message = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (message.type === 'audio' && typeof message.data === 'string') {
-        session?.sendRealtimeInput({ media: { data: message.data, mimeType: 'audio/pcm;rate=16000' } as never });
+        if (active) {
+          session?.sendRealtimeInput({
+            media: { data: message.data, mimeType: 'audio/pcm;rate=16000' },
+          });
+        }
       }
       if (
         message.type === 'set_voice' &&
@@ -534,16 +594,17 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         connect(message.voice);
       }
       if (message.type === 'wake') {
-        session?.sendClientContent({
-          turns: 'Carlos has explicitly woken you. Acknowledge briefly and listen for his request.',
-          turnComplete: true,
-        });
+        activate();
+      }
+      if (message.type === 'standby') {
+        deactivate();
       }
     } catch { /* invalid client frame */ }
   });
   webSocket.on('close', () => {
     clientClosed = true;
     generation += 1;
+    if (activeTimer) clearTimeout(activeTimer);
     session?.close();
   });
 }
@@ -839,6 +900,7 @@ async function main(): Promise<void> {
     geminiModel: config.model,
     geminiVoice: config.voice,
     systemInstruction: config.systemInstruction,
+    voiceActiveTurnMs: config.voiceActiveTurnMs,
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,

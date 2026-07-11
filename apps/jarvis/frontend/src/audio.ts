@@ -1,14 +1,69 @@
-/** Mic capture: resamples device input to 16kHz 16-bit PCM, emits base64 chunks.
- *  Supports start()/stop() so the mic hardware can be released in standby —
- *  that lets Chrome's SpeechRecognition (wake word) get exclusive mic access. */
+export interface ClapWakeDetectorOptions {
+  refractoryMs?: number;
+  noiseAdaptation?: number;
+  initialNoiseFloor?: number;
+}
+
+/**
+ * Pure, block-based clap detector. Callers supply samples and a monotonic
+ * timestamp, so detection is deterministic and does not retain raw audio.
+ */
+export class ClapWakeDetector {
+  private readonly refractoryMs: number;
+  private readonly noiseAdaptation: number;
+  private noiseFloor: number;
+  private lastClapAt = Number.NEGATIVE_INFINITY;
+
+  constructor(options: ClapWakeDetectorOptions = {}) {
+    this.refractoryMs = options.refractoryMs ?? 800;
+    this.noiseAdaptation = options.noiseAdaptation ?? 0.05;
+    this.noiseFloor = options.initialNoiseFloor ?? 0.008;
+  }
+
+  process(samples: Float32Array, timestampMs: number): boolean {
+    if (samples.length === 0 || !Number.isFinite(timestampMs)) return false;
+    let sumSquares = 0;
+    let peak = 0;
+    for (const sample of samples) {
+      if (!Number.isFinite(sample)) return false;
+      const magnitude = Math.abs(sample);
+      peak = Math.max(peak, magnitude);
+      sumSquares += sample * sample;
+    }
+    const rms = Math.sqrt(sumSquares / samples.length);
+    const crestFactor = rms > 0 ? peak / rms : 0;
+    const transient =
+      peak >= Math.max(0.18, this.noiseFloor * 5) &&
+      rms >= Math.max(0.02, this.noiseFloor * 1.8) &&
+      crestFactor >= 2.5;
+
+    if (transient) {
+      if (timestampMs - this.lastClapAt < this.refractoryMs) return false;
+      this.lastClapAt = timestampMs;
+      return true;
+    }
+
+    this.noiseFloor += (rms - this.noiseFloor) * this.noiseAdaptation;
+    return false;
+  }
+}
+
+/**
+ * Mic capture keeps standby samples local for transient analysis and only
+ * encodes transport chunks when the active-turn gate unmutes it.
+ */
 export class MicCapture {
   private ctx: AudioContext | null = null;
   private proc: ScriptProcessorNode | null = null;
   private stream: MediaStream | null = null;
-  private muted = false;
+  private muted = true;
   private rms = 0; // smoothed input energy (0..~0.5) for voice-activity detection
+  private wakeDetector = new ClapWakeDetector();
 
-  constructor(private onChunk: (b64: string) => void) {}
+  constructor(
+    private onChunk: (b64: string) => void,
+    private onClap: () => void = () => undefined,
+  ) {}
 
   /** True while the mic stream is live (armed). */
   get live(): boolean {
@@ -38,13 +93,15 @@ export class MicCapture {
     const outRate = 16000;
 
     this.proc.onaudioprocess = (e) => {
-      if (this.muted) return;
       const input = e.inputBuffer.getChannelData(0);
-      // track input energy for client-side barge-in (VAD)
       let sum = 0;
       for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
       const r = Math.sqrt(sum / input.length);
       this.rms = this.rms * 0.6 + r * 0.4;
+      if (this.muted) {
+        if (this.wakeDetector.process(input, performance.now())) this.onClap();
+        return;
+      }
       const b64 = this.downsampleAndEncode(input, inRate, outRate);
       if (b64) this.onChunk(b64);
     };
@@ -74,9 +131,11 @@ export class MicCapture {
     }
     this.ctx = null;
     this.rms = 0;
+    this.muted = true;
+    this.wakeDetector = new ClapWakeDetector();
   }
 
-  /** Pause sending (wake-word mode) without tearing down the stream. */
+  /** Pause transport while retaining local transient analysis. */
   setMuted(m: boolean) {
     this.muted = m;
   }

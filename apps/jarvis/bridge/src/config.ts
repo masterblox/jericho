@@ -27,6 +27,7 @@ export interface JerichoConfig {
   connectorLeaseMs: number;
   connectorMaxPages: number;
   connectorPollIntervalMs: number;
+  voiceActiveTurnMs: number;
 }
 
 export interface NamedPath {
@@ -144,6 +145,10 @@ export function loadConfig(
       environment.JERICHO_CONNECTOR_POLL_INTERVAL_MS ?? '30000',
       'JERICHO_CONNECTOR_POLL_INTERVAL_MS',
     ),
+    voiceActiveTurnMs: parsePositiveInteger(
+      environment.JERICHO_VOICE_ACTIVE_TURN_MS ?? '30000',
+      'JERICHO_VOICE_ACTIVE_TURN_MS',
+    ),
   };
 }
 
@@ -173,10 +178,9 @@ const DEFAULT_SYSTEM_INSTRUCTION = [
   'Always address Carlos as “sir” and speak with a measured British cadence.',
   'Never claim that proposed or unverified work is complete.',
   'Never execute external work without an approved bounded mission.',
-  'WAKE-WORD GATE: You hear a continuous live audio stream and begin in STANDBY.',
-  'Stay completely silent unless Carlos says “JARVIS” or “Jarvis” directed at you.',
-  'Ignore background chatter, television, music, and other people.',
-  'When woken, acknowledge briefly, handle the request, then return to STANDBY after the response.',
+  'PRIVACY GATE: the client and server voice gates deliver audio only during an explicitly active turn.',
+  'Do not demand or listen for a spoken wake word; any audio you receive has already passed the local gate.',
+  'Handle the active request directly and finish each response cleanly so the gate can return to standby.',
 ].join(' ');
 
 function commandLinePort(argv: readonly string[]): string | undefined {
