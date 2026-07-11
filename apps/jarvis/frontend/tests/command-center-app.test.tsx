@@ -25,7 +25,10 @@ import {
 
 import { CommandCenterApp } from '../src/command-center-app';
 import { CommandCenterStore } from '../src/command-center-store';
-import { JERICHO_APPROVAL_GESTURE_EVENT } from '../src/gesture-events';
+import {
+  JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CANCEL_PENDING_EVENT,
+} from '../src/gesture-events';
 import {
   JERICHO_NUCLEUS_CAMERA_EVENT,
   JERICHO_NUCLEUS_DEPTH_EVENT,
@@ -226,11 +229,11 @@ describe('CommandCenterApp', () => {
       target: { value: 'node-mission' },
     });
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship type' }), {
-      target: { value: 'informed_by' },
+      target: { value: 'supports' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Preview relationship' }));
     expect(screen.getByText('LOCAL PREVIEW · NOT SAVED')).toBeTruthy();
-    expect(screen.getByText('DEV —[informed_by]→ Deploy bounded Core')).toBeTruthy();
+    expect(screen.getByText('DEV —[supports]→ Deploy bounded Core')).toBeTruthy();
     expect(snapshot.nucleus.edges).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel pending' }));
@@ -250,8 +253,75 @@ describe('CommandCenterApp', () => {
       bubbles: true,
       detail: { targetId: 'nucleus:node-mission', point: { x: 200, y: 200 }, cancelled: false },
     })));
-    expect(screen.getByText('Deploy bounded Core —[informed_by]→ DEV')).toBeTruthy();
+    expect(screen.getByText('Deploy bounded Core —[supports]→ DEV')).toBeTruthy();
     expect(snapshot.nucleus.edges).toHaveLength(1);
+  });
+
+  it('submits exact selected-mission cancellation and relationship proposals to Core', async () => {
+    const store = new CommandCenterStore();
+    store.replace(populatedSnapshot());
+    const cancelMission = vi.fn().mockResolvedValue({});
+    const proposeRelationship = vi.fn().mockResolvedValue({});
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{
+        start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(),
+        cancelMission, proposeRelationship,
+      }}
+      autoStart={false}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel pending' }));
+    await waitFor(() => expect(cancelMission).toHaveBeenCalledWith({
+      missionId: 'mission-1', planHash: 'a'.repeat(64), version: 3,
+      reason: 'Cancelled from Jericho command center',
+    }));
+    cancelMission.mockClear();
+    confirm.mockClear();
+    act(() => document.dispatchEvent(new CustomEvent(JERICHO_CANCEL_PENDING_EVENT, {
+      detail: { source: 'both-open-palms' },
+    })));
+    await waitFor(() => expect(cancelMission).toHaveBeenCalledWith({
+      missionId: 'mission-1', planHash: 'a'.repeat(64), version: 3,
+      reason: 'Cancelled by held both-open-palms gesture in Jericho command center',
+    }));
+    expect(confirm).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('combobox', { name: 'Relationship source' }), {
+      target: { value: 'node-dev' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Relationship destination' }), {
+      target: { value: 'node-mission' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Preview relationship' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Submit relationship for review' }));
+    await waitFor(() => expect(proposeRelationship).toHaveBeenCalledWith({
+      fromNodeId: 'node-dev', toNodeId: 'node-mission', relation: 'related_to',
+    }));
+    expect(store.getSnapshot().snapshot?.nucleus.edges).toHaveLength(1);
+  });
+
+  it('retains only a succeeded mission through the verified Core writer', async () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    snapshot.missions[0].status = LifecycleStatus.Succeeded;
+    snapshot.missions[0].stage = CommandCenterMissionStage.Present;
+    store.replace(snapshot);
+    const retainMission = vi.fn().mockResolvedValue({
+      relativePath: 'Jericho/Missions/mission-1.md', status: 'created',
+    });
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), retainMission }}
+      autoStart={false}
+    />);
+    fireEvent.click(screen.getByRole('button', { name: 'Retain verified mission' }));
+
+    await waitFor(() => expect(retainMission).toHaveBeenCalledWith('mission-1'));
+    expect(screen.getByText('Retained in Jericho/Missions/mission-1.md · created')).toBeTruthy();
   });
 
   it('renders honest loading, unavailable, disconnected, and empty states without fabricated fallback data', () => {

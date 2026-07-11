@@ -2,6 +2,7 @@ import type {
   CommandCenterSnapshot,
   MissionDecisionRequest,
   MissionDecisionResponse,
+  RelationType,
 } from '@jericho/shared';
 
 import type { CommandCenterStore } from './command-center-store';
@@ -20,6 +21,24 @@ export interface CoreClientPorts {
 
 export interface MissionDecisionInput extends MissionDecisionRequest {
   missionId: string;
+}
+
+export interface MissionCancellationInput {
+  missionId: string;
+  planHash: string;
+  version: number;
+  reason: string;
+}
+
+export interface RelationshipProposalInput {
+  fromNodeId: string;
+  toNodeId: string;
+  relation: RelationType;
+}
+
+export interface RetentionResult {
+  relativePath: string;
+  status: 'created' | 'updated' | 'unchanged';
 }
 
 export class CoreClient {
@@ -95,6 +114,50 @@ export class CoreClient {
     if (decision.snapshot) this.store.replace(decision.snapshot);
     else await this.#refresh(this.#generation);
     return decision;
+  }
+
+  async cancelMission(input: MissionCancellationInput): Promise<unknown> {
+    const { missionId, ...request } = input;
+    return this.#postWithSnapshot(
+      `/api/v1/missions/${encodeURIComponent(missionId)}/cancel`,
+      request,
+      'Mission cancellation failed',
+    );
+  }
+
+  async retainMission(missionId: string): Promise<RetentionResult> {
+    const response = await this.#fetch(
+      `/api/v1/missions/${encodeURIComponent(missionId)}/retain`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { accept: 'application/json' },
+      },
+    );
+    if (!response.ok) throw new Error(await responseError(response, 'Mission retention failed'));
+    return response.json() as Promise<RetentionResult>;
+  }
+
+  proposeRelationship(input: RelationshipProposalInput): Promise<unknown> {
+    return this.#postWithSnapshot(
+      '/api/v1/relationship-proposals',
+      input,
+      'Relationship proposal failed',
+    );
+  }
+
+  async #postWithSnapshot(path: string, body: unknown, fallback: string): Promise<unknown> {
+    const response = await this.#fetch(path, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!response.ok) throw new Error(await responseError(response, fallback));
+    const result = await response.json() as { snapshot?: CommandCenterSnapshot };
+    if (result.snapshot) this.store.replace(result.snapshot);
+    else await this.#refresh(this.#generation);
+    return result;
   }
 
   async #refresh(generation: number): Promise<void> {

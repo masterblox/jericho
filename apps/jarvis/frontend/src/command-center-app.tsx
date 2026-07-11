@@ -11,6 +11,8 @@ import {
 import {
   CommandCenterMissionStage,
   DecisionOutcome,
+  LifecycleStatus,
+  RelationType,
   type ActionDescriptor,
   type CommandCenterApproval,
   type CommandCenterEntityCard,
@@ -20,13 +22,19 @@ import {
 } from '@jericho/shared';
 
 import type { CommandCenterStore } from './command-center-store';
-import type { MissionDecisionInput } from './core-client';
+import type {
+  MissionCancellationInput,
+  MissionDecisionInput,
+  RelationshipProposalInput,
+  RetentionResult,
+} from './core-client';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
   JERICHO_CANCEL_PENDING_EVENT,
   JERICHO_NUCLEUS_CAMERA_EVENT,
   JERICHO_NUCLEUS_DEPTH_EVENT,
   type ApprovalGestureDetail,
+  type CancelPendingDetail,
   type NucleusCameraDetail,
   type NucleusDepthDetail,
 } from './gesture-events';
@@ -35,6 +43,9 @@ export interface CommandCenterClientPort {
   start(): Promise<void>;
   stop(): void;
   decideMission(input: MissionDecisionInput): Promise<unknown>;
+  cancelMission?(input: MissionCancellationInput): Promise<unknown>;
+  retainMission?(missionId: string): Promise<RetentionResult>;
+  proposeRelationship?(input: RelationshipProposalInput): Promise<unknown>;
 }
 
 export interface CommandCenterAppProps {
@@ -49,13 +60,17 @@ const PIPELINE = [
 ] as const;
 
 type MobileTab = 'today' | 'communications' | 'nucleus' | 'approvals';
-const RELATIONSHIP_TYPES = ['related_to', 'depends_on', 'assigned_to', 'informed_by'] as const;
-type RelationshipType = typeof RELATIONSHIP_TYPES[number];
+const RELATIONSHIP_TYPES = [
+  RelationType.RelatedTo,
+  RelationType.DependsOn,
+  RelationType.AssignedTo,
+  RelationType.Supports,
+] as const;
 
 interface RelationshipDraft {
   fromNodeId: string;
   toNodeId: string;
-  relation: RelationshipType;
+  relation: RelationType;
 }
 
 export function CommandCenterApp({
@@ -69,7 +84,9 @@ export function CommandCenterApp({
   const [mobileTab, setMobileTab] = useState<MobileTab>('today');
   const [decisionError, setDecisionError] = useState<string>();
   const [decidingAction, setDecidingAction] = useState<string>();
+  const [operationMessage, setOperationMessage] = useState<string>();
   const decisionInFlight = useRef(false);
+  const operationInFlight = useRef(false);
   const submittedGestureDecisions = useRef(new Set<string>());
 
   useEffect(() => {
@@ -144,6 +161,74 @@ export function CommandCenterApp({
     return () => document.removeEventListener(JERICHO_APPROVAL_GESTURE_EVENT, onApprovalGesture);
   }, [decide, snapshot]);
 
+  const selectedMission = snapshot?.missions.find((mission) => mission.id === selectedMissionId)
+    ?? snapshot?.missions[0];
+
+  const cancelSelectedMission = useCallback(async (source: CancelPendingDetail['source']) => {
+    if (!selectedMission || !client.cancelMission || operationInFlight.current) return;
+    if (
+      source === 'keyboard'
+      && !window.confirm(`Cancel selected mission: ${selectedMission.title}?`)
+    ) return;
+    operationInFlight.current = true;
+    setOperationMessage(undefined);
+    try {
+      await client.cancelMission({
+        missionId: selectedMission.id,
+        planHash: selectedMission.planHash,
+        version: selectedMission.version,
+        reason: source === 'both-open-palms'
+          ? 'Cancelled by held both-open-palms gesture in Jericho command center'
+          : 'Cancelled from Jericho command center',
+      });
+      setOperationMessage('Mission cancellation recorded');
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : 'Mission cancellation failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client, selectedMission]);
+
+  useEffect(() => {
+    const onCancel = (event: Event) => {
+      const source = (event as CustomEvent<CancelPendingDetail>).detail?.source;
+      if (source === 'keyboard' || source === 'both-open-palms') {
+        void cancelSelectedMission(source);
+      }
+    };
+    document.addEventListener(JERICHO_CANCEL_PENDING_EVENT, onCancel);
+    return () => document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, onCancel);
+  }, [cancelSelectedMission]);
+
+  const retainSelectedMission = useCallback(async () => {
+    if (!selectedMission || !client.retainMission || operationInFlight.current) return;
+    operationInFlight.current = true;
+    setOperationMessage(undefined);
+    try {
+      const result = await client.retainMission(selectedMission.id);
+      setOperationMessage(`Retained in ${result.relativePath} · ${result.status}`);
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : 'Mission retention failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client, selectedMission]);
+
+  const proposeRelationship = useCallback(async (draft: RelationshipDraft) => {
+    if (!client.proposeRelationship || operationInFlight.current) return;
+    operationInFlight.current = true;
+    setOperationMessage(undefined);
+    try {
+      await client.proposeRelationship(draft);
+      setOperationMessage('Relationship submitted for review');
+    } catch (error) {
+      setOperationMessage(error instanceof Error ? error.message : 'Relationship proposal failed');
+      throw error;
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client]);
+
   if (!snapshot) {
     return (
       <main className="jericho-shell jericho-shell--waiting" id="main">
@@ -155,9 +240,6 @@ export function CommandCenterApp({
       </main>
     );
   }
-
-  const selectedMission = snapshot.missions.find((mission) => mission.id === selectedMissionId)
-    ?? snapshot.missions[0];
 
   return (
     <main className="jericho-shell" id="main">
@@ -227,11 +309,18 @@ export function CommandCenterApp({
 
         <section className="jericho-bay jericho-bay--center jericho-mobile-panel">
           <MissionContext mission={selectedMission} />
+          {selectedMission?.status === LifecycleStatus.Succeeded && client.retainMission && (
+            <button type="button" className="jericho-retain-mission" onClick={() => void retainSelectedMission()}>
+              Retain verified mission
+            </button>
+          )}
+          {operationMessage && <p className="jericho-operation-message" role="status">{operationMessage}</p>}
           <Pipeline mission={selectedMission} />
           <Nucleus
             snapshot={snapshot}
             selectedMission={selectedMission}
             onSelectMission={setSelectedMissionId}
+            onProposeRelationship={client.proposeRelationship ? proposeRelationship : undefined}
           />
           <MissionTimeline mission={selectedMission} />
         </section>
@@ -373,10 +462,12 @@ function Nucleus({
   snapshot,
   selectedMission,
   onSelectMission,
+  onProposeRelationship,
 }: {
   snapshot: CommandCenterSnapshot;
   selectedMission?: CommandCenterMission;
   onSelectMission: (id: string) => void;
+  onProposeRelationship?: (draft: RelationshipDraft) => Promise<void>;
 }) {
   const sectionRef = useRef<HTMLElement>(null);
   const allNodes = useMemo(
@@ -393,8 +484,9 @@ function Nucleus({
   const [cameraClutched, setCameraClutched] = useState(false);
   const [relationshipFrom, setRelationshipFrom] = useState<string>();
   const [relationshipTo, setRelationshipTo] = useState<string>();
-  const [relationshipType, setRelationshipType] = useState<RelationshipType>('related_to');
+  const [relationshipType, setRelationshipType] = useState<RelationType>(RelationType.RelatedTo);
   const [relationshipDraft, setRelationshipDraft] = useState<RelationshipDraft>();
+  const [relationshipSubmitting, setRelationshipSubmitting] = useState(false);
   const dragSource = useRef<string | undefined>(undefined);
   const rootNodeId = allNodes.find((node) =>
     node.recordType === 'mission' && node.recordId === selectedMission?.id)?.id ?? allNodes[0]?.id;
@@ -574,7 +666,7 @@ function Nucleus({
         <label>From<select aria-label="Relationship source" value={selectedFrom} onChange={(event) => setRelationshipFrom(event.target.value)}>
           {allNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
         </select></label>
-        <label>Type<select aria-label="Relationship type" value={relationshipType} onChange={(event) => setRelationshipType(event.target.value as RelationshipType)}>
+        <label>Type<select aria-label="Relationship type" value={relationshipType} onChange={(event) => setRelationshipType(event.target.value as RelationType)}>
           {RELATIONSHIP_TYPES.map((relation) => <option key={relation} value={relation}>{relation.replaceAll('_', ' ')}</option>)}
         </select></label>
         <label>To<select aria-label="Relationship destination" value={selectedTo} onChange={(event) => setRelationshipTo(event.target.value)}>
@@ -586,6 +678,21 @@ function Nucleus({
         <aside className="jericho-relationship-preview" aria-live="polite">
           <strong>LOCAL PREVIEW · NOT SAVED</strong>
           <span>{nodeLabel(allNodes, relationshipDraft.fromNodeId)} —[{relationshipDraft.relation}]→ {nodeLabel(allNodes, relationshipDraft.toNodeId)}</span>
+          {onProposeRelationship && (
+            <button
+              type="button"
+              disabled={relationshipSubmitting}
+              onClick={() => {
+                setRelationshipSubmitting(true);
+                void onProposeRelationship(relationshipDraft)
+                  .then(() => setRelationshipDraft(undefined))
+                  .catch(() => undefined)
+                  .finally(() => setRelationshipSubmitting(false));
+              }}
+            >
+              {relationshipSubmitting ? 'Submitting…' : 'Submit relationship for review'}
+            </button>
+          )}
           <button type="button" onClick={() => setRelationshipDraft(undefined)}>Discard preview</button>
         </aside>
       )}

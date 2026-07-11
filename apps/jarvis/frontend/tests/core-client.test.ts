@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { RelationType } from '@jericho/shared';
 
 import { CommandCenterStore } from '../src/command-center-store';
 import { CoreClient, type EventSourcePort } from '../src/core-client';
@@ -87,6 +88,44 @@ describe('CoreClient', () => {
       }),
     );
     expect(JSON.stringify(fetchPort.mock.calls[1])).not.toMatch(/send|deploy|execute/i);
+  });
+
+  it('uses bounded Core endpoints for cancellation, retention, and relationship proposals', async () => {
+    const next = snapshot({ lastChangeSequence: 7 });
+    const fetchPort = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: next }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        relativePath: 'Jericho/Missions/mission-1.md', status: 'created',
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ snapshot: next }), { status: 201 }));
+    const store = new CommandCenterStore();
+    const client = new CoreClient(store, { fetch: fetchPort as typeof fetch });
+
+    await client.cancelMission({
+      missionId: 'mission-1', planHash: 'a'.repeat(64), version: 2,
+      reason: 'Both palms held to stop the selected mission',
+    });
+    expect(fetchPort).toHaveBeenNthCalledWith(1, '/api/v1/missions/mission-1/cancel', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin',
+      body: JSON.stringify({
+        planHash: 'a'.repeat(64), version: 2,
+        reason: 'Both palms held to stop the selected mission',
+      }),
+    }));
+    expect(store.getSnapshot().snapshot?.lastChangeSequence).toBe(7);
+
+    await expect(client.retainMission('mission-1')).resolves.toEqual({
+      relativePath: 'Jericho/Missions/mission-1.md', status: 'created',
+    });
+    await client.proposeRelationship({
+      fromNodeId: 'mission:1', toNodeId: 'agent:dev', relation: RelationType.AssignedTo,
+    });
+    expect(fetchPort).toHaveBeenNthCalledWith(3, '/api/v1/relationship-proposals', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin',
+      body: JSON.stringify({
+        fromNodeId: 'mission:1', toNodeId: 'agent:dev', relation: 'assigned_to',
+      }),
+    }));
   });
 });
 
