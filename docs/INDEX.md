@@ -12,6 +12,7 @@
 | [`../apps/jarvis/README.md`](../apps/jarvis/README.md) | Operator setup, configuration, gestures, and verification. | Any boot, configuration, UI, or gesture change. |
 | [`JERICHO-V1-GESTURES.md`](JERICHO-V1-GESTURES.md) | Low-level v1 gesture invariants retained by the current runtime. | Any tracking threshold or gesture grammar change. |
 | [`HERMES-EXECUTION-PROTOCOL-V1.md`](HERMES-EXECUTION-PROTOCOL-V1.md) | Fail-closed Hermes capability handshake, result, verification, cancellation, and repository-authority contract. | Any Hermes execution protocol or repository grant change. |
+| [`JERICHO-LIVE-SMOKE-TEST.md`](JERICHO-LIVE-SMOKE-TEST.md) | Live-safe operator checks, deterministic gate, privacy boundaries, and physical/Hermes prerequisites. | Any boot, authentication, connector-send, voice, gesture, or smoke acceptance change. |
 
 ## Historical or superseded material
 

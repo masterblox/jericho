@@ -40,6 +40,9 @@ The laptop owns personal context and authority. Remote Hermes services may colle
 - `bridge/` is one loopback TypeScript service. It serves the built React UI, authenticated HTTP/SSE, the optional voice WebSocket, connector polling, and mission execution from one origin.
 - `shared/` contains versioned contracts used by Core and the command center.
 - `frontend/` is the cinematic command center and disposable local voice/gesture runtime.
+- `frontend/public/mediapipe/` contains the same-origin gesture model and all
+  SIMD/non-SIMD WASM variants; production gesture recognition has no model-CDN
+  dependency.
 - macOS Keychain holds the generated Core master key and local API token unless explicit environment overrides are supplied.
 - SQLite record bodies and provenance are authenticated and encrypted. Immutable source-event identity and exact plan hashes prevent silent mutation.
 
@@ -60,6 +63,18 @@ Conductor supplies a workspace-specific port, but runtime mode is nonconcurrent 
 ### Capture
 
 Core accepts spoken/local captures, Telegram via the authenticated Hermes gateway, Linear, Git, GitHub, Conductor, Obsidian, URLs/files/transcripts supplied by Carlos, and semantic selections from the command center. Connector cursors, leases, pagination, retries, and health are durable. Source event IDs make ingestion idempotent.
+
+Operational rollout is Telegram first, followed by Linear, Git/GitHub,
+Hermes/Conductor, and Obsidian. The WhatsApp adapter and approved-send boundary
+exist, but WhatsApp should be enabled only after Telegram is dependable.
+Unavailable configuration remains visible as connector health rather than
+invented activity.
+
+Startup recovery takes a durable change-log high-water mark and pages every
+current `EventCaptured` change up to it. This avoids a fixed 10,000-event intake
+ceiling and cannot chase a continuously moving tail forever. A bounded scan is
+retained only for legacy/direct-import events written before captured-event
+change records existed.
 
 ### Understand
 
@@ -93,27 +108,52 @@ configured allowlist entry and an immutable direct-capture selector; neither
 workspace configuration nor natural-language inference silently grants a repo.
 The exact operator contract is `docs/HERMES-EXECUTION-PROTOCOL-V1.md`.
 
-External effects require destination-scoped idempotency and a verified receipt. Retries must not duplicate a send, deployment, or other mutation.
+External effects require destination-scoped idempotency and a verified receipt.
+The implemented Telegram and WhatsApp send adapters accept only a mission task
+with an explicit, approved `externalAction`. They revalidate the exact plan,
+assignment, task, recipient, message, tool, credential reference, data and
+mutation scopes, and reserved receipt before transport. A successful gateway
+acknowledgement becomes an immutable delivery event containing message and
+idempotency hashes rather than raw message text. The independent verifier binds
+that event and external ID back to the destination before the runner completes
+the receipt. A started but uncertain send is not automatically resent. Ordinary
+capture or classifier output cannot infer send authority.
 
 ### Retain
 
-Verified outcomes, evidence, decisions, artifacts, edits, costs, and receipts return to the truth graph. Claims keep their assumptions and contradictory observations remain separate. Preference and memory changes are source-backed proposals, never silent merges. Selected summaries may be written to Obsidian after verification.
+Verified outcomes, evidence, decisions, artifacts, edits, costs, and receipts return to the truth graph. Claims keep their assumptions and contradictory observations remain separate. Preference and memory changes are source-backed proposals, never silent merges.
+
+The current Obsidian write is operator-triggered from a succeeded mission. It
+fails unless every task has verification evidence and every external action has
+a verified destination receipt. It writes a narrow human-readable summary, then
+appends a retention event for replay. The scheduled deterministic reflection
+pass produces pending review proposals only; it cannot resolve contradictions,
+merge memory, or approve a preference.
 
 ### Present
 
-The command center projects Today, ranked communications and people, active context, approvals, assignments, outcomes, connector health, and replayable history. Nucleus combines semantic, activity, and mission graphs. A visible node or animation must trace to persisted evidence; storage integrity is not a substitute for destination verification.
+The command center projects Today, ranked communications and people, active context, approvals, assignments, outcomes, connector health, and replayable history. The left bay owns Today, communications, people, tasks, and commitments; the center owns mission context, pipeline, Nucleus, retention, and replay; the right bay owns Review, proposals/checkpoints, approvals, runs, outcomes, and receipts. Narrow screens expose Today, Communications, Nucleus, and Approvals as explicit tabs.
+
+Nucleus combines semantic, activity, and mission graphs. Typed-port drags create
+pending relationship proposals, never direct graph mutation. Timeline entries
+link the persisted capture, intent/route, plan, decision, assignment, receipt,
+and retention records that exist for a mission; absent stages stay absent. A
+visible node or animation must trace to persisted evidence; storage integrity
+is not a substitute for destination verification.
 
 ## Interaction boundary
 
-Voice expresses intent, edits, filters, and explanations. Gestures operate only when their visual context makes the action valid. Clap wake is detected locally in standby; standby audio is not sent upstream. Open palm aims, left palm scrolls communications, fresh pinch focuses, stationary pinch-hold opens contextual actions, and early movement drags. Nucleus owns camera clutch and semantic-depth gestures. Held thumb up/down acts only on an active approval. Both open palms cancel pending work. Closed-fist actions are deliberately absent.
+Voice expresses intent, edits, filters, and explanations. Gestures operate only when their visual context makes the action valid. Clap wake is detected locally in standby; standby audio is not sent upstream. The greeting is synthesized locally, then active-turn audio may flow to the configured Gemini Live session for the bounded turn. A finished Gemini input transcript is retained only as an encrypted local spoken-capture event and is never logged on failure.
+
+Open right palm aims, open left palm scrolls communications, fresh right pinch focuses, stationary target pinch-hold for 620 ms opens contextual actions, and movement of at least 7 px before the hold threshold drags. A right pinch that begins on empty Nucleus space clutches the camera. Two open palms held inside Nucleus control semantic depth and do not cancel work. Held thumb up/down for 700 ms acts only on the exact active approval. Both open palms held outside the Nucleus depth context cancel the selected pending mission through its plan binding. `Closed_Fist` is explicitly inert; pointing, victory, and dwell have no semantic actions.
 
 The React tree owns application state and `#app`. The gesture renderer owns only a disposable body overlay. Hardware starts from an explicit user engagement and tears down completely on dismissal, failure, or unmount. Keyboard and pointer operation remain complete fallbacks.
 
 ## Privacy invariants
 
-- Bind to loopback by default; reject untrusted Host and Origin values.
-- Require an authenticated bearer or per-process same-origin session for Core APIs and voice upgrade.
-- Never persist or log audio frames, transcripts, raw hand landmarks, secrets, or private source payloads outside their encrypted evidence record.
+- Require loopback binding; reject non-loopback startup and untrusted Host and Origin values.
+- Require an authenticated bearer or per-process same-origin session for Core APIs and voice upgrade. Production prints a secret, one-use bootstrap URL; opening `/` alone never grants authority. Bearer clients may explicitly `POST /api/v1/session`.
+- Never persist or log audio frames, raw hand landmarks, or secrets. Private source payloads and a completed spoken transcript may exist only inside authenticated encrypted evidence records; sanitized gesture diagnostics contain no frames or landmarks.
 - Route only semantic gesture events into application state.
 - Keep remote workers on minimum evidence and permissions.
 - Record estimated and actual mission cost without recording secret prompts or credentials.
