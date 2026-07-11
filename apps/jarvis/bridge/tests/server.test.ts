@@ -288,6 +288,43 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1);
   });
 
+  it('publishes verified retention paths and reflection proposals without exposing vault locations', async () => {
+    const retention = {
+      retainMission: vi.fn().mockReturnValue({
+        absolutePath: '/private/vault/Jericho/Missions/mission.md',
+        relativePath: 'Jericho/Missions/mission.md',
+        status: 'created' as const,
+      }),
+    };
+    const reflectionProposal = { id: 'reflection-1', status: 'pending_approval' };
+    const reflection = { runOnce: vi.fn().mockReturnValue([reflectionProposal]) };
+    const runtime = await startServer({ retention, reflection, clock: () => T0 });
+    const capture = await api(runtime.url, '/api/v1/captures', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'spoken', sourceEventId: 'retain-project', occurredAt: T0,
+        payload: { transcript: 'Build a multi-step project for Jericho' },
+      }),
+    });
+    const missionId = (await capture.json() as any).processing.mission.id as string;
+
+    const retained = await api(runtime.url, `/api/v1/missions/${encodeURIComponent(missionId)}/retain`, {
+      method: 'POST',
+    });
+    expect(retained.status).toBe(200);
+    const retainedBody = await retained.json();
+    expect(retainedBody).toEqual({
+      relativePath: 'Jericho/Missions/mission.md', status: 'created',
+    });
+    expect(JSON.stringify(retainedBody)).not.toContain('/private/vault');
+    expect(retention.retainMission).toHaveBeenCalledWith(missionId);
+
+    const reflected = await api(runtime.url, '/api/v1/reflection/run', { method: 'POST' });
+    expect(reflected.status).toBe(200);
+    expect(await reflected.json()).toEqual({ proposals: [reflectionProposal] });
+    expect(reflection.runOnce).toHaveBeenCalledWith(T0);
+  });
+
   it('returns typed client errors instead of 500 for malformed, oversized, bounded, and unknown requests', async () => {
     const sync = vi.fn().mockResolvedValue({ status: 'completed' });
     const runtime = await startServer({
@@ -354,6 +391,8 @@ interface StartOverrides {
   obsidianSearch?: { search: ReturnType<typeof vi.fn> };
   frontendDir?: string;
   clock?: () => string;
+  retention?: { retainMission: ReturnType<typeof vi.fn> };
+  reflection?: { runOnce: ReturnType<typeof vi.fn> };
 }
 
 function localEvent(index: number): EventEnvelope {

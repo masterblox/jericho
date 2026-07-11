@@ -48,6 +48,17 @@ export interface IntakePort {
   recover(): IntakeRecoveryResult;
 }
 
+export interface MissionRetentionPort {
+  retainMission(missionId: string): {
+    relativePath: string;
+    status: 'created' | 'updated' | 'unchanged';
+  };
+}
+
+export interface ReflectionReviewPort {
+  runOnce(observedAt?: string): unknown[];
+}
+
 export interface VoiceSessionPort {
   sendRealtimeInput(input: unknown): void;
   sendToolResponse(input: unknown): void;
@@ -85,6 +96,8 @@ export interface JerichoServerOptions {
   connectorDescriptors?: readonly unknown[];
   obsidianSearch?: ObsidianSearchPort;
   intake?: IntakePort;
+  retention?: MissionRetentionPort;
+  reflection?: ReflectionReviewPort;
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
   clock?: () => string;
@@ -200,6 +213,36 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
       sendJson(response, 200, buildCommandCenterSnapshot(options.store, now()));
+      return;
+    }
+    const missionRetentionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/retain$/);
+    if (request.method === 'POST' && missionRetentionMatch) {
+      if (!options.retention) {
+        sendJson(response, 503, { error: 'mission_retention_unavailable' });
+        return;
+      }
+      const missionId = decodedPathSegment(missionRetentionMatch[1], 'invalid_mission_id');
+      if (!options.store.getMission(missionId)) throw new HttpError(404, 'mission_not_found');
+      let result: ReturnType<MissionRetentionPort['retainMission']>;
+      try {
+        result = options.retention.retainMission(missionId);
+      } catch (error) {
+        if (/not a verified completed mission|requires verified/u.test(String(error))) {
+          throw new HttpError(409, 'mission_retention_not_ready');
+        }
+        throw error;
+      }
+      // Absolute vault paths never leave the local service boundary.
+      sendJson(response, 200, { relativePath: result.relativePath, status: result.status });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/reflection/run') {
+      if (!options.reflection) {
+        sendJson(response, 503, { error: 'reflection_unavailable' });
+        return;
+      }
+      const proposals = options.reflection.runOnce(now());
+      sendJson(response, 200, { proposals });
       return;
     }
     const missionDecisionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/decisions$/);
@@ -837,6 +880,17 @@ function boundedInteger(raw: string | null, fallback: number, minimum: number, m
     throw new HttpError(400, 'invalid_numeric_bound');
   }
   return value;
+}
+
+function decodedPathSegment(raw: string, errorCode: string): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(raw);
+  } catch {
+    throw new HttpError(400, errorCode);
+  }
+  if (!decoded || decoded.length > 512) throw new HttpError(400, errorCode);
+  return decoded;
 }
 
 class HttpError extends Error {
