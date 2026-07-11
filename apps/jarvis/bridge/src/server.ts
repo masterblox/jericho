@@ -10,6 +10,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 
 import {
   DecisionOutcome,
+  IdentityReviewDisposition,
   IntentRoute,
   LifecycleStatus,
   ProposalKind,
@@ -22,6 +23,8 @@ import {
   type CheckpointDecisionRequest,
   type EventEnvelope,
   type IntentEnvelope,
+  type IdentityReviewDecisionRequest,
+  type IdentityReviewDecisionResponse,
   type JsonValue,
   type MissionDecisionRequest,
   type MissionDecisionResponse,
@@ -36,6 +39,7 @@ import { loadConfig } from './config.js';
 import {
   EventConflictError,
   CheckpointDecisionConflictError,
+  IdentityReviewDecisionConflictError,
   JerichoStore,
   MissionDecisionConflictError,
   ReviewIntentDecisionConflictError,
@@ -279,6 +283,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       sendJson(response, 200, buildCommandCenterSnapshot(options.store, now()));
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/v1/identity-reviews') {
+      sendJson(response, 200, { reviews: options.store.listIdentityReviews() });
+      return;
+    }
     const missionRetentionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/retain$/);
     if (request.method === 'POST' && missionRetentionMatch) {
       if (!options.retention) {
@@ -395,6 +403,65 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       }
       const proposals = options.reflection.runOnce(now());
       sendJson(response, 200, { proposals });
+      return;
+    }
+    const identityReviewDecisionMatch = url.pathname.match(
+      /^\/api\/v1\/identity-reviews\/([^/]+)\/decisions$/,
+    );
+    if (request.method === 'POST' && identityReviewDecisionMatch) {
+      const failureId = decodedPathSegment(
+        identityReviewDecisionMatch[1],
+        'invalid_identity_review_id',
+      );
+      const review = options.store.listIdentityReviews()
+        .find((candidate) => candidate.failureId === failureId);
+      if (!review) throw new HttpError(404, 'identity_review_not_found');
+      const input = identityReviewDecisionRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      const decisionId = validDecisionId(decisionIdFactory());
+      const selectedEntityId = input.disposition === IdentityReviewDisposition.RelinkCandidate
+        ? input.targetEntityId!
+        : review.observedEntity.id;
+      const resolved = options.store.resolveIdentityReview({
+        failureId,
+        reviewHash: input.reviewHash,
+        reviewVersion: input.version,
+        disposition: input.disposition,
+        ...(input.targetEntityId ? { targetEntityId: input.targetEntityId } : {}),
+        decision: {
+          id: decisionId,
+          identityReviewId: review.id,
+          identityReviewFailureId: failureId,
+          identityReviewHash: input.reviewHash,
+          identityReviewVersion: input.version,
+          identityDisposition: input.disposition,
+          identitySelectedEntityId: selectedEntityId,
+          decidedBy: 'carlos',
+          outcome: DecisionOutcome.Approved,
+          rationale: input.reason ?? (
+            input.disposition === IdentityReviewDisposition.RelinkCandidate
+              ? 'Explicitly relinked this provisional source identity to the selected candidate'
+              : 'Explicitly kept and established the observed source identity'
+          ),
+          assumptions: [],
+          evidenceEventIds: [...review.evidenceEventIds],
+          route: RouteType.HumanApproval,
+          risk: review.risk,
+          decidedAt,
+          provenance: [{
+            source: 'local:command-center',
+            sourceType: SourceType.User,
+            sourceEventId: decisionId,
+            observedAt: decidedAt,
+          }],
+        },
+      });
+      const snapshot = buildCommandCenterSnapshot(options.store, now());
+      const result: IdentityReviewDecisionResponse = {
+        ...resolved,
+        snapshot,
+      };
+      sendJson(response, 200, result);
       return;
     }
     const reviewDecisionMatch = url.pathname.match(/^\/api\/v1\/review-intents\/([^/]+)\/decisions$/);
@@ -1223,6 +1290,9 @@ function httpFailure(error: unknown): { status: number; code: string } {
   if (error instanceof CheckpointDecisionConflictError) {
     return { status: 409, code: 'checkpoint_decision_conflict' };
   }
+  if (error instanceof IdentityReviewDecisionConflictError) {
+    return { status: 409, code: 'identity_review_decision_conflict' };
+  }
   if (error instanceof TypeError) return { status: 400, code: 'invalid_request' };
   return { status: 500, code: 'internal_error' };
 }
@@ -1294,6 +1364,53 @@ function reviewIntentDecisionRequest(body: Record<string, unknown>): ReviewInten
   return {
     disposition: body.disposition,
     intentHash: body.intentHash,
+    ...(reason ? { reason } : {}),
+  };
+}
+
+function identityReviewDecisionRequest(body: Record<string, unknown>): IdentityReviewDecisionRequest {
+  const allowedFields = new Set([
+    'disposition',
+    'reviewHash',
+    'version',
+    'targetEntityId',
+    'reason',
+  ]);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'identity_review_decision_field_not_allowed');
+  }
+  if (
+    body.disposition !== IdentityReviewDisposition.EstablishObserved &&
+    body.disposition !== IdentityReviewDisposition.RelinkCandidate
+  ) {
+    throw new HttpError(400, 'invalid_identity_review_disposition');
+  }
+  if (typeof body.reviewHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.reviewHash)) {
+    throw new HttpError(400, 'invalid_identity_review_hash');
+  }
+  if (!Number.isInteger(body.version) || (body.version as number) < 1) {
+    throw new HttpError(400, 'invalid_identity_review_version');
+  }
+  if (
+    body.disposition === IdentityReviewDisposition.RelinkCandidate &&
+    (typeof body.targetEntityId !== 'string' || !body.targetEntityId.trim() || body.targetEntityId.length > 512)
+  ) {
+    throw new HttpError(400, 'invalid_identity_review_target');
+  }
+  if (
+    body.disposition === IdentityReviewDisposition.EstablishObserved &&
+    body.targetEntityId !== undefined
+  ) {
+    throw new HttpError(400, 'identity_review_target_not_allowed');
+  }
+  const reason = optionalDecisionReason(body.reason, 'invalid_identity_review_reason');
+  return {
+    disposition: body.disposition,
+    reviewHash: body.reviewHash,
+    version: body.version as number,
+    ...(typeof body.targetEntityId === 'string'
+      ? { targetEntityId: body.targetEntityId.trim() }
+      : {}),
     ...(reason ? { reason } : {}),
   };
 }

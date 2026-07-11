@@ -72,6 +72,7 @@ export function buildCommandCenterSnapshot(
   const changes = store.listChangeLog({ limit: 10_000 });
   const connectors = store.listConnectorHealth();
   const captureFailures = store.listCaptureFailures();
+  const identityReviews = store.listIdentityReviews();
   const disposedReviewIntentIds = new Set(
     decisions.flatMap((decision) => decision.intentId ? [decision.intentId] : []),
   );
@@ -148,6 +149,7 @@ export function buildCommandCenterSnapshot(
     changes,
     connectors,
     captureFailures,
+    identityReviews,
     reviewIntents,
     costs: [...costs.values()],
     lastChangeSequence: store.getLatestChangeSequence(),
@@ -178,6 +180,7 @@ export function buildCommandCenterSnapshot(
     history,
     connectors,
     captureFailures,
+    identityReviews,
     reviewIntents,
     lastChangeSequence: source.lastChangeSequence,
     nucleus,

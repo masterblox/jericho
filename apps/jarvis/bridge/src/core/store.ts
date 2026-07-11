@@ -17,6 +17,7 @@ import {
   assertEntity,
   assertEventEnvelope,
   assertExternalIdentityLink,
+  assertExternalIdentityReview,
   assertNormalizedCapture,
   assertIntentEnvelope,
   assertMissionPlan,
@@ -31,10 +32,12 @@ import {
   ConnectorHealthStatus,
   DecisionOutcome,
   ExternalIdentityLinkStatus,
+  IdentityReviewDisposition,
   IdentityReviewKind,
   LifecycleStatus,
   ProposalKind,
   ReceiptStatus,
+  RelationType,
   RiskLevel,
   RouteType,
   SourceType,
@@ -54,6 +57,7 @@ import {
   type EventEnvelope,
   type ExternalIdentityLink,
   type ExternalIdentityObservation,
+  type ExternalIdentityReview,
   type ExternalIdentityReviewCandidate,
   type Freshness,
   type IntentEnvelope,
@@ -67,7 +71,6 @@ import {
   type Provenance,
   type ReceiptStatus as ReceiptStatusType,
   type Relation,
-  type RelationType,
   type NormalizedCapture,
   type VersionedCursor,
 } from '@jericho/shared';
@@ -162,6 +165,26 @@ export interface ExternalIdentityListOptions {
   connectorId?: string;
   entityId?: string;
   status?: ExternalIdentityLinkStatus;
+}
+
+export interface IdentityReviewListOptions {
+  status?: LifecycleStatus;
+}
+
+export interface IdentityReviewResolutionInput {
+  failureId: string;
+  reviewHash: string;
+  reviewVersion: number;
+  disposition: IdentityReviewDisposition;
+  targetEntityId?: string;
+  decision: DecisionRecord;
+}
+
+export interface IdentityReviewResolution {
+  review: ExternalIdentityReview;
+  decision: DecisionRecord;
+  link: ExternalIdentityLink;
+  sameAsRelation?: Relation;
 }
 
 export interface ChangeLogListOptions {
@@ -265,6 +288,13 @@ export class CheckpointDecisionConflictError extends Error {
   constructor(id: string, reason: string) {
     super(`Checkpoint ${id} decision ${reason}`);
     this.name = 'CheckpointDecisionConflictError';
+  }
+}
+
+export class IdentityReviewDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Identity review ${id} decision ${reason}`);
+    this.name = 'IdentityReviewDecisionConflictError';
   }
 }
 
@@ -1076,6 +1106,207 @@ export class JerichoStore {
       };
       this.#writeExternalIdentity(established);
       return this.listExternalIdentityLinks().find((item) => item.id === id)!;
+    });
+  }
+
+  listIdentityReviews(options: IdentityReviewListOptions = {}): ExternalIdentityReview[] {
+    const decisions = new Map(
+      this.listDecisions()
+        .filter((decision) => decision.identityReviewFailureId)
+        .map((decision) => [decision.identityReviewFailureId!, decision]),
+    );
+    return this.listCaptureFailures()
+      .filter((failure) => Boolean(failure.reviewCandidate))
+      .map((failure) => this.#projectIdentityReview(
+        failure,
+        decisions.get(failure.id),
+      ))
+      .filter((review) => !options.status || review.status === options.status)
+      .sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt) || left.id.localeCompare(right.id));
+  }
+
+  resolveIdentityReview(input: IdentityReviewResolutionInput): IdentityReviewResolution {
+    assertDecisionRecord(input.decision);
+    if (!/^[a-f0-9]{64}$/.test(input.reviewHash)) {
+      throw new TypeError('Identity review hash must be a lowercase SHA-256 digest');
+    }
+    if (!Number.isInteger(input.reviewVersion) || input.reviewVersion < 1) {
+      throw new TypeError('Identity review version must be a positive integer');
+    }
+    if (
+      input.disposition !== IdentityReviewDisposition.EstablishObserved &&
+      input.disposition !== IdentityReviewDisposition.RelinkCandidate
+    ) {
+      throw new TypeError('Identity review disposition is invalid');
+    }
+
+    return this.#writeTransaction(() => {
+      const failure = this.listCaptureFailures().find((candidate) => candidate.id === input.failureId);
+      const candidate = failure?.reviewCandidate;
+      if (!failure || !candidate) {
+        throw new IdentityReviewDecisionConflictError(input.failureId, 'does not exist');
+      }
+      const reviewHash = this.#identityReviewBindingHash(failure);
+      if (input.reviewVersion !== 1 || input.reviewHash !== reviewHash) {
+        throw new IdentityReviewDecisionConflictError(candidate.id, 'has a stale integrity binding');
+      }
+      if (this.listDecisions().some((decision) =>
+        decision.identityReviewFailureId === failure.id ||
+        decision.identityReviewId === candidate.id)) {
+        throw new IdentityReviewDecisionConflictError(candidate.id, 'is already resolved');
+      }
+      for (const eventId of candidate.evidenceEventIds) {
+        if (!this.getEvent(eventId)) {
+          throw new IdentityReviewDecisionConflictError(candidate.id, 'source evidence is unavailable');
+        }
+      }
+
+      const link = this.#findExternalIdentityLink(
+        candidate.connectorId,
+        candidate.namespace,
+        candidate.externalId,
+      );
+      if (!link || link.entityId !== candidate.observedEntityId) {
+        throw new IdentityReviewDecisionConflictError(candidate.id, 'source identity changed after review');
+      }
+      const observedEntity = this.getEntity(candidate.observedEntityId);
+      if (!observedEntity) {
+        throw new IdentityReviewDecisionConflictError(candidate.id, 'observed entity is unavailable');
+      }
+
+      let selectedEntity = observedEntity;
+      if (input.disposition === IdentityReviewDisposition.RelinkCandidate) {
+        if (link.status !== ExternalIdentityLinkStatus.Provisional) {
+          throw new IdentityReviewDecisionConflictError(
+            candidate.id,
+            'cannot relink an established external identity; only provisional links are eligible',
+          );
+        }
+        if (!input.targetEntityId || !candidate.candidateEntityIds.includes(input.targetEntityId)) {
+          throw new IdentityReviewDecisionConflictError(candidate.id, 'selected entity is not a review candidate');
+        }
+        const target = this.getEntity(input.targetEntityId);
+        if (!target || target.type !== observedEntity.type) {
+          throw new IdentityReviewDecisionConflictError(candidate.id, 'selected entity type is not compatible');
+        }
+        selectedEntity = target;
+      } else if (input.targetEntityId !== undefined) {
+        throw new IdentityReviewDecisionConflictError(
+          candidate.id,
+          'establishing the observed identity cannot select another entity',
+        );
+      }
+
+      const decision = normalizeDecision(input.decision);
+      if (
+        decision.decidedBy !== 'carlos' ||
+        decision.outcome !== DecisionOutcome.Approved ||
+        decision.route !== RouteType.HumanApproval ||
+        decision.risk !== candidate.risk ||
+        decision.identityReviewId !== candidate.id ||
+        decision.identityReviewFailureId !== failure.id ||
+        decision.identityReviewHash !== reviewHash ||
+        decision.identityReviewVersion !== 1 ||
+        decision.identityDisposition !== input.disposition ||
+        decision.identitySelectedEntityId !== selectedEntity.id ||
+        !sameStrings(decision.evidenceEventIds, candidate.evidenceEventIds) ||
+        timestampEpoch(decision.decidedAt) < timestampEpoch(candidate.createdAt) ||
+        !decision.provenance.some((item) =>
+          item.source === 'local:command-center' &&
+          item.sourceType === SourceType.User &&
+          item.sourceEventId === decision.id)
+      ) {
+        throw new IdentityReviewDecisionConflictError(candidate.id, 'binding does not match the exact review');
+      }
+
+      const established: ExternalIdentityLink = {
+        ...link,
+        entityId: selectedEntity.id,
+        status: ExternalIdentityLinkStatus.Established,
+      };
+      this.#writeExternalIdentity(established);
+
+      let sameAsRelation: Relation | undefined;
+      if (selectedEntity.id !== observedEntity.id) {
+        const current = this.listRelations({
+          fromEntityId: observedEntity.id,
+          toEntityId: selectedEntity.id,
+          type: RelationType.SameAs,
+        })[0];
+        const decidedAt = decision.decidedAt;
+        const relation: Relation = current ? {
+          ...current,
+          attributes: {
+            ...current.attributes,
+            verified: true,
+            identityReviewId: candidate.id,
+            decisionId: decision.id,
+          },
+          status: LifecycleStatus.Active,
+          risk: RiskLevel.Low,
+          confidence: 1,
+          freshness: { observedAt: laterTimestamp(current.freshness.observedAt, decidedAt) },
+          provenance: mergeProvenance(current.provenance, [
+            ...candidate.provenance,
+            ...decision.provenance,
+          ]),
+          updatedAt: laterTimestamp(current.updatedAt, decidedAt),
+        } : {
+          id: `identity-same-as-${reviewHash.slice(0, 32)}`,
+          fromEntityId: observedEntity.id,
+          toEntityId: selectedEntity.id,
+          type: RelationType.SameAs,
+          attributes: {
+            verified: true,
+            identityReviewId: candidate.id,
+            decisionId: decision.id,
+          },
+          status: LifecycleStatus.Active,
+          risk: RiskLevel.Low,
+          confidence: 1,
+          freshness: { observedAt: decidedAt },
+          provenance: mergeProvenance(candidate.provenance, decision.provenance),
+          createdAt: decidedAt,
+          updatedAt: decidedAt,
+        };
+        this.#writeRelationRecord(relation, Boolean(current));
+        sameAsRelation = this.listRelations({
+          fromEntityId: observedEntity.id,
+          toEntityId: selectedEntity.id,
+          type: RelationType.SameAs,
+        })[0];
+      }
+
+      const storedDecision = this.#insertDecision(decision);
+      this.#appendChangeLog({
+        kind: ChangeLogKind.IdentityResolved,
+        connectorId: candidate.connectorId,
+        recordType: 'external_identity',
+        recordId: established.id,
+        eventId: candidate.evidenceEventIds[0],
+        changedAt: storedDecision.decidedAt,
+        payload: {
+          reviewId: candidate.id,
+          decisionId: storedDecision.id,
+          disposition: input.disposition,
+          observedEntityId: observedEntity.id,
+          targetEntityId: selectedEntity.id,
+          ...(sameAsRelation ? { relationId: sameAsRelation.id } : {}),
+        },
+      });
+      const review = this.listIdentityReviews().find((item) => item.failureId === failure.id);
+      if (!review) throw new Error(`Resolved identity review ${candidate.id} is not projectable`);
+      return {
+        review,
+        decision: storedDecision,
+        link: this.#findExternalIdentityLink(
+          candidate.connectorId,
+          candidate.namespace,
+          candidate.externalId,
+        )!,
+        ...(sameAsRelation ? { sameAsRelation } : {}),
+      };
     });
   }
 
@@ -1922,6 +2153,9 @@ export class JerichoStore {
 
   appendDecision(decision: DecisionRecord): DecisionRecord {
     assertDecisionRecord(decision);
+    if (decision.identityReviewId) {
+      throw new Error('Identity review decisions require atomic identity resolution');
+    }
     return this.#writeTransaction(() => this.#insertDecision(normalizeDecision(decision)));
   }
 
@@ -2953,6 +3187,112 @@ export class JerichoStore {
       reviewCandidate,
     };
     return { link, reviewCandidate, failure };
+  }
+
+  #findExternalIdentityLink(
+    connectorId: string,
+    namespace: string,
+    externalId: string,
+  ): ExternalIdentityLink | undefined {
+    const row = this.#database.prepare(`
+      SELECT * FROM external_identities
+      WHERE connector_id = ? AND namespace = ? AND external_id = ?
+    `).get(
+      connectorId,
+      namespace,
+      this.#externalIdentityLookupToken(connectorId, namespace, externalId),
+    );
+    return row ? this.#readRecord<ExternalIdentityLink>(
+      'external_identities',
+      String(row.id),
+      row,
+      (value) => assertExternalIdentityLink(value),
+      (value) => value.id,
+    ) : undefined;
+  }
+
+  #identityReviewBindingHash(failure: CaptureFailure): string {
+    if (!failure.reviewCandidate) {
+      throw new Error(`Capture failure ${failure.id} is not an identity review`);
+    }
+    const { integrityHash: _integrityHash, ...immutableFailure } = failure;
+    const binding = {
+      domain: 'jericho.external-identity-review',
+      version: 1,
+      failure: immutableFailure,
+    };
+    return this.#integrityHashFor(binding);
+  }
+
+  #projectIdentityReview(
+    failure: CaptureFailure,
+    decision?: DecisionRecord,
+  ): ExternalIdentityReview {
+    const candidate = failure.reviewCandidate;
+    if (!candidate) throw new Error(`Capture failure ${failure.id} is not an identity review`);
+    const link = this.#findExternalIdentityLink(
+      candidate.connectorId,
+      candidate.namespace,
+      candidate.externalId,
+    );
+    if (!link) throw new Error(`Identity review ${candidate.id} has no source identity`);
+    const observed = this.getEntity(candidate.observedEntityId);
+    if (!observed) throw new Error(`Identity review ${candidate.id} has no observed entity`);
+    const reviewHash = this.#identityReviewBindingHash(failure);
+    if (decision && (
+      decision.identityReviewId !== candidate.id ||
+      decision.identityReviewFailureId !== failure.id ||
+      decision.identityReviewHash !== reviewHash ||
+      decision.identityReviewVersion !== 1 ||
+      decision.decidedBy !== 'carlos' ||
+      decision.outcome !== DecisionOutcome.Approved
+    )) {
+      throw new Error(`Identity review ${candidate.id} has an invalid stored decision binding`);
+    }
+    const review: ExternalIdentityReview = {
+      id: candidate.id,
+      failureId: failure.id,
+      linkId: link.id,
+      version: 1,
+      reviewHash,
+      kind: candidate.kind,
+      connectorId: candidate.connectorId,
+      namespace: candidate.namespace,
+      observedEntity: {
+        id: observed.id,
+        type: observed.type,
+        label: observed.canonicalName,
+        available: true,
+        compatible: true,
+      },
+      candidateEntities: uniqueStrings(candidate.candidateEntityIds).map((id) => {
+        const entity = this.getEntity(id);
+        return {
+          id,
+          ...(entity ? { type: entity.type } : {}),
+          label: entity?.canonicalName ?? 'Unavailable candidate',
+          available: Boolean(entity),
+          compatible: entity?.type === observed.type,
+        };
+      }),
+      reason: candidate.reason,
+      status: decision ? LifecycleStatus.Approved : candidate.status,
+      route: candidate.route,
+      risk: candidate.risk,
+      evidenceEventIds: [...candidate.evidenceEventIds],
+      evidence: candidate.evidenceEventIds.map((eventId) => {
+        const event = this.getEvent(eventId);
+        return {
+          eventId,
+          ...(event?.integrityHash ? { integrityHash: event.integrityHash } : {}),
+        };
+      }),
+      createdAt: candidate.createdAt,
+      provenance: candidate.provenance.map((item) => ({ ...item })),
+      ...(decision ? { decision } : {}),
+    };
+    assertExternalIdentityReview(review);
+    return review;
   }
 
   #externalIdentityLookupToken(

@@ -224,6 +224,11 @@ export enum IdentityReviewKind {
   Collision = 'collision',
 }
 
+export enum IdentityReviewDisposition {
+  EstablishObserved = 'establish_observed',
+  RelinkCandidate = 'relink_candidate',
+}
+
 export enum CaptureFailureKind {
   InvalidPayload = 'invalid_payload',
   IdentityConflict = 'identity_conflict',
@@ -239,6 +244,7 @@ export enum ChangeLogKind {
   IdentityObserved = 'identity_observed',
   RelationObserved = 'relation_observed',
   IdentityReview = 'identity_review',
+  IdentityResolved = 'identity_resolved',
   CaptureFailed = 'capture_failed',
   CursorAdvanced = 'cursor_advanced',
   ProposalCreated = 'proposal_created',
@@ -416,6 +422,37 @@ export interface ExternalIdentityReviewCandidate {
   evidenceEventIds: string[];
   createdAt: IsoTimestamp;
   provenance: Provenance[];
+}
+
+export interface ExternalIdentityReviewEntity {
+  id: string;
+  type?: EntityType;
+  label: string;
+  available: boolean;
+  compatible: boolean;
+}
+
+/** Authenticated, privacy-minimized review surface derived from an immutable capture failure. */
+export interface ExternalIdentityReview {
+  id: string;
+  failureId: string;
+  linkId: string;
+  version: number;
+  reviewHash: string;
+  kind: IdentityReviewKind;
+  connectorId: string;
+  namespace: string;
+  observedEntity: ExternalIdentityReviewEntity;
+  candidateEntities: ExternalIdentityReviewEntity[];
+  reason: string;
+  status: LifecycleStatus;
+  route: RouteType;
+  risk: RiskLevel;
+  evidenceEventIds: string[];
+  evidence: EvidenceReference[];
+  createdAt: IsoTimestamp;
+  provenance: Provenance[];
+  decision?: DecisionRecord;
 }
 
 export interface CaptureFailure {
@@ -859,6 +896,13 @@ export interface DecisionRecord {
   planVersion?: number;
   /** Integrity binding for a human disposition of an immutable classifier intent. */
   intentHash?: string;
+  /** Exact binding for an atomic external-identity review disposition. */
+  identityReviewId?: string;
+  identityReviewFailureId?: string;
+  identityReviewHash?: string;
+  identityReviewVersion?: number;
+  identityDisposition?: IdentityReviewDisposition;
+  identitySelectedEntityId?: string;
   rationale: string;
   assumptions: string[];
   evidenceEventIds: string[];
@@ -1090,6 +1134,8 @@ export interface CommandCenterSnapshot {
   captureFailures: CaptureFailure[];
   /** Persisted intents that safety routing held for explicit human review. */
   reviewIntents?: IntentEnvelope[];
+  /** Persisted, source-backed external identity conflicts awaiting Carlos. */
+  identityReviews?: ExternalIdentityReview[];
   lastChangeSequence: number;
   nucleus: CommandCenterNucleus;
 }
@@ -1136,6 +1182,22 @@ export interface CheckpointDecisionResponse {
   mission: CommandCenterMission;
   resumed: boolean;
   requiresNewPlan: boolean;
+  snapshot: CommandCenterSnapshot;
+}
+
+export interface IdentityReviewDecisionRequest {
+  disposition: IdentityReviewDisposition;
+  reviewHash: string;
+  version: number;
+  targetEntityId?: string;
+  reason?: string;
+}
+
+export interface IdentityReviewDecisionResponse {
+  review: ExternalIdentityReview;
+  decision: DecisionRecord;
+  link: ExternalIdentityLink;
+  sameAsRelation?: Relation;
   snapshot: CommandCenterSnapshot;
 }
 
@@ -1313,6 +1375,31 @@ export function assertExternalIdentityReviewCandidate(
   assertTimestamp(value.createdAt, 'External identity review candidate createdAt');
   assertProvenanceList(value.provenance, 'External identity review candidate provenance');
   assertJsonOnly(value, 'External identity review candidate');
+}
+
+export function assertExternalIdentityReview(value: unknown): asserts value is ExternalIdentityReview {
+  assertRecord(value, 'External identity review');
+  for (const field of ['id', 'failureId', 'linkId', 'reviewHash', 'connectorId', 'namespace', 'reason']) {
+    assertNonEmptyString(value[field], `External identity review ${field}`);
+  }
+  assertPositiveInteger(value.version, 'External identity review version');
+  assertDigest(value.reviewHash, 'External identity review reviewHash');
+  assertEnum(value.kind, IdentityReviewKind, 'External identity review kind');
+  assertIdentityReviewEntity(value.observedEntity, 'External identity review observedEntity');
+  if (!Array.isArray(value.candidateEntities)) {
+    throw new TypeError('External identity review candidateEntities must be an array');
+  }
+  value.candidateEntities.forEach((candidate, index) =>
+    assertIdentityReviewEntity(candidate, `External identity review candidateEntities[${index}]`));
+  assertEnum(value.status, LifecycleStatus, 'External identity review status');
+  assertEnum(value.route, RouteType, 'External identity review route');
+  assertEnum(value.risk, RiskLevel, 'External identity review risk');
+  assertDenseStringArray(value.evidenceEventIds, 'External identity review evidenceEventIds');
+  assertEvidenceList(value.evidence, 'External identity review evidence');
+  assertTimestamp(value.createdAt, 'External identity review createdAt');
+  assertProvenanceList(value.provenance, 'External identity review provenance');
+  if ('decision' in value) assertDecisionRecord(value.decision);
+  assertJsonOnly(value, 'External identity review');
 }
 
 export function assertCaptureFailure(value: unknown): asserts value is CaptureFailure {
@@ -1672,6 +1759,26 @@ export function assertDecisionRecord(value: unknown): asserts value is DecisionR
   if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
   if ('planVersion' in value) assertPositiveInteger(value.planVersion, 'Decision planVersion');
   if ('intentHash' in value) assertDigest(value.intentHash, 'Decision intentHash');
+  const identityFields = [
+    'identityReviewId',
+    'identityReviewFailureId',
+    'identityReviewHash',
+    'identityReviewVersion',
+    'identityDisposition',
+    'identitySelectedEntityId',
+  ] as const;
+  const identityFieldCount = identityFields.filter((field) => field in value).length;
+  if (identityFieldCount !== 0 && identityFieldCount !== identityFields.length) {
+    throw new TypeError('Decision identity review binding must be complete');
+  }
+  if (identityFieldCount > 0) {
+    assertNonEmptyString(value.identityReviewId, 'Decision identityReviewId');
+    assertNonEmptyString(value.identityReviewFailureId, 'Decision identityReviewFailureId');
+    assertDigest(value.identityReviewHash, 'Decision identityReviewHash');
+    assertPositiveInteger(value.identityReviewVersion, 'Decision identityReviewVersion');
+    assertEnum(value.identityDisposition, IdentityReviewDisposition, 'Decision identityDisposition');
+    assertNonEmptyString(value.identitySelectedEntityId, 'Decision identitySelectedEntityId');
+  }
   assertEnum(value.outcome, DecisionOutcome, 'Decision outcome');
   assertDenseStringArray(value.assumptions, 'Decision assumptions');
   assertDenseStringArray(value.evidenceEventIds, 'Decision evidenceEventIds');
@@ -1863,6 +1970,15 @@ function assertExternalAction(value: unknown, field: string): void {
     if (key in value) assertNonEmptyString(value[key], `${field}.${key}`);
   }
   assertEnum(value.mutationClass, MutationClass, `${field}.mutationClass`);
+}
+
+function assertIdentityReviewEntity(value: unknown, field: string): void {
+  assertRecord(value, field);
+  assertNonEmptyString(value.id, `${field}.id`);
+  if ('type' in value) assertEnum(value.type, EntityType, `${field}.type`);
+  assertNonEmptyString(value.label, `${field}.label`);
+  if (typeof value.available !== 'boolean') throw new TypeError(`${field}.available must be boolean`);
+  if (typeof value.compatible !== 'boolean') throw new TypeError(`${field}.compatible must be boolean`);
 }
 
 function assertEvidenceList(value: unknown, field: string): void {
