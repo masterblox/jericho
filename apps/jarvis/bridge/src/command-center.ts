@@ -25,6 +25,7 @@ import {
   type CommandCenterSnapshot,
   type CommandCenterTimelineEntry,
   type ChangeLog,
+  type CaptureFailure,
   type Entity,
   type EventEnvelope,
   type IntentEnvelope,
@@ -71,7 +72,7 @@ export function buildCommandCenterSnapshot(
   const intents = store.listIntents();
   const changes = store.listChangeLog({ limit: 10_000 });
   const connectors = store.listConnectorHealth();
-  const captureFailures = store.listCaptureFailures();
+  const captureFailures = store.listCaptureFailures().map(redactIdentityReviewCandidate);
   const identityReviews = store.listIdentityReviews();
   const disposedReviewIntentIds = new Set(
     decisions.flatMap((decision) => decision.intentId ? [decision.intentId] : []),
@@ -185,6 +186,12 @@ export function buildCommandCenterSnapshot(
     lastChangeSequence: source.lastChangeSequence,
     nucleus,
   };
+}
+
+function redactIdentityReviewCandidate(failure: CaptureFailure): CaptureFailure {
+  if (!failure.reviewCandidate) return failure;
+  const { reviewCandidate: _privateReviewCandidate, ...safeFailure } = failure;
+  return safeFailure;
 }
 
 function rankCards(
@@ -557,6 +564,13 @@ function buildHistory(
   }
   for (const decision of decisions) {
     const mission = decision.missionId ? missionById.get(decision.missionId) : undefined;
+    const decisionSubject = decision.proposalId
+      ? 'Proposal'
+      : decision.identityReviewId
+        ? 'Identity review'
+        : decision.intentId
+          ? 'Intent review'
+          : 'Mission';
     const planDecision = Boolean(
       mission && !decision.proposalId &&
       (decision.outcome === DecisionOutcome.Approved || decision.outcome === DecisionOutcome.Rejected) &&
@@ -566,7 +580,7 @@ function buildHistory(
       id: `decision:${decision.id}`,
       kind: planDecision ? CommandCenterTimelineKind.Approve : CommandCenterTimelineKind.Decision,
       occurredAt: decision.decidedAt,
-      title: `Mission ${decision.outcome}`,
+      title: `${decisionSubject} ${decision.outcome}`,
       recordType: 'decision',
       recordId: decision.id,
       ...(decision.missionId ? { missionId: decision.missionId } : {}),

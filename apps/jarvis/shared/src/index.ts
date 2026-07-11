@@ -841,6 +841,8 @@ export interface Assignment {
 
 export interface Proposal {
   id: string;
+  /** New proposals are version 1; optional only while reading pre-versioning local records. */
+  version?: number;
   assignmentId?: string;
   missionTaskId?: string;
   proposedByAgentId: string;
@@ -896,6 +898,9 @@ export interface DecisionRecord {
   planVersion?: number;
   /** Integrity binding for a human disposition of an immutable classifier intent. */
   intentHash?: string;
+  /** Exact binding for a generic proposal decision. Checkpoints remain plan-bound. */
+  proposalHash?: string;
+  proposalVersion?: number;
   /** Exact binding for an atomic external-identity review disposition. */
   identityReviewId?: string;
   identityReviewFailureId?: string;
@@ -1182,6 +1187,21 @@ export interface CheckpointDecisionResponse {
   mission: CommandCenterMission;
   resumed: boolean;
   requiresNewPlan: boolean;
+  snapshot: CommandCenterSnapshot;
+}
+
+export interface ProposalDecisionRequest {
+  outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected;
+  proposalHash: string;
+  version: number;
+  reason?: string;
+}
+
+export interface ProposalDecisionResponse {
+  decision: DecisionRecord;
+  proposal: Proposal;
+  /** Present only for the explicitly typed, source-backed create_relation effect. */
+  relation?: Relation;
   snapshot: CommandCenterSnapshot;
 }
 
@@ -1721,6 +1741,7 @@ export function assertProposal(value: unknown): asserts value is Proposal {
   for (const field of ['assignmentId', 'missionTaskId']) if (field in value) assertNonEmptyString(value[field], `Proposal ${field}`);
   assertEnum(value.kind, ProposalKind, 'Proposal kind');
   assertJsonObject(value.body, 'Proposal body');
+  if ('version' in value) assertPositiveInteger(value.version, 'Proposal version');
   assertEnum(value.status, LifecycleStatus, 'Proposal status');
   assertEnum(value.route, RouteType, 'Proposal route');
   assertEnum(value.risk, RiskLevel, 'Proposal risk');
@@ -1759,6 +1780,15 @@ export function assertDecisionRecord(value: unknown): asserts value is DecisionR
   if ('planHash' in value) assertDigest(value.planHash, 'Decision planHash');
   if ('planVersion' in value) assertPositiveInteger(value.planVersion, 'Decision planVersion');
   if ('intentHash' in value) assertDigest(value.intentHash, 'Decision intentHash');
+  const proposalBindingFields = ['proposalHash', 'proposalVersion'] as const;
+  const proposalBindingCount = proposalBindingFields.filter((field) => field in value).length;
+  if (proposalBindingCount !== 0 && proposalBindingCount !== proposalBindingFields.length) {
+    throw new TypeError('Decision proposal binding must be complete');
+  }
+  if (proposalBindingCount > 0) {
+    assertDigest(value.proposalHash, 'Decision proposalHash');
+    assertPositiveInteger(value.proposalVersion, 'Decision proposalVersion');
+  }
   const identityFields = [
     'identityReviewId',
     'identityReviewFailureId',

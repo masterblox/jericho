@@ -96,6 +96,7 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
           const createdAt = clock();
           const proposal = options.store.saveProposal({
             id: idFactory(),
+            version: 1,
             proposedByAgentId: 'jericho',
             kind: ProposalKind.Message,
             summary: `Email draft: ${topic}`,

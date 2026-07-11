@@ -6,6 +6,8 @@ import type {
   IdentityReviewDecisionResponse,
   MissionDecisionRequest,
   MissionDecisionResponse,
+  ProposalDecisionRequest,
+  ProposalDecisionResponse,
   RelationType,
   ReviewIntentDecisionRequest,
   ReviewIntentDecisionResponse,
@@ -52,6 +54,10 @@ export interface CheckpointDecisionInput extends CheckpointDecisionRequest {
 
 export interface IdentityReviewDecisionInput extends IdentityReviewDecisionRequest {
   failureId: string;
+}
+
+export interface ProposalDecisionInput extends ProposalDecisionRequest {
+  proposalId: string;
 }
 
 export interface RetentionResult {
@@ -168,6 +174,15 @@ export class CoreClient {
       request,
       'Identity review decision failed',
     ) as Promise<IdentityReviewDecisionResponse>;
+  }
+
+  decideProposal(input: ProposalDecisionInput): Promise<ProposalDecisionResponse> {
+    const { proposalId, ...request } = input;
+    return this.#postWithSnapshot(
+      `/api/v1/proposals/${encodeURIComponent(proposalId)}/decisions`,
+      request,
+      'Proposal decision failed',
+    ) as Promise<ProposalDecisionResponse>;
   }
 
   async retainMission(missionId: string): Promise<RetentionResult> {

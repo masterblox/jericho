@@ -534,6 +534,77 @@ describe('CommandCenterApp', () => {
     }));
   });
 
+  it('renders exact generic proposal decisions while keeping drafts and reflection status-only', async () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    const base = {
+      version: 1,
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      risk: RiskLevel.Low,
+      createdAt: snapshot.generatedAt,
+      provenance: [{
+        source: 'test', sourceType: SourceType.Agent, observedAt: snapshot.generatedAt,
+      }],
+    } as const;
+    snapshot.proposals.push(
+      {
+        ...base,
+        id: 'proposal-message', proposedByAgentId: 'jericho',
+        kind: ProposalKind.Message, summary: 'Draft reply to Paula',
+        body: { to: 'Paula', draft: 'Hello' }, integrityHash: 'e'.repeat(64),
+      },
+      {
+        ...base,
+        id: 'proposal-reflection', proposedByAgentId: 'jericho-reflection-v1',
+        kind: ProposalKind.DataChange, summary: 'Review contradictory decisions',
+        body: { kind: 'decision_conflict', autoResolution: false }, integrityHash: 'f'.repeat(64),
+      },
+      {
+        ...base,
+        id: 'proposal-relation', proposedByAgentId: 'carlos',
+        kind: ProposalKind.DataChange, summary: 'Relate Paula to Acme',
+        body: { effect: 'create_relation', verified: false }, integrityHash: 'd'.repeat(64),
+      },
+      {
+        ...base,
+        id: 'proposal-decided', proposedByAgentId: 'jericho',
+        kind: ProposalKind.Action, summary: 'Already reviewed', body: {},
+        status: LifecycleStatus.Approved, integrityHash: 'c'.repeat(64),
+      },
+    );
+    store.replace(snapshot);
+    const decideProposal = vi.fn().mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), decideProposal }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByRole('button', { name: 'Approve draft' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Accept reviewed suggestion' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Apply verified relation' })).toBeTruthy();
+    expect(screen.getAllByText(/V1 · [c-f]{64}/)).toHaveLength(4);
+    expect(screen.getByText('Already reviewed').closest('article')?.querySelector('button')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve draft' }));
+    await waitFor(() => expect(decideProposal).toHaveBeenCalledWith({
+      proposalId: 'proposal-message', proposalHash: 'e'.repeat(64), version: 1,
+      outcome: DecisionOutcome.Approved,
+      reason: 'Approved draft status only; external execution still requires an exact bounded mission plan',
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Accept reviewed suggestion' }));
+    await waitFor(() => expect(decideProposal).toHaveBeenCalledWith({
+      proposalId: 'proposal-reflection', proposalHash: 'f'.repeat(64), version: 1,
+      outcome: DecisionOutcome.Approved,
+      reason: 'Accepted reflection suggestion as reviewed status only; no memory or graph mutation',
+    }));
+    expect(JSON.stringify(decideProposal.mock.calls)).not.toMatch(/send_message|deploy|queue|execute/i);
+  });
+
   it('renders honest loading, unavailable, disconnected, and empty states without fabricated fallback data', () => {
     const store = new CommandCenterStore();
     const client = { start: vi.fn(), stop: vi.fn(), decideMission: vi.fn() };

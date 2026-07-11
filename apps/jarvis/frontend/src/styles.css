@@ -848,6 +848,17 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
+.jericho-proposal-row code {
+  overflow-wrap: anywhere;
+  color: var(--jericho-cyan);
+  font-size: 7px;
+  line-height: 1.45;
+}
+
+.jericho-proposal-row .jericho-action-row {
+  display: grid;
+}
+
 .jericho-review-card,
 .jericho-checkpoint-card {
   display: grid;

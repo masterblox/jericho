@@ -30,6 +30,8 @@ import {
   type MissionDecisionResponse,
   type MissionPlan,
   type Proposal,
+  type ProposalDecisionRequest,
+  type ProposalDecisionResponse,
   type ReviewIntentDecisionRequest,
   type ReviewIntentDecisionResponse,
 } from '@jericho/shared';
@@ -42,6 +44,7 @@ import {
   IdentityReviewDecisionConflictError,
   JerichoStore,
   MissionDecisionConflictError,
+  ProposalDecisionConflictError,
   ReviewIntentDecisionConflictError,
 } from './core/store.js';
 import {
@@ -361,21 +364,36 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const from = snapshot.nucleus.nodes.find((node) => node.id === input.fromNodeId);
       const to = snapshot.nucleus.nodes.find((node) => node.id === input.toNodeId);
       if (!from || !to) throw new HttpError(404, 'nucleus_node_not_found');
+      if (
+        !from.verified || !to.verified ||
+        from.recordType !== 'entity' || to.recordType !== 'entity' ||
+        !from.recordId || !to.recordId
+      ) {
+        throw new HttpError(409, 'relationship_requires_verified_entity_nodes');
+      }
+      const evidenceEventIds = [...new Set([
+        ...from.evidenceEventIds,
+        ...to.evidenceEventIds,
+      ])];
+      if (!evidenceEventIds.length) {
+        throw new HttpError(409, 'relationship_requires_source_evidence');
+      }
       const createdAt = now();
       const digest = createHash('sha256').update(JSON.stringify(input)).digest('hex').slice(0, 32);
       const proposal: Proposal = {
         id: `relationship-${digest}`,
+        version: 1,
         proposedByAgentId: 'carlos',
         kind: ProposalKind.DataChange,
         summary: `Relate ${from.label} to ${to.label} as ${input.relation}`,
         body: {
+          effect: 'create_relation',
           fromNodeId: input.fromNodeId,
           toNodeId: input.toNodeId,
+          fromEntityId: from.recordId,
+          toEntityId: to.recordId,
           relation: input.relation,
-          evidenceEventIds: [...new Set([
-            ...from.evidenceEventIds,
-            ...to.evidenceEventIds,
-          ])],
+          evidenceEventIds,
           verified: false,
         },
         status: LifecycleStatus.PendingApproval,
@@ -460,6 +478,51 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const result: IdentityReviewDecisionResponse = {
         ...resolved,
         snapshot,
+      };
+      sendJson(response, 200, result);
+      return;
+    }
+    const proposalDecisionMatch = url.pathname.match(/^\/api\/v1\/proposals\/([^/]+)\/decisions$/);
+    if (request.method === 'POST' && proposalDecisionMatch) {
+      const proposalId = decodedPathSegment(proposalDecisionMatch[1], 'invalid_proposal_id');
+      const proposal = options.store.getProposal(proposalId);
+      if (!proposal) throw new HttpError(404, 'proposal_not_found');
+      const input = proposalDecisionRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      const decisionId = validDecisionId(decisionIdFactory());
+      const relationshipEffect = proposal.body.effect === 'create_relation';
+      const resolved = options.store.resolveProposal({
+        proposalId,
+        proposalHash: input.proposalHash,
+        proposalVersion: input.version,
+        decision: {
+          id: decisionId,
+          proposalId,
+          proposalHash: input.proposalHash,
+          proposalVersion: input.version,
+          decidedBy: 'carlos',
+          outcome: input.outcome,
+          rationale: input.reason ?? (input.outcome === DecisionOutcome.Approved
+            ? relationshipEffect
+              ? 'Approved the exact source-backed Nucleus relationship'
+              : 'Reviewed and approved this draft; no external execution is authorized'
+            : 'Reviewed and rejected this proposal'),
+          assumptions: [],
+          evidenceEventIds: proposalEvidenceEventIds(proposal),
+          route: RouteType.HumanApproval,
+          risk: proposal.risk,
+          decidedAt,
+          provenance: [{
+            source: 'local:command-center',
+            sourceType: SourceType.User,
+            sourceEventId: decisionId,
+            observedAt: decidedAt,
+          }],
+        },
+      });
+      const result: ProposalDecisionResponse = {
+        ...resolved,
+        snapshot: buildCommandCenterSnapshot(options.store, now()),
       };
       sendJson(response, 200, result);
       return;
@@ -1290,6 +1353,9 @@ function httpFailure(error: unknown): { status: number; code: string } {
   if (error instanceof CheckpointDecisionConflictError) {
     return { status: 409, code: 'checkpoint_decision_conflict' };
   }
+  if (error instanceof ProposalDecisionConflictError) {
+    return { status: 409, code: 'proposal_decision_conflict' };
+  }
   if (error instanceof IdentityReviewDecisionConflictError) {
     return { status: 409, code: 'identity_review_decision_conflict' };
   }
@@ -1343,6 +1409,29 @@ function missionDecisionRequest(body: Record<string, unknown>): MissionDecisionR
     planHash: body.planHash,
     version: body.version as number,
     ...(typeof body.reason === 'string' ? { reason: body.reason.trim() } : {}),
+  };
+}
+
+function proposalDecisionRequest(body: Record<string, unknown>): ProposalDecisionRequest {
+  const allowedFields = new Set(['outcome', 'proposalHash', 'version', 'reason']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'proposal_decision_field_not_allowed');
+  }
+  if (body.outcome !== DecisionOutcome.Approved && body.outcome !== DecisionOutcome.Rejected) {
+    throw new HttpError(400, 'invalid_proposal_decision_outcome');
+  }
+  if (typeof body.proposalHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.proposalHash)) {
+    throw new HttpError(400, 'invalid_proposal_hash');
+  }
+  if (!Number.isInteger(body.version) || (body.version as number) < 1) {
+    throw new HttpError(400, 'invalid_proposal_version');
+  }
+  const reason = optionalDecisionReason(body.reason, 'invalid_proposal_decision_reason');
+  return {
+    outcome: body.outcome,
+    proposalHash: body.proposalHash,
+    version: body.version as number,
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -1501,6 +1590,12 @@ function relationshipProposalRequest(body: Record<string, unknown>): {
     toNodeId: (body.toNodeId as string).trim(),
     relation: body.relation as RelationType,
   };
+}
+
+function proposalEvidenceEventIds(proposal: Proposal): string[] {
+  if (!Array.isArray(proposal.body.evidenceEventIds)) return [];
+  return [...new Set(proposal.body.evidenceEventIds.flatMap((value) =>
+    typeof value === 'string' && value.trim() ? [value] : []))];
 }
 
 function localCaptureEvent(body: Record<string, unknown>): EventEnvelope {

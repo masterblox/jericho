@@ -8,7 +8,10 @@ import { join } from 'node:path';
 import {
   ConnectorCapability,
   ConnectorHealthStatus,
+  EntityType,
+  LifecycleStatus,
   MutationClass,
+  RiskLevel,
   SourceType,
   type EventEnvelope,
   type NormalizedCapture,
@@ -533,8 +536,27 @@ describe('authenticated local Core HTTP/SSE server', () => {
       }),
     });
     const planned = (await capture.json() as any).processing.mission;
+    for (const [id, eventId, name] of [
+      ['relation-person', 'local-event-701', 'Paula'],
+      ['relation-company', 'local-event-702', 'Acme'],
+    ] as const) {
+      runtime.store.appendEvent(localEvent(Number(eventId.split('-').at(-1))));
+      runtime.store.upsertEntity({
+        id,
+        type: id === 'relation-person' ? EntityType.Person : EntityType.Organization,
+        canonicalName: name,
+        aliases: [], attributes: {}, status: LifecycleStatus.Active, risk: RiskLevel.Low,
+        freshness: { observedAt: T0 },
+        provenance: [{
+          source: 'local:manual', sourceType: SourceType.User,
+          sourceEventId: eventId, observedAt: T0,
+        }],
+        createdAt: T0, updatedAt: T0,
+      });
+    }
     const before = await apiJson(runtime.url, '/api/v1/command-center');
-    const [from, to] = before.nucleus.nodes;
+    const from = before.nucleus.nodes.find((node: any) => node.id === 'entity:relation-person');
+    const to = before.nucleus.nodes.find((node: any) => node.id === 'entity:relation-company');
     expect(from).toBeTruthy();
     expect(to).toBeTruthy();
 

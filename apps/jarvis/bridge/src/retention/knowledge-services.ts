@@ -172,6 +172,7 @@ export class ReflectionReviewService {
     if (existing) return existing;
     return this.store.saveProposal({
       id: suggestion.id,
+      version: 1,
       proposedByAgentId: 'jericho-reflection-v1',
       kind: ProposalKind.DataChange,
       summary: suggestion.summary,

@@ -135,7 +135,12 @@ merge memory, or approve a preference.
 The command center projects Today, ranked communications and people, active context, approvals, assignments, outcomes, connector health, and replayable history. The left bay owns Today, communications, people, tasks, and commitments; the center owns mission context, pipeline, Nucleus, retention, and replay; the right bay owns Review, proposals/checkpoints, approvals, runs, outcomes, and receipts. Narrow screens expose Today, Communications, Nucleus, and Approvals as explicit tabs.
 
 Nucleus combines semantic, activity, and mission graphs. Typed-port drags create
-pending relationship proposals, never direct graph mutation. Timeline entries
+pending relationship proposals, never direct graph mutation. Approval is bound
+to the proposal's sealed hash and version and creates only the exact typed,
+source-backed entity relation; rejection creates no edge. Relation deletion is
+not exposed because Core has no verified tombstone contract yet. Message,
+Action, and reflection proposal approvals are reviewed-status changes only and
+cannot send, queue, execute, or silently rewrite memory. Timeline entries
 link the persisted capture, intent/route, plan, decision, assignment, receipt,
 and retention records that exist for a mission; absent stages stay absent. A
 visible node or animation must trace to persisted evidence; storage integrity

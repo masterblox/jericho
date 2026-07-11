@@ -268,6 +268,14 @@ describe('source-backed external identity review', () => {
     const origin = `http://127.0.0.1:${address.port}`;
 
     expect((await fetch(`${origin}/api/v1/identity-reviews`)).status).toBe(401);
+    const commandCenterResponse = await authenticatedFetch(origin, '/api/v1/command-center');
+    expect(commandCenterResponse.status).toBe(200);
+    const commandCenterText = await commandCenterResponse.text();
+    expect(commandCenterText).not.toContain('raw-private-telegram-id');
+    expect(JSON.parse(commandCenterText)).toMatchObject({
+      identityReviews: [expect.objectContaining({ status: LifecycleStatus.PendingApproval })],
+      captureFailures: [expect.not.objectContaining({ reviewCandidate: expect.anything() })],
+    });
     const listedResponse = await authenticatedFetch(origin, '/api/v1/identity-reviews');
     expect(listedResponse.status).toBe(200);
     const listedText = await listedResponse.text();

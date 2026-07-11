@@ -163,6 +163,39 @@ describe('CoreClient', () => {
     expect(JSON.stringify(fetchPort.mock.calls)).not.toMatch(/send_message|deploy|connector.*execute/i);
   });
 
+  it('posts an exact generic proposal binding and only consumes the returned snapshot', async () => {
+    const next = snapshot({ lastChangeSequence: 13 });
+    const fetchPort = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ snapshot: next }), { status: 200 }),
+    );
+    const store = new CommandCenterStore();
+    const client = new CoreClient(store, { fetch: fetchPort as typeof fetch });
+
+    await client.decideProposal({
+      proposalId: 'proposal-message',
+      proposalHash: 'e'.repeat(64),
+      version: 1,
+      outcome: 'approved',
+      reason: 'Approved draft status only; external execution still requires a bounded mission',
+    });
+
+    expect(fetchPort).toHaveBeenCalledWith(
+      '/api/v1/proposals/proposal-message/decisions',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          proposalHash: 'e'.repeat(64),
+          version: 1,
+          outcome: 'approved',
+          reason: 'Approved draft status only; external execution still requires a bounded mission',
+        }),
+      }),
+    );
+    expect(store.getSnapshot().snapshot?.lastChangeSequence).toBe(13);
+    expect(JSON.stringify(fetchPort.mock.calls)).not.toMatch(/send_message|deploy|queue|execute/i);
+  });
+
   it('posts an exact identity-review binding without exposing or sending a source identifier', async () => {
     const next = snapshot({ lastChangeSequence: 12 });
     const fetchPort = vi.fn().mockResolvedValueOnce(

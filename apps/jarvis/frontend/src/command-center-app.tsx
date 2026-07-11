@@ -14,6 +14,7 @@ import {
   DecisionOutcome,
   IdentityReviewDisposition,
   LifecycleStatus,
+  ProposalKind,
   RelationType,
   ReviewIntentDisposition,
   type ActionDescriptor,
@@ -33,6 +34,7 @@ import type {
   IdentityReviewDecisionInput,
   MissionCancellationInput,
   MissionDecisionInput,
+  ProposalDecisionInput,
   RelationshipProposalInput,
   ReviewIntentDecisionInput,
   RetentionResult,
@@ -58,6 +60,7 @@ export interface CommandCenterClientPort {
   decideReviewIntent?(input: ReviewIntentDecisionInput): Promise<unknown>;
   decideCheckpoint?(input: CheckpointDecisionInput): Promise<unknown>;
   decideIdentityReview?(input: IdentityReviewDecisionInput): Promise<unknown>;
+  decideProposal?(input: ProposalDecisionInput): Promise<unknown>;
 }
 
 export interface CommandCenterAppProps {
@@ -298,6 +301,38 @@ export function CommandCenterApp({
     }
   }, [client]);
 
+  const decideProposal = useCallback(async (
+    proposal: Proposal,
+    outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected,
+  ) => {
+    const binding = proposalBinding(proposal);
+    if (
+      !client.decideProposal ||
+      !binding ||
+      operationInFlight.current ||
+      proposal.status !== LifecycleStatus.PendingApproval
+    ) return;
+    const label = outcome === DecisionOutcome.Approved
+      ? proposalApprovalLabel(proposal)
+      : 'Reject proposal';
+    if (!window.confirm(`${label}: ${proposal.summary}?`)) return;
+    operationInFlight.current = true;
+    setDecisionError(undefined);
+    try {
+      await client.decideProposal({
+        proposalId: proposal.id,
+        proposalHash: binding.proposalHash,
+        version: binding.version,
+        outcome,
+        reason: proposalDecisionReason(proposal, outcome),
+      });
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Proposal decision failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client]);
+
   const decideIdentityReview = useCallback(async (
     review: ExternalIdentityReview,
     disposition: IdentityReviewDisposition,
@@ -472,10 +507,12 @@ export function CommandCenterApp({
                   onDecision={(outcome) => void decideCheckpoint(proposal, outcome)}
                 />
               ) : (
-                <article className="jericho-proposal-row" key={proposal.id}>
-                  <div><strong>{proposal.summary}</strong><span>{proposal.proposedByAgentId} · {proposal.kind}</span></div>
-                  <div><span>{proposal.route}</span><span>{proposal.risk} risk</span><Status value={proposal.status} /></div>
-                </article>
+                <ProposalCard
+                  key={proposal.id}
+                  proposal={proposal}
+                  enabled={Boolean(client.decideProposal)}
+                  onDecision={(outcome) => void decideProposal(proposal, outcome)}
+                />
               )
             )) : <EmptyState />}
           </Section>
@@ -653,6 +690,90 @@ function ReviewIntentCard({
       </div>
     </article>
   );
+}
+
+function ProposalCard({
+  proposal,
+  enabled,
+  onDecision,
+}: {
+  proposal: Proposal;
+  enabled: boolean;
+  onDecision: (outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected) => void;
+}) {
+  const binding = proposalBinding(proposal);
+  const pending = proposal.status === LifecycleStatus.PendingApproval;
+  return (
+    <article className="jericho-proposal-row">
+      <div className="jericho-review-title">
+        <strong>{proposal.summary}</strong>
+        <Status value={proposal.status} />
+      </div>
+      <div>
+        <span>{proposal.proposedByAgentId} · {proposal.kind}</span>
+        <span>{proposal.route} · {proposal.risk} risk</span>
+      </div>
+      {binding ? (
+        <code>V{binding.version} · {binding.proposalHash}</code>
+      ) : (
+        <p className="jericho-error">Missing integrity binding; decision disabled</p>
+      )}
+      {pending && (
+        <div className="jericho-action-row">
+          <button
+            type="button"
+            disabled={!enabled || !binding}
+            onClick={() => onDecision(DecisionOutcome.Approved)}
+          >
+            {proposalApprovalLabel(proposal)}
+          </button>
+          <button
+            type="button"
+            disabled={!enabled || !binding}
+            onClick={() => onDecision(DecisionOutcome.Rejected)}
+          >
+            Reject proposal
+          </button>
+        </div>
+      )}
+    </article>
+  );
+}
+
+interface ProposalBinding {
+  proposalHash: string;
+  version: number;
+}
+
+function proposalBinding(proposal: Proposal): ProposalBinding | undefined {
+  if (!proposal.integrityHash || !/^[a-f0-9]{64}$/.test(proposal.integrityHash)) return undefined;
+  const version = proposal.version ?? 1;
+  if (!Number.isInteger(version) || version < 1) return undefined;
+  return { proposalHash: proposal.integrityHash, version };
+}
+
+function proposalApprovalLabel(proposal: Proposal): string {
+  if (proposal.body.effect === 'create_relation') return 'Apply verified relation';
+  if (proposal.proposedByAgentId === 'jericho-reflection-v1') return 'Accept reviewed suggestion';
+  if (proposal.kind === ProposalKind.Message || proposal.kind === ProposalKind.Action) return 'Approve draft';
+  return 'Approve reviewed proposal';
+}
+
+function proposalDecisionReason(
+  proposal: Proposal,
+  outcome: DecisionOutcome.Approved | DecisionOutcome.Rejected,
+): string {
+  if (outcome === DecisionOutcome.Rejected) return 'Rejected proposal from Jericho command center';
+  if (proposal.body.effect === 'create_relation') {
+    return 'Approved exact source-backed relationship from Jericho; no other graph changes';
+  }
+  if (proposal.proposedByAgentId === 'jericho-reflection-v1') {
+    return 'Accepted reflection suggestion as reviewed status only; no memory or graph mutation';
+  }
+  if (proposal.kind === ProposalKind.Message || proposal.kind === ProposalKind.Action) {
+    return 'Approved draft status only; external execution still requires an exact bounded mission plan';
+  }
+  return 'Reviewed and approved proposal status only; no external execution authorized';
 }
 
 function CheckpointCard({

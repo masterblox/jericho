@@ -140,6 +140,19 @@ export interface CheckpointResolution {
   requiresNewPlan: boolean;
 }
 
+export interface ProposalResolutionInput {
+  proposalId: string;
+  proposalHash: string;
+  proposalVersion: number;
+  decision: DecisionRecord;
+}
+
+export interface ProposalResolution {
+  proposal: Proposal;
+  decision: DecisionRecord;
+  relation?: Relation;
+}
+
 export interface CommitCaptureBatchInput {
   connectorId: string;
   capability: ConnectorCapability;
@@ -288,6 +301,13 @@ export class CheckpointDecisionConflictError extends Error {
   constructor(id: string, reason: string) {
     super(`Checkpoint ${id} decision ${reason}`);
     this.name = 'CheckpointDecisionConflictError';
+  }
+}
+
+export class ProposalDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Proposal ${id} decision ${reason}`);
+    this.name = 'ProposalDecisionConflictError';
   }
 }
 
@@ -2040,8 +2060,96 @@ export class JerichoStore {
       assertDecisionMatchesStatus(decision, nextStatus);
       const boundDecision = normalizeDecision({ ...decision, proposalId: id });
       this.#insertDecision(boundDecision);
-      this.#writeProposalRecord({ ...proposal, status: nextStatus });
+      this.#writeProposalRecord({ ...proposal, status: nextStatus }, boundDecision.decidedAt);
       return this.getProposal(id)!;
+    });
+  }
+
+  /**
+   * Resolves a non-checkpoint proposal against the exact sealed record Carlos reviewed.
+   * Approval is status-only unless the record contains the one supported, source-backed
+   * Nucleus create_relation effect. It never queues or executes connector work.
+   */
+  resolveProposal(input: ProposalResolutionInput): ProposalResolution {
+    assertDecisionRecord(input.decision);
+    if (!/^[a-f0-9]{64}$/.test(input.proposalHash)) {
+      throw new TypeError('Proposal hash must be a lowercase SHA-256 digest');
+    }
+    if (!Number.isInteger(input.proposalVersion) || input.proposalVersion < 1) {
+      throw new TypeError('Proposal version must be a positive integer');
+    }
+    return this.#writeTransaction(() => {
+      const proposal = this.getProposal(input.proposalId);
+      if (!proposal) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'does not exist');
+      }
+      if (isCheckpointProposal(proposal)) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'must use the checkpoint decision flow');
+      }
+      if (proposal.status !== LifecycleStatus.PendingApproval) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'is not pending');
+      }
+      const proposalVersion = proposal.version ?? 1;
+      if (
+        proposal.integrityHash !== input.proposalHash ||
+        proposalVersion !== input.proposalVersion
+      ) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'integrity hash or version binding does not match');
+      }
+      const decision = normalizeDecision(input.decision);
+      const evidenceEventIds = proposalEvidenceEventIds(proposal);
+      const decisionProvenance = decision.provenance[0];
+      if (
+        decision.proposalId !== proposal.id ||
+        decision.proposalHash !== input.proposalHash ||
+        decision.proposalVersion !== proposalVersion ||
+        decision.decidedBy !== 'carlos' ||
+        (decision.outcome !== DecisionOutcome.Approved && decision.outcome !== DecisionOutcome.Rejected) ||
+        decision.route !== RouteType.HumanApproval ||
+        decision.risk !== proposal.risk ||
+        !sameStrings(decision.evidenceEventIds, evidenceEventIds) ||
+        timestampEpoch(decision.decidedAt) < timestampEpoch(proposal.createdAt) ||
+        decision.provenance.length !== 1 ||
+        !decisionProvenance ||
+        decisionProvenance.source !== 'local:command-center' ||
+        decisionProvenance.sourceType !== SourceType.User ||
+        decisionProvenance.sourceEventId !== decision.id ||
+        decisionProvenance.observedAt !== decision.decidedAt
+      ) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'binding does not match the exact proposal');
+      }
+      if (
+        decision.outcome === DecisionOutcome.Approved &&
+        proposal.expiresAt &&
+        timestampEpoch(decision.decidedAt) > timestampEpoch(proposal.expiresAt)
+      ) {
+        throw new ProposalDecisionConflictError(input.proposalId, 'has expired');
+      }
+
+      const relation = decision.outcome === DecisionOutcome.Approved &&
+        proposal.body.effect === 'create_relation'
+        ? this.#proposalRelationEffect(proposal, decision, evidenceEventIds)
+        : undefined;
+      const storedDecision = this.#insertDecision(decision);
+      this.#writeProposalRecord({
+        ...proposal,
+        version: proposalVersion,
+        status: decision.outcome === DecisionOutcome.Approved
+          ? LifecycleStatus.Approved
+          : LifecycleStatus.Rejected,
+      }, storedDecision.decidedAt);
+      if (relation) this.#writeRelationRecord(relation, false);
+      return {
+        proposal: this.getProposal(proposal.id)!,
+        decision: storedDecision,
+        ...(relation ? {
+          relation: this.listRelations({
+            fromEntityId: relation.fromEntityId,
+            toEntityId: relation.toEntityId,
+            type: relation.type,
+          })[0],
+        } : {}),
+      };
     });
   }
 
@@ -2115,7 +2223,7 @@ export class JerichoStore {
       this.#writeProposalRecord({
         ...proposal,
         status: input.resume ? LifecycleStatus.Approved : LifecycleStatus.Rejected,
-      });
+      }, decision.decidedAt);
       if (input.resume) {
         this.#writeAssignmentRecord({
           ...assignment,
@@ -4021,7 +4129,7 @@ export class JerichoStore {
     }
   }
 
-  #writeProposalRecord(proposal: Proposal): void {
+  #writeProposalRecord(proposal: Proposal, changedAt = proposal.createdAt): void {
     assertProposal(proposal);
     const normalized = normalizeProposal(proposal);
     const sealed = this.#sealRecord('proposals', normalized.id, normalized);
@@ -4042,9 +4150,89 @@ export class JerichoStore {
       kind: ChangeLogKind.ProposalChanged,
       recordType: 'proposal',
       recordId: stored.id,
-      changedAt: stored.createdAt,
+      changedAt,
       payload: { status: stored.status, kind: stored.kind },
     });
+  }
+
+  #proposalRelationEffect(
+    proposal: Proposal,
+    decision: DecisionRecord,
+    evidenceEventIds: string[],
+  ): Relation {
+    const body = proposal.body;
+    const fromEntityId = typeof body.fromEntityId === 'string' ? body.fromEntityId : '';
+    const toEntityId = typeof body.toEntityId === 'string' ? body.toEntityId : '';
+    const relationType = body.relation as RelationType;
+    if (
+      proposal.kind !== ProposalKind.DataChange ||
+      proposal.proposedByAgentId !== 'carlos' ||
+      !proposal.provenance.some((item) =>
+        item.source === 'local:nucleus' &&
+        item.sourceType === SourceType.User &&
+        item.sourceEventId === proposal.id) ||
+      !fromEntityId ||
+      !toEntityId ||
+      fromEntityId === toEntityId ||
+      body.fromNodeId !== `entity:${fromEntityId}` ||
+      body.toNodeId !== `entity:${toEntityId}` ||
+      !Object.values(RelationType).includes(relationType) ||
+      body.verified !== false ||
+      evidenceEventIds.length === 0
+    ) {
+      throw new ProposalDecisionConflictError(proposal.id, 'create_relation effect is invalid');
+    }
+    const from = this.getEntity(fromEntityId);
+    const to = this.getEntity(toEntityId);
+    if (!from?.integrityHash || !to?.integrityHash) {
+      throw new ProposalDecisionConflictError(proposal.id, 'relation entities are not verified');
+    }
+    const sourceEvidence = evidenceEventIds.map((eventId) => this.getEvent(eventId));
+    if (sourceEvidence.some((event) => !event?.integrityHash)) {
+      throw new ProposalDecisionConflictError(proposal.id, 'source evidence is unavailable or unverified');
+    }
+    const expectedEvidence = uniqueStrings([
+      ...from.provenance.flatMap((item) =>
+        item.sourceEventId && this.getEvent(item.sourceEventId) ? [item.sourceEventId] : []),
+      ...to.provenance.flatMap((item) =>
+        item.sourceEventId && this.getEvent(item.sourceEventId) ? [item.sourceEventId] : []),
+    ]);
+    if (!expectedEvidence.length || !sameStrings(evidenceEventIds, expectedEvidence)) {
+      throw new ProposalDecisionConflictError(proposal.id, 'source evidence does not match the exact entity nodes');
+    }
+    if (this.listRelations({ fromEntityId, toEntityId, type: relationType }).length > 0) {
+      throw new ProposalDecisionConflictError(proposal.id, 'relation already exists');
+    }
+    const evidenceSet = new Set(evidenceEventIds);
+    const evidenceProvenance = [...from.provenance, ...to.provenance]
+      .filter((item) => item.sourceEventId && evidenceSet.has(item.sourceEventId));
+    const decidedAt = decision.decidedAt;
+    return {
+      id: `proposal-relation-${createHash('sha256')
+        .update(`${proposal.id}\0${proposal.integrityHash}\0${proposal.version ?? 1}`)
+        .digest('hex')
+        .slice(0, 32)}`,
+      fromEntityId,
+      toEntityId,
+      type: relationType,
+      attributes: {
+        effect: 'create_relation',
+        verified: true,
+        proposalId: proposal.id,
+        decisionId: decision.id,
+        evidenceEventIds,
+      },
+      status: LifecycleStatus.Active,
+      risk: proposal.risk,
+      ...(proposal.confidence !== undefined ? { confidence: proposal.confidence } : {}),
+      freshness: { observedAt: decidedAt },
+      provenance: mergeProvenance(
+        mergeProvenance(proposal.provenance, evidenceProvenance),
+        decision.provenance,
+      ),
+      createdAt: decidedAt,
+      updatedAt: decidedAt,
+    };
   }
 
   #writePreferenceRecord(preference: PreferenceChange): void {
@@ -5049,6 +5237,7 @@ function checkpointProposal(
   ].includes(reason));
   return {
     id: `checkpoint-${digest}`,
+    version: 1,
     assignmentId: assignment.id,
     missionTaskId: assignment.missionTaskId,
     proposedByAgentId: 'jericho:mission-runner',
@@ -5090,6 +5279,12 @@ function isCheckpointProposal(proposal: Proposal): boolean {
     typeof proposal.body.resumable === 'boolean' &&
     typeof proposal.body.requiresNewPlan === 'boolean'
   );
+}
+
+function proposalEvidenceEventIds(proposal: Proposal): string[] {
+  if (!Array.isArray(proposal.body.evidenceEventIds)) return [];
+  return uniqueStrings(proposal.body.evidenceEventIds.flatMap((value) =>
+    typeof value === 'string' && value.trim() ? [value] : []));
 }
 
 function assertLifecycleTransition(
@@ -5296,6 +5491,7 @@ function normalizeAssignment(assignment: Assignment): Assignment {
 function normalizeProposal(proposal: Proposal): Proposal {
   return {
     ...proposal,
+    version: proposal.version ?? 1,
     createdAt: normalizeTimestamp(proposal.createdAt),
     ...(proposal.expiresAt ? { expiresAt: normalizeTimestamp(proposal.expiresAt) } : {}),
     provenance: proposal.provenance.map(normalizeProvenance),
