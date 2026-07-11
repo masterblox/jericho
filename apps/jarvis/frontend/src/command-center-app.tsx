@@ -12,6 +12,7 @@ import {
   CommandCenterMissionStage,
   CommandCenterVerification,
   DecisionOutcome,
+  IdentityReviewDisposition,
   LifecycleStatus,
   RelationType,
   ReviewIntentDisposition,
@@ -21,6 +22,7 @@ import {
   type CommandCenterMission,
   type CommandCenterSnapshot,
   type CommandCenterTimelineEntry,
+  type ExternalIdentityReview,
   type IntentEnvelope,
   type Proposal,
 } from '@jericho/shared';
@@ -28,6 +30,7 @@ import {
 import type { CommandCenterStore } from './command-center-store';
 import type {
   CheckpointDecisionInput,
+  IdentityReviewDecisionInput,
   MissionCancellationInput,
   MissionDecisionInput,
   RelationshipProposalInput,
@@ -54,6 +57,7 @@ export interface CommandCenterClientPort {
   proposeRelationship?(input: RelationshipProposalInput): Promise<unknown>;
   decideReviewIntent?(input: ReviewIntentDecisionInput): Promise<unknown>;
   decideCheckpoint?(input: CheckpointDecisionInput): Promise<unknown>;
+  decideIdentityReview?(input: IdentityReviewDecisionInput): Promise<unknown>;
 }
 
 export interface CommandCenterAppProps {
@@ -294,6 +298,44 @@ export function CommandCenterApp({
     }
   }, [client]);
 
+  const decideIdentityReview = useCallback(async (
+    review: ExternalIdentityReview,
+    disposition: IdentityReviewDisposition,
+    targetEntityId?: string,
+  ) => {
+    if (
+      !client.decideIdentityReview ||
+      operationInFlight.current ||
+      review.status !== LifecycleStatus.PendingApproval
+    ) return;
+    const target = targetEntityId
+      ? review.candidateEntities.find((candidate) => candidate.id === targetEntityId)
+      : review.observedEntity;
+    if (!target || !target.available || !target.compatible) return;
+    const label = disposition === IdentityReviewDisposition.RelinkCandidate
+      ? `Relink provisional identity to ${target.label}`
+      : `Keep observed identity as ${target.label}`;
+    if (!window.confirm(`${label}?`)) return;
+    operationInFlight.current = true;
+    setDecisionError(undefined);
+    try {
+      await client.decideIdentityReview({
+        failureId: review.failureId,
+        disposition,
+        reviewHash: review.reviewHash,
+        version: review.version,
+        ...(targetEntityId ? { targetEntityId } : {}),
+        reason: disposition === IdentityReviewDisposition.RelinkCandidate
+          ? `Explicitly relinked the provisional source identity to ${target.label}`
+          : `Explicitly kept and established the observed source identity as ${target.label}`,
+      });
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Identity review decision failed');
+    } finally {
+      operationInFlight.current = false;
+    }
+  }, [client]);
+
   if (!snapshot) {
     return (
       <main className="jericho-shell jericho-shell--waiting" id="main">
@@ -391,7 +433,23 @@ export function CommandCenterApp({
         </section>
 
         <aside className="jericho-bay jericho-bay--right jericho-mobile-panel">
-          <Section title="Review queue" count={(snapshot.reviewIntents ?? []).length} priority>
+          <Section
+            title="Review queue"
+            count={(snapshot.reviewIntents ?? []).length + (snapshot.identityReviews ?? [])
+              .filter((review) => review.status === LifecycleStatus.PendingApproval).length}
+            priority
+          >
+            {(snapshot.identityReviews ?? [])
+              .filter((review) => review.status === LifecycleStatus.PendingApproval)
+              .map((review) => (
+                <IdentityReviewCard
+                  key={review.failureId}
+                  review={review}
+                  enabled={Boolean(client.decideIdentityReview)}
+                  onDecision={(disposition, targetEntityId) =>
+                    void decideIdentityReview(review, disposition, targetEntityId)}
+                />
+              ))}
             {(snapshot.reviewIntents ?? []).length ? (snapshot.reviewIntents ?? []).map((intent) => (
               <ReviewIntentCard
                 key={intent.id}
@@ -399,7 +457,9 @@ export function CommandCenterApp({
                 enabled={Boolean(client.decideReviewIntent && intent.integrityHash)}
                 onDecision={(disposition) => void decideReviewIntent(intent, disposition)}
               />
-            )) : <EmptyState />}
+            )) : !(snapshot.identityReviews ?? []).some(
+              (review) => review.status === LifecycleStatus.PendingApproval,
+            ) && <EmptyState />}
           </Section>
 
           <Section title="Proposals" count={snapshot.proposals.length}>
@@ -490,6 +550,59 @@ function Section({
 
 function Subsection({ title, children }: { title: string; children: ReactNode }) {
   return <section className="jericho-subsection"><h3>{title}</h3>{children}</section>;
+}
+
+function IdentityReviewCard({
+  review,
+  enabled,
+  onDecision,
+}: {
+  review: ExternalIdentityReview;
+  enabled: boolean;
+  onDecision: (disposition: IdentityReviewDisposition, targetEntityId?: string) => void;
+}) {
+  return (
+    <article className="jericho-review-card jericho-identity-review-card">
+      <div className="jericho-review-title">
+        <strong>Identity match · {review.connectorId.toUpperCase()}</strong>
+        <span>{titleCase(review.kind)}</span>
+      </div>
+      <p>Observed: {review.observedEntity.label} · {review.observedEntity.type ?? 'unknown type'}</p>
+      <p>{review.namespace} · {review.risk} risk</p>
+      <p>{review.reason}</p>
+      <div className="jericho-evidence">
+        {review.evidence.map((evidence) => (
+          <code key={evidence.eventId}>{evidence.eventId}</code>
+        ))}
+      </div>
+      <div className="jericho-action-row jericho-identity-candidates">
+        {review.candidateEntities.map((candidate) => (
+          <button
+            key={candidate.id}
+            type="button"
+            disabled={!enabled || !candidate.available || !candidate.compatible}
+            title={!candidate.available
+              ? 'Candidate entity is unavailable'
+              : !candidate.compatible
+                ? 'Entity type is incompatible'
+                : `Relink to ${candidate.label}`}
+            onClick={() => onDecision(IdentityReviewDisposition.RelinkCandidate, candidate.id)}
+          >
+            Relink to {candidate.label}
+          </button>
+        ))}
+      </div>
+      <div className="jericho-action-row">
+        <button
+          type="button"
+          disabled={!enabled || !review.observedEntity.available}
+          onClick={() => onDecision(IdentityReviewDisposition.EstablishObserved)}
+        >
+          Keep observed identity
+        </button>
+      </div>
+    </article>
+  );
 }
 
 function ReviewIntentCard({

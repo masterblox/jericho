@@ -15,6 +15,8 @@ import {
   EscalationReason,
   IntentKind,
   IntentRoute,
+  IdentityReviewDisposition,
+  IdentityReviewKind,
   LifecycleStatus,
   MissionTaskKind,
   MutationClass,
@@ -428,6 +430,72 @@ describe('CommandCenterApp', () => {
     await waitFor(() => expect(decideReviewIntent).toHaveBeenCalledWith({
       intentId: 'intent-review', intentHash: 'b'.repeat(64), disposition: 'reclassify_project',
       reason: 'Reclassified as project from Jericho Review queue; still requires a new bounded mission approval',
+    }));
+  });
+
+  it('resolves a source-backed identity review without rendering its private external identifier', async () => {
+    const store = new CommandCenterStore();
+    const snapshot = populatedSnapshot();
+    snapshot.identityReviews = [{
+      id: 'identity-review-1',
+      failureId: 'capture-failure-1',
+      linkId: 'identity-link-1',
+      version: 1,
+      reviewHash: 'c'.repeat(64),
+      kind: IdentityReviewKind.ProposedMerge,
+      connectorId: 'telegram',
+      namespace: 'user',
+      observedEntity: {
+        id: 'person-observed', type: EntityType.Person, label: 'Carlos',
+        available: true, compatible: true,
+      },
+      candidateEntities: [
+        {
+          id: 'person-canonical', type: EntityType.Person, label: 'Carlos Prada',
+          available: true, compatible: true,
+        },
+        {
+          id: 'org-carlos', type: EntityType.Organization, label: 'Carlos Holdings',
+          available: true, compatible: false,
+        },
+      ],
+      reason: 'Display names and claimed candidates require explicit identity review',
+      status: LifecycleStatus.PendingApproval,
+      route: RouteType.HumanApproval,
+      risk: RiskLevel.Medium,
+      evidenceEventIds: ['event-identity'],
+      evidence: [{ eventId: 'event-identity', integrityHash: 'd'.repeat(64) }],
+      createdAt: snapshot.generatedAt,
+      provenance: [{
+        source: 'telegram', sourceType: SourceType.Connector,
+        sourceEventId: 'event-identity', observedAt: snapshot.generatedAt,
+      }],
+    }];
+    store.replace(snapshot);
+    const decideIdentityReview = vi.fn().mockResolvedValue({});
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), decideIdentityReview }}
+      autoStart={false}
+    />);
+
+    expect(screen.getByText('Identity match · TELEGRAM')).toBeTruthy();
+    expect(screen.getByText('Observed: Carlos · person')).toBeTruthy();
+    expect(screen.getByText('event-identity')).toBeTruthy();
+    expect(screen.queryByText(/raw-private-telegram-id/i)).toBeNull();
+    expect((screen.getByRole('button', { name: 'Relink to Carlos Holdings' }) as HTMLButtonElement).disabled)
+      .toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Relink to Carlos Prada' }));
+
+    await waitFor(() => expect(decideIdentityReview).toHaveBeenCalledWith({
+      failureId: 'capture-failure-1',
+      disposition: IdentityReviewDisposition.RelinkCandidate,
+      reviewHash: 'c'.repeat(64),
+      version: 1,
+      targetEntityId: 'person-canonical',
+      reason: 'Explicitly relinked the provisional source identity to Carlos Prada',
     }));
   });
 

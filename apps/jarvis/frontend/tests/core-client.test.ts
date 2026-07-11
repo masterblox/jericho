@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { RelationType } from '@jericho/shared';
+import { IdentityReviewDisposition, RelationType } from '@jericho/shared';
 
 import { CommandCenterStore } from '../src/command-center-store';
 import { CoreClient, type EventSourcePort } from '../src/core-client';
@@ -161,6 +161,39 @@ describe('CoreClient', () => {
       }),
     }));
     expect(JSON.stringify(fetchPort.mock.calls)).not.toMatch(/send_message|deploy|connector.*execute/i);
+  });
+
+  it('posts an exact identity-review binding without exposing or sending a source identifier', async () => {
+    const next = snapshot({ lastChangeSequence: 12 });
+    const fetchPort = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ snapshot: next }), { status: 200 }),
+    );
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+
+    await client.decideIdentityReview({
+      failureId: 'capture-failure-1',
+      disposition: IdentityReviewDisposition.RelinkCandidate,
+      reviewHash: 'c'.repeat(64),
+      version: 1,
+      targetEntityId: 'person-carlos',
+      reason: 'Carlos selected the compatible canonical person',
+    });
+
+    expect(fetchPort).toHaveBeenCalledWith(
+      '/api/v1/identity-reviews/capture-failure-1/decisions',
+      expect.objectContaining({
+        method: 'POST',
+        credentials: 'same-origin',
+        body: JSON.stringify({
+          disposition: 'relink_candidate',
+          reviewHash: 'c'.repeat(64),
+          version: 1,
+          targetEntityId: 'person-carlos',
+          reason: 'Carlos selected the compatible canonical person',
+        }),
+      }),
+    );
+    expect(JSON.stringify(fetchPort.mock.calls)).not.toMatch(/raw-private|externalId|send_message/i);
   });
 });
 

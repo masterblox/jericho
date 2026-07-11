@@ -869,6 +869,20 @@ a:focus-visible {
   color: var(--jericho-text);
 }
 
+.jericho-identity-review-card {
+  border-left-color: var(--jericho-cyan);
+  background: linear-gradient(90deg, rgba(119, 215, 220, 0.07), rgba(228, 179, 106, 0.025));
+}
+
+.jericho-identity-candidates {
+  grid-template-columns: 1fr;
+  margin-top: 2px;
+}
+
+.jericho-identity-candidates button:disabled {
+  color: var(--jericho-faint);
+}
+
 .jericho-review-reasons {
   margin: 0;
   padding-left: 16px;

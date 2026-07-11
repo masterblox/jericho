@@ -2,6 +2,8 @@ import type {
   CheckpointDecisionRequest,
   CheckpointDecisionResponse,
   CommandCenterSnapshot,
+  IdentityReviewDecisionRequest,
+  IdentityReviewDecisionResponse,
   MissionDecisionRequest,
   MissionDecisionResponse,
   RelationType,
@@ -46,6 +48,10 @@ export interface ReviewIntentDecisionInput extends ReviewIntentDecisionRequest {
 
 export interface CheckpointDecisionInput extends CheckpointDecisionRequest {
   proposalId: string;
+}
+
+export interface IdentityReviewDecisionInput extends IdentityReviewDecisionRequest {
+  failureId: string;
 }
 
 export interface RetentionResult {
@@ -153,6 +159,15 @@ export class CoreClient {
       request,
       'Checkpoint decision failed',
     ) as Promise<CheckpointDecisionResponse>;
+  }
+
+  decideIdentityReview(input: IdentityReviewDecisionInput): Promise<IdentityReviewDecisionResponse> {
+    const { failureId, ...request } = input;
+    return this.#postWithSnapshot(
+      `/api/v1/identity-reviews/${encodeURIComponent(failureId)}/decisions`,
+      request,
+      'Identity review decision failed',
+    ) as Promise<IdentityReviewDecisionResponse>;
   }
 
   async retainMission(missionId: string): Promise<RetentionResult> {
