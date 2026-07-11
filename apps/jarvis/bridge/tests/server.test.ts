@@ -1,12 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   ConnectorCapability,
   SourceType,
+  type EventEnvelope,
   type NormalizedCapture,
 } from '@jericho/shared';
 
@@ -17,6 +18,7 @@ import { createJerichoServer } from '../src/server.js';
 const KEY = Buffer.alloc(32, 71);
 const TOKEN = 'local-api-token';
 const T0 = '2026-07-11T00:00:00.000Z';
+const T1 = '2026-07-11T00:01:00.000Z';
 const stores: JerichoStore[] = [];
 const directories: string[] = [];
 const servers: Array<{ close(): Promise<void> }> = [];
@@ -41,6 +43,7 @@ describe('runtime config', () => {
       JERICHO_CONDUCTOR_ROOTS: '[{"id":"workspaces","path":"/workspaces"}]',
       JERICHO_OBSIDIAN_VAULT: '/vault',
       JERICHO_ALLOWED_ORIGINS: 'http://localhost:5173',
+      JERICHO_CONNECTOR_POLL_INTERVAL_MS: '15000',
     }, ['--port', '0'])).toMatchObject({
       port: 0,
       geminiApiKey: undefined,
@@ -52,6 +55,7 @@ describe('runtime config', () => {
       conductorRoots: [{ id: 'workspaces', path: '/workspaces' }],
       obsidianVaultPath: '/vault',
       allowedOrigins: ['http://localhost:5173'],
+      connectorPollIntervalMs: 15_000,
     });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, CONDUCTOR_PORT: '4100', PORT: '4200' }, [])).toMatchObject({ port: 4100 });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, PORT: '4200' }, [])).toMatchObject({ port: 4200 });
@@ -82,6 +86,38 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(response.headers.get('x-content-type-options')).toBe('nosniff');
     expect(response.headers.get('x-frame-options')).toBe('DENY');
     expect(response.headers.get('cache-control')).toBe('no-store');
+  });
+
+  it('issues a per-process HttpOnly strict session cookie for same-origin browser API and SSE use', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'jericho-browser-session-'));
+    directories.push(directory);
+    writeFileSync(join(directory, 'index.html'), '<main>Jericho browser</main>');
+    const runtime = await startServer({ frontendDir: directory });
+
+    const index = await fetch(`${runtime.url}/`);
+    const cookie = index.headers.get('set-cookie');
+    expect(cookie).toMatch(/^jericho_session=[^;]+; Path=\/; HttpOnly; SameSite=Strict$/);
+    expect(index.headers.get('cache-control')).toBe('no-store');
+    expect(await index.text()).not.toContain(TOKEN);
+    const cookieHeader = cookie!.split(';', 1)[0];
+
+    const health = await fetch(`${runtime.url}/api/v1/health`, {
+      headers: { cookie: cookieHeader },
+    });
+    expect(health.status).toBe(200);
+    expect((await fetch(`${runtime.url}/api/v1/command-center`, {
+      headers: { cookie: cookieHeader },
+    })).status).toBe(200);
+    const eventController = new AbortController();
+    const events = await fetch(`${runtime.url}/api/v1/events`, {
+      headers: { cookie: cookieHeader },
+      signal: eventController.signal,
+    });
+    expect(events.status).toBe(200);
+    eventController.abort();
+    expect((await fetch(`${runtime.url}/api/v1/health`, {
+      headers: { cookie: cookieHeader, origin: 'https://evil.example' },
+    })).status).toBe(403);
   });
 
   it('serves command-center/connectors/captures/search and invokes connector sync through injected ports', async () => {
@@ -133,6 +169,90 @@ describe('authenticated local Core HTTP/SSE server', () => {
     live.abort();
   });
 
+  it('accepts bounded local captures, strips caller authority, persists idempotently, and streams the change', async () => {
+    let now = T0;
+    const runtime = await startServer({ clock: () => now });
+    const live = await openSse(runtime.url, '0');
+    const body = {
+      kind: 'spoken',
+      sourceEventId: 'utterance-42',
+      occurredAt: T0,
+      payload: { transcript: 'Show today’s priorities' },
+    };
+    const created = await api(runtime.url, '/api/v1/captures', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(created.status).toBe(201);
+    const createdBody = await created.json() as any;
+    expect(createdBody).toMatchObject({ inserted: true, event: {
+      source: 'local:spoken', sourceEventId: 'utterance-42',
+      type: 'local.capture.spoken', payload: body.payload,
+    } });
+    expect(await readUntil(live.reader, 'event: change')).toContain(createdBody.event.id);
+    live.abort();
+
+    now = T1;
+    const replay = await api(runtime.url, '/api/v1/captures', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(replay.status).toBe(200);
+    expect(await replay.json()).toMatchObject({ inserted: false, event: { id: createdBody.event.id } });
+    expect(runtime.store.listChangeLog({ afterSequence: 0 })).toHaveLength(1);
+    expect((await apiJson(runtime.url, '/api/v1/captures')).events).toContainEqual(
+      expect.objectContaining({ id: createdBody.event.id }),
+    );
+
+    const authority = await api(runtime.url, '/api/v1/captures', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ...body, sourceEventId: 'authority', status: 'approved' }),
+    });
+    expect(authority.status).toBe(400);
+    expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1);
+  });
+
+  it('returns typed client errors instead of 500 for malformed, oversized, bounded, and unknown requests', async () => {
+    const sync = vi.fn().mockResolvedValue({ status: 'completed' });
+    const runtime = await startServer({
+      supervisor: { sync },
+      connectorDescriptors: [{ id: 'fixture', partitions: ['primary'] }],
+    });
+    expect((await api(runtime.url, '/api/v1/connectors/fixture/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{',
+    })).status).toBe(400);
+    expect((await api(runtime.url, '/api/v1/connectors/fixture/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ padding: 'x'.repeat(70_000) }),
+    })).status).toBe(413);
+    expect((await api(runtime.url, '/api/v1/captures?limit=wrong')).status).toBe(400);
+    expect((await api(runtime.url, '/api/v1/connectors/missing/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+    })).status).toBe(404);
+    expect((await api(runtime.url, '/api/v1/connectors/fixture/sync', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ partition: 'wrong' }),
+    })).status).toBe(400);
+    expect(sync).not.toHaveBeenCalled();
+  });
+
+  it('uses the true change-log tail beyond 10k entries without a false retention gap', async () => {
+    const runtime = await startServer({ clock: () => T0 });
+    for (let index = 1; index <= 10_002; index += 1) {
+      runtime.store.commitLocalCapture(localEvent(index));
+    }
+    expect(runtime.store.getLatestChangeSequence()).toBe(10_002);
+    expect(await apiJson(runtime.url, '/api/v1/command-center')).toMatchObject({
+      lastChangeSequence: 10_002,
+    });
+    const tail = await openSse(runtime.url, '10001');
+    const body = await readUntil(tail.reader, 'event: change');
+    expect(body).toMatch(/id: 10002/);
+    expect(body).not.toContain('event: gap');
+    tail.abort();
+  }, 30_000);
+
   it('serves an SPA without traversal outside frontend/dist', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'jericho-frontend-'));
     directories.push(directory);
@@ -140,12 +260,16 @@ describe('authenticated local Core HTTP/SSE server', () => {
     mkdirSync(frontend);
     writeFileSync(join(frontend, 'index.html'), '<main>Jericho</main>');
     writeFileSync(join(directory, 'secret.txt'), 'outside-secret');
+    symlinkSync(join(directory, 'secret.txt'), join(frontend, 'escaped.txt'));
     const runtime = await startServer({ frontendDir: frontend });
 
     expect(await (await fetch(`${runtime.url}/`)).text()).toContain('Jericho');
     const traversal = await fetch(`${runtime.url}/%2e%2e/secret.txt`);
     expect([400, 404]).toContain(traversal.status);
     expect(await traversal.text()).not.toContain('outside-secret');
+    const symlink = await fetch(`${runtime.url}/escaped.txt`);
+    expect([400, 404]).toContain(symlink.status);
+    expect(await symlink.text()).not.toContain('outside-secret');
   });
 });
 
@@ -154,6 +278,24 @@ interface StartOverrides {
   connectorDescriptors?: Array<{ id: string; partitions: string[] }>;
   obsidianSearch?: { search: ReturnType<typeof vi.fn> };
   frontendDir?: string;
+  clock?: () => string;
+}
+
+function localEvent(index: number): EventEnvelope {
+  return {
+    id: `local-event-${index}`,
+    source: 'local:manual',
+    sourceType: SourceType.User,
+    sourceEventId: `manual-${index}`,
+    type: 'local.capture.manual',
+    occurredAt: T0,
+    ingestedAt: T0,
+    payload: { index },
+    provenance: [{
+      source: 'local:manual', sourceType: SourceType.User,
+      sourceEventId: `manual-${index}`, observedAt: T0,
+    }],
+  };
 }
 
 async function startServer(overrides: StartOverrides = {}) {

@@ -23,6 +23,7 @@ export interface JerichoConfig {
   obsidianVaultPath?: string;
   connectorLeaseMs: number;
   connectorMaxPages: number;
+  connectorPollIntervalMs: number;
 }
 
 export interface NamedPath {
@@ -71,6 +72,10 @@ export function loadConfig(
     connectorMaxPages: parsePositiveInteger(
       environment.JERICHO_CONNECTOR_MAX_PAGES ?? '100',
       'JERICHO_CONNECTOR_MAX_PAGES',
+    ),
+    connectorPollIntervalMs: parsePositiveInteger(
+      environment.JERICHO_CONNECTOR_POLL_INTERVAL_MS ?? '30000',
+      'JERICHO_CONNECTOR_POLL_INTERVAL_MS',
     ),
   };
 }

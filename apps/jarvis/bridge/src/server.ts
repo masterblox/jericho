@@ -1,4 +1,4 @@
-import { timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { extname, join, resolve, sep } from 'node:path';
@@ -7,10 +7,10 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { GoogleGenAI, Modality, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 
-import { EntityType } from '@jericho/shared';
+import { EntityType, SourceType, type EventEnvelope, type JsonValue } from '@jericho/shared';
 
 import { loadConfig } from './config.js';
-import { JerichoStore } from './core/store.js';
+import { EventConflictError, JerichoStore } from './core/store.js';
 import { createConnectorRuntime } from './runtime.js';
 import { createToolExecutor, FUNCTION_DECLARATIONS, type ToolExecutor } from './tools.js';
 
@@ -37,6 +37,7 @@ export interface JerichoServerOptions {
   obsidianSearch?: ObsidianSearchPort;
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
+  clock?: () => string;
 }
 
 export interface JerichoServerAddress {
@@ -67,16 +68,28 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const host = options.host ?? '127.0.0.1';
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
   const ssePollMs = options.ssePollMs ?? 250;
+  const clock = options.clock ?? (() => new Date().toISOString());
+  const browserSessionToken = randomBytes(32).toString('base64url');
   const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
   const tools = options.toolExecutor ?? createToolExecutor({ store: options.store });
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
-      if (!response.headersSent) sendJson(response, 500, { error: 'internal_error' });
+      const failure = httpFailure(error);
+      if (!response.headersSent) sendJson(response, failure.status, { error: failure.code });
       else response.end();
-      if (process.env.NODE_ENV !== 'test') console.error('[jericho] request failed', error);
+      if (failure.status >= 500 && process.env.NODE_ENV !== 'test') {
+        console.error('[jericho] request failed', error);
+      }
     });
   });
-  const voice = attachVoice(httpServer, options, tools, host, allowedOrigins);
+  const voice = attachVoice(
+    httpServer,
+    options,
+    tools,
+    host,
+    allowedOrigins,
+    browserSessionToken,
+  );
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
     applySecurityHeaders(response);
@@ -94,7 +107,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     const url = new URL(request.url ?? '/', `http://${hostHeader}`);
     if (url.pathname.startsWith('/api/v1/')) {
       response.setHeader('Cache-Control', 'no-store');
-      if (!authorized(request.headers.authorization, options.apiToken)) {
+      if (
+        !authorized(request.headers.authorization, options.apiToken) &&
+        !authorizedSession(request.headers.cookie, browserSessionToken)
+      ) {
         response.setHeader('WWW-Authenticate', 'Bearer realm="jericho-local"');
         sendJson(response, 401, { error: 'unauthorized' });
         return;
@@ -102,7 +118,13 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       await handleApi(request, response, url);
       return;
     }
-    await serveFrontend(request, response, options.frontendDir, url.pathname);
+    await serveFrontend(
+      request,
+      response,
+      options.frontendDir,
+      url.pathname,
+      browserSessionToken,
+    );
   }
 
   async function handleApi(
@@ -119,14 +141,13 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
-      const changes = options.store.listChangeLog({ afterSequence: 0, limit: 10_000 });
       sendJson(response, 200, {
         tasks: options.store.listEntities({ type: EntityType.Task }),
         missions: options.store.listMissions(),
         proposals: options.store.listProposals(),
         connectors: options.store.listConnectorHealth(),
         captureFailures: options.store.listCaptureFailures(),
-        lastChangeSequence: changes.at(-1)?.sequence ?? 0,
+        lastChangeSequence: options.store.getLatestChangeSequence(),
       });
       return;
     }
@@ -143,12 +164,46 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         sendJson(response, 503, { error: 'connector_supervisor_unavailable' });
         return;
       }
+      let connectorId: string;
+      try {
+        connectorId = decodeURIComponent(syncMatch[1]);
+      } catch {
+        throw new HttpError(400, 'invalid_connector_id');
+      }
+      const descriptor = findConnectorDescriptor(options.connectorDescriptors, connectorId);
+      if (options.connectorDescriptors && !descriptor) {
+        throw new HttpError(404, 'connector_not_found');
+      }
       const body = await readJsonBody(request, 64 * 1024);
       const partition = typeof body.partition === 'string' ? body.partition : 'primary';
+      if (!partition || partition.length > 512) {
+        throw new HttpError(400, 'invalid_connector_partition');
+      }
+      if (descriptor && !descriptor.partitions.includes(partition)) {
+        throw new HttpError(400, 'invalid_connector_partition');
+      }
       const controller = new AbortController();
       request.once('aborted', () => controller.abort());
-      const result = await options.supervisor.sync(decodeURIComponent(syncMatch[1]), partition, controller.signal);
+      let result: unknown;
+      try {
+        result = await options.supervisor.sync(connectorId, partition, controller.signal);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (/not registered/i.test(message)) throw new HttpError(404, 'connector_not_found');
+        if (/does not own partition/i.test(message)) {
+          throw new HttpError(400, 'invalid_connector_partition');
+        }
+        throw error;
+      }
       sendJson(response, 200, result);
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/captures') {
+      const body = await readJsonBody(request, 256 * 1024);
+      const receivedAt = new Date(clock()).toISOString();
+      const event = localCaptureEvent(body);
+      const result = options.store.commitLocalCapture(event);
+      sendJson(response, result.inserted ? 201 : 200, { ...result, receivedAt });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/captures') {
@@ -162,6 +217,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         return;
       }
       const query = url.searchParams.get('q') ?? '';
+      if (!query.trim()) throw new HttpError(400, 'invalid_search_query');
       const limit = boundedInteger(url.searchParams.get('limit'), 10, 1, 50);
       const results = await options.obsidianSearch.search(query, limit);
       sendJson(response, 200, { results });
@@ -190,8 +246,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     });
     response.write(': connected\n\n');
     let cursor = after;
-    const all = options.store.listChangeLog({ afterSequence: 0, limit: 10_000 });
-    const latest = all.at(-1)?.sequence ?? 0;
+    const latest = options.store.getLatestChangeSequence();
     if (cursor > latest) {
       writeSse(response, 'gap', undefined, {
         reason: 'cursor_ahead',
@@ -250,6 +305,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       await new Promise<void>((resolveClose, reject) => {
         httpServer.close((error) => error ? reject(error) : resolveClose());
         httpServer.closeIdleConnections();
+        httpServer.closeAllConnections();
       });
     },
   };
@@ -261,6 +317,7 @@ function attachVoice(
   tools: ToolExecutor,
   host: string,
   allowedOrigins: Set<string>,
+  browserSessionToken: string,
 ) {
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (request, socket, head) => {
@@ -289,7 +346,7 @@ function attachVoice(
     const tokenAuthorized = authorized(
       `Bearer ${url.searchParams.get('token') ?? ''}`,
       options.apiToken,
-    );
+    ) || authorizedSession(request.headers.cookie, browserSessionToken);
     if (!tokenAuthorized && !trustedBrowserOrigin) {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
@@ -422,6 +479,7 @@ async function serveFrontend(
   response: ServerResponse,
   frontendDir: string | undefined,
   pathname: string,
+  browserSessionToken: string,
 ): Promise<void> {
   if (request.method !== 'GET' && request.method !== 'HEAD') {
     sendJson(response, 405, { error: 'method_not_allowed' });
@@ -457,6 +515,24 @@ async function serveFrontend(
   if (!existsSync(file) || !statSync(file).isFile()) {
     sendJson(response, 404, { error: 'not_found' });
     return;
+  }
+  try {
+    file = realpathSync(file);
+  } catch {
+    sendJson(response, 404, { error: 'not_found' });
+    return;
+  }
+  if (file !== root && !file.startsWith(`${root}${sep}`)) {
+    sendJson(response, 400, { error: 'invalid_path' });
+    return;
+  }
+  const indexPath = join(root, 'index.html');
+  if (existsSync(indexPath) && file === realpathSync(indexPath)) {
+    response.setHeader('Cache-Control', 'no-store');
+    response.setHeader(
+      'Set-Cookie',
+      `jericho_session=${browserSessionToken}; Path=/; HttpOnly; SameSite=Strict`,
+    );
   }
   response.statusCode = 200;
   response.setHeader('Content-Type', contentType(file));
@@ -500,26 +576,135 @@ function authorized(header: string | undefined, token: string): boolean {
   return supplied.length === expected.length && timingSafeEqual(supplied, expected);
 }
 
+function authorizedSession(cookieHeader: string | undefined, token: string): boolean {
+  if (!cookieHeader) return false;
+  const value = cookieHeader.split(';').map((item) => item.trim()).find((item) =>
+    item.startsWith('jericho_session='),
+  )?.slice('jericho_session='.length);
+  if (!value) return false;
+  const supplied = Buffer.from(value);
+  const expected = Buffer.from(token);
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected);
+}
+
 async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise<Record<string, unknown>> {
+  const contentLength = request.headers['content-length'];
+  if (contentLength && Number(contentLength) > maxBytes) {
+    throw new HttpError(413, 'request_body_too_large');
+  }
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > maxBytes) throw new Error('request_body_too_large');
+    if (size > maxBytes) throw new HttpError(413, 'request_body_too_large');
     chunks.push(buffer);
   }
   if (!chunks.length) return {};
-  const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('invalid_json_body');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+  } catch {
+    throw new HttpError(400, 'invalid_json_body');
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new HttpError(400, 'invalid_json_body');
+  }
   return parsed as Record<string, unknown>;
 }
 
 function boundedInteger(raw: string | null, fallback: number, minimum: number, maximum: number): number {
   if (raw === null) return fallback;
   const value = Number(raw);
-  if (!Number.isInteger(value) || value < minimum || value > maximum) throw new Error('invalid_numeric_bound');
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new HttpError(400, 'invalid_numeric_bound');
+  }
   return value;
+}
+
+class HttpError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super(code);
+    this.name = 'HttpError';
+  }
+}
+
+function httpFailure(error: unknown): { status: number; code: string } {
+  if (error instanceof HttpError) return error;
+  if (error instanceof EventConflictError) return { status: 409, code: 'event_conflict' };
+  if (error instanceof TypeError) return { status: 400, code: 'invalid_request' };
+  return { status: 500, code: 'internal_error' };
+}
+
+function findConnectorDescriptor(
+  descriptors: readonly unknown[] | undefined,
+  connectorId: string,
+): { id: string; partitions: string[] } | undefined {
+  for (const descriptor of descriptors ?? []) {
+    if (!isRecord(descriptor) || descriptor.id !== connectorId || !Array.isArray(descriptor.partitions)) {
+      continue;
+    }
+    return {
+      id: connectorId,
+      partitions: descriptor.partitions.filter(
+        (partition): partition is string => typeof partition === 'string',
+      ),
+    };
+  }
+  return undefined;
+}
+
+function localCaptureEvent(body: Record<string, unknown>): EventEnvelope {
+  const allowedFields = new Set(['kind', 'sourceEventId', 'occurredAt', 'payload']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'capture_field_not_allowed');
+  }
+  const kind = body.kind;
+  if (kind !== 'spoken' && kind !== 'manual' && kind !== 'file') {
+    throw new HttpError(400, 'invalid_capture_kind');
+  }
+  if (
+    typeof body.sourceEventId !== 'string' ||
+    !body.sourceEventId.trim() ||
+    body.sourceEventId.length > 512
+  ) {
+    throw new HttpError(400, 'invalid_source_event_id');
+  }
+  if (typeof body.occurredAt !== 'string' || !Number.isFinite(Date.parse(body.occurredAt))) {
+    throw new HttpError(400, 'invalid_occurred_at');
+  }
+  if (!Object.hasOwn(body, 'payload') || body.payload === undefined) {
+    throw new HttpError(400, 'capture_payload_required');
+  }
+  const occurredAt = new Date(body.occurredAt).toISOString();
+  const source = `local:${kind}`;
+  const sourceEventId = body.sourceEventId.trim();
+  const digest = createHash('sha256')
+    .update(`${source}\0${sourceEventId}`)
+    .digest('hex')
+    .slice(0, 32);
+  const sourceType = kind === 'file' ? SourceType.Import : SourceType.User;
+  return {
+    id: `${source}-${digest}`,
+    source,
+    sourceType,
+    sourceEventId,
+    type: `local.capture.${kind}`,
+    occurredAt,
+    // Source time is deliberate so an HTTP retry builds the same immutable event.
+    ingestedAt: occurredAt,
+    payload: structuredClone(body.payload) as JsonValue,
+    provenance: [{
+      source,
+      sourceType,
+      sourceEventId,
+      observedAt: occurredAt,
+    }],
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function contentType(path: string): string {
@@ -552,13 +737,19 @@ async function main(): Promise<void> {
     obsidianSearch: connectors.obsidianSearch,
   });
   const address = await server.listen(config.port, config.host);
-  console.log(`[jericho] listening on http://${config.host}:${address.port}`);
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    await connectors.stop();
     await server.close();
     store.close();
   };
   process.once('SIGINT', () => { void shutdown(); });
   process.once('SIGTERM', () => { void shutdown(); });
+  await connectors.start();
+  if (shuttingDown) return;
+  console.log(`[jericho] listening on http://${config.host}:${address.port}`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

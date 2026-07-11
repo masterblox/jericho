@@ -221,6 +221,117 @@ describe('atomic connector capture persistence', () => {
     }));
   });
 
+  it('refreshes exact Linear and Obsidian identities by source freshness without losing aliases or provenance', () => {
+    const store = openStore();
+    const leaseToken = captureLease(store);
+    const issue = observation('issue-1', 'Old issue title');
+    issue.namespace = 'issue';
+    issue.entityType = EntityType.Task;
+    issue.attributes = { state: 'Todo', identifier: 'JER-1' };
+    const note = observation('Project.md', 'Project');
+    note.namespace = 'note';
+    note.entityType = EntityType.Note;
+    note.attributes = { hash: 'old-hash' };
+    const firstCapture = capture('event-identities-1');
+    firstCapture.identities = [issue, note].map((item) => ({
+      ...item,
+      evidenceEventId: 'event-identities-1',
+    }));
+    const first = store.commitCaptureBatch({
+      connectorId: 'telegram', capability: ConnectorCapability.Capture,
+      partition: 'primary', expectedCursorVersion: 0,
+      nextCursor: cursor(1, 2), captures: [firstCapture], leaseToken, committedAt: T1,
+    });
+
+    const refreshedCapture = capture('event-identities-2');
+    refreshedCapture.identities = [
+      {
+        ...issue,
+        displayName: 'New issue title',
+        attributes: { state: 'Done', priority: 'high' },
+        observedAt: T2,
+        evidenceEventId: 'event-identities-2',
+      },
+      {
+        ...note,
+        attributes: { hash: 'new-hash' },
+        observedAt: T2,
+        evidenceEventId: 'event-identities-2',
+      },
+    ];
+    store.commitCaptureBatch({
+      connectorId: 'telegram', capability: ConnectorCapability.Capture,
+      partition: 'primary', expectedCursorVersion: 1,
+      nextCursor: cursor(2, 4), captures: [refreshedCapture], leaseToken, committedAt: T2,
+    });
+
+    expect(store.getEntity(first.identityLinks[0].entityId)).toMatchObject({
+      canonicalName: 'New issue title',
+      aliases: ['Old issue title'],
+      attributes: { identifier: 'JER-1', state: 'Done', priority: 'high' },
+      freshness: { observedAt: T2 },
+      provenance: expect.arrayContaining([
+        expect.objectContaining({ sourceEventId: 'event-identities-1' }),
+        expect.objectContaining({ sourceEventId: 'event-identities-2' }),
+      ]),
+    });
+    expect(store.getEntity(first.identityLinks[1].entityId)).toMatchObject({
+      canonicalName: 'Project',
+      attributes: { hash: 'new-hash' },
+      freshness: { observedAt: T2 },
+    });
+
+    const staleCapture = capture('event-identities-stale');
+    staleCapture.identities = [{
+      ...issue,
+      displayName: 'Stale title',
+      attributes: { state: 'Backlog' },
+      observedAt: T1,
+      evidenceEventId: 'event-identities-stale',
+    }];
+    store.commitCaptureBatch({
+      connectorId: 'telegram', capability: ConnectorCapability.Capture,
+      partition: 'primary', expectedCursorVersion: 2,
+      nextCursor: { ...cursor(3, 5), updatedAt: T2 },
+      captures: [staleCapture], leaseToken, committedAt: T2,
+    });
+    expect(store.getEntity(first.identityLinks[0].entityId)).toMatchObject({
+      canonicalName: 'New issue title',
+      attributes: { state: 'Done' },
+      aliases: expect.arrayContaining(['Old issue title', 'Stale title']),
+    });
+  });
+
+  it('atomically commits authority-free local capture events and exposes the authenticated change-log tail', () => {
+    const store = openStore();
+    const localEvent: EventEnvelope = {
+      id: 'local-event-1',
+      source: 'local:spoken',
+      sourceType: SourceType.User,
+      sourceEventId: 'utterance-1',
+      type: 'local.capture.spoken',
+      occurredAt: T1,
+      ingestedAt: T1,
+      payload: { transcript: 'What needs doing today?' },
+      provenance: [{
+        source: 'local:spoken', sourceType: SourceType.User,
+        sourceEventId: 'utterance-1', observedAt: T1,
+      }],
+    };
+
+    expect(store.commitLocalCapture(localEvent)).toMatchObject({ inserted: true });
+    expect(store.commitLocalCapture(localEvent)).toMatchObject({ inserted: false });
+    expect(store.listChangeLog({ afterSequence: 0 })).toHaveLength(1);
+    expect(store.getLatestChangeSequence()).toBe(1);
+    expect(() => store.commitLocalCapture({
+      ...localEvent,
+      id: 'local-event-authority',
+      sourceEventId: 'utterance-authority',
+      status: LifecycleStatus.Approved,
+    })).toThrow(/authority|lifecycle|status/i);
+    expect(store.getEvent('local-event-authority')).toBeUndefined();
+  });
+
   it('quarantines contradictory external identity claims into Review without remapping', () => {
     const store = openStore();
     const leaseToken = captureLease(store);

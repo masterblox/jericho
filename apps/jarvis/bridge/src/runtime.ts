@@ -7,8 +7,15 @@ import { GitConnector } from './connectors/adapters/git.js';
 import { GitHubConnector } from './connectors/adapters/github.js';
 import {
   LinearAdapter,
+  type LinearComment,
   type LinearIssue,
+  type LinearProject,
+  type LinearRecord,
+  type LinearSurface,
+  type LinearTeam,
   type LinearTransport,
+  type LinearUser,
+  type LinearWorkflowState,
 } from './connectors/adapters/linear.js';
 import { ObsidianConnector } from './connectors/adapters/obsidian.js';
 import {
@@ -25,6 +32,8 @@ export interface ConnectorRuntime {
   supervisor: ConnectorSupervisor;
   descriptors: ConnectorDescriptor[];
   obsidianSearch?: ObsidianConnector;
+  start(): Promise<void>;
+  stop(): Promise<void>;
 }
 
 export interface ConnectorRuntimeOptions {
@@ -78,12 +87,114 @@ export function createConnectorRuntime(
     leaseMs: config.connectorLeaseMs,
     maxPages: config.connectorMaxPages,
   });
+  const descriptors = registry.list().map(({ descriptor }) => structuredClone(descriptor));
+  const scheduler = new ConnectorPollingScheduler(supervisor, descriptors, {
+    pollIntervalMs: config.connectorPollIntervalMs,
+    maxBackoffMs: Math.max(config.connectorPollIntervalMs, config.connectorPollIntervalMs * 8),
+  });
   return {
     registry,
     supervisor,
-    descriptors: registry.list().map(({ descriptor }) => structuredClone(descriptor)),
+    descriptors,
     ...(obsidian ? { obsidianSearch: obsidian } : {}),
+    start: () => scheduler.start(),
+    stop: () => scheduler.stop(),
   };
+}
+
+export interface PollingSyncPort {
+  sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
+}
+
+export interface PollingDescriptor {
+  id: string;
+  partitions: readonly string[];
+}
+
+export interface ConnectorPollingSchedulerOptions {
+  pollIntervalMs: number;
+  maxBackoffMs: number;
+}
+
+interface PollingTarget {
+  connectorId: string;
+  partition: string;
+  failures: number;
+  timer?: ReturnType<typeof setTimeout>;
+  inFlight?: Promise<void>;
+}
+
+export class ConnectorPollingScheduler {
+  readonly #targets: PollingTarget[];
+  #controller?: AbortController;
+  #running = false;
+
+  constructor(
+    private readonly syncPort: PollingSyncPort,
+    descriptors: readonly PollingDescriptor[],
+    private readonly options: ConnectorPollingSchedulerOptions,
+  ) {
+    if (
+      !Number.isInteger(options.pollIntervalMs) || options.pollIntervalMs < 1 ||
+      !Number.isInteger(options.maxBackoffMs) ||
+      options.maxBackoffMs < options.pollIntervalMs
+    ) {
+      throw new TypeError('Connector polling bounds are invalid');
+    }
+    this.#targets = descriptors.flatMap((descriptor) =>
+      descriptor.partitions.map((partition) => ({
+        connectorId: descriptor.id,
+        partition,
+        failures: 0,
+      })),
+    );
+  }
+
+  async start(): Promise<void> {
+    if (this.#running) return;
+    this.#running = true;
+    this.#controller = new AbortController();
+    await Promise.allSettled(this.#targets.map((target) => this.#run(target)));
+  }
+
+  async stop(): Promise<void> {
+    if (!this.#running) return;
+    this.#running = false;
+    this.#controller?.abort();
+    for (const target of this.#targets) {
+      if (target.timer) clearTimeout(target.timer);
+      target.timer = undefined;
+    }
+    await Promise.allSettled(
+      this.#targets.flatMap((target) => target.inFlight ? [target.inFlight] : []),
+    );
+    this.#controller = undefined;
+  }
+
+  async #run(target: PollingTarget): Promise<void> {
+    if (!this.#running || !this.#controller || target.inFlight) return;
+    const signal = this.#controller.signal;
+    const execution = (async () => {
+      try {
+        await this.syncPort.sync(target.connectorId, target.partition, signal);
+        target.failures = 0;
+      } catch {
+        if (!signal.aborted) target.failures += 1;
+      }
+    })();
+    target.inFlight = execution;
+    await execution;
+    target.inFlight = undefined;
+    if (!this.#running || signal.aborted) return;
+    const delay = Math.min(
+      this.options.maxBackoffMs,
+      this.options.pollIntervalMs * (2 ** target.failures),
+    );
+    target.timer = setTimeout(() => {
+      target.timer = undefined;
+      void this.#run(target);
+    }, delay);
+  }
 }
 
 export class HttpTelegramGatewayTransport implements TelegramGatewayTransport {
@@ -142,7 +253,8 @@ export class HttpTelegramGatewayTransport implements TelegramGatewayTransport {
 export class LinearGraphqlTransport implements LinearTransport {
   constructor(private readonly fetchImplementation: typeof globalThis.fetch = globalThis.fetch) {}
 
-  async queryIssues(input: Parameters<LinearTransport['queryIssues']>[0]) {
+  async query(input: Parameters<NonNullable<LinearTransport['query']>>[0]) {
+    const definition = LINEAR_SURFACE_QUERIES[input.surface];
     const response = await this.fetchImplementation('https://api.linear.app/graphql', {
       method: 'POST',
       headers: {
@@ -151,17 +263,7 @@ export class LinearGraphqlTransport implements LinearTransport {
         accept: 'application/json',
       },
       body: JSON.stringify({
-        query: `query JerichoIssues($first: Int!, $after: String, $filter: IssueFilter) {
-          issues(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
-            nodes {
-              id identifier title updatedAt
-              state { name }
-              project { id name }
-              assignee { id name }
-            }
-            pageInfo { hasNextPage endCursor }
-          }
-        }`,
+        query: definition.query,
         variables: {
           first: Math.min(input.limit, 100),
           ...(input.after ? { after: input.after } : {}),
@@ -173,19 +275,21 @@ export class LinearGraphqlTransport implements LinearTransport {
       signal: input.signal,
     });
     if (!response.ok) {
-      return { status: response.status, issues: [], pageInfo: { hasNextPage: false } };
+      return { status: response.status, records: [], pageInfo: { hasNextPage: false } };
     }
     const body = await response.json() as {
-      data?: { issues?: { nodes?: LinearGraphqlIssue[]; pageInfo?: LinearPageInfo } };
+      data?: Record<string, { nodes?: Record<string, unknown>[]; pageInfo?: LinearPageInfo }>;
       errors?: unknown[];
     };
-    if (body.errors?.length || !body.data?.issues) {
-      return { status: 502, issues: [], pageInfo: { hasNextPage: false } };
+    const connection = body.data?.[definition.root];
+    if (body.errors?.length || !connection) {
+      return { status: 502, records: [], pageInfo: { hasNextPage: false } };
     }
-    const connection = body.data.issues;
     return {
       status: response.status,
-      issues: (connection.nodes ?? []).map(fromLinearGraphqlIssue),
+      records: (connection.nodes ?? []).map((record) =>
+        fromLinearGraphqlRecord(input.surface, record),
+      ),
       pageInfo: {
         hasNextPage: connection.pageInfo?.hasNextPage === true,
         ...(connection.pageInfo?.endCursor
@@ -194,7 +298,73 @@ export class LinearGraphqlTransport implements LinearTransport {
       },
     };
   }
+
+  async queryIssues(input: Parameters<LinearTransport['queryIssues']>[0]) {
+    const result = await this.query({ ...input, surface: 'issues' });
+    return {
+      status: result.status,
+      issues: result.records as LinearIssue[],
+      pageInfo: result.pageInfo,
+    };
+  }
 }
+
+const LINEAR_SURFACE_QUERIES: Record<LinearSurface, { root: string; query: string }> = {
+  issues: {
+    root: 'issues',
+    query: `query JerichoIssues($first: Int!, $after: String, $filter: IssueFilter) {
+      issues(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id identifier title updatedAt state { name } project { id name } assignee { id name } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+  comments: {
+    root: 'comments',
+    query: `query JerichoComments($first: Int!, $after: String, $filter: CommentFilter) {
+      comments(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id body updatedAt issue { id identifier title } user { id name } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+  teams: {
+    root: 'teams',
+    query: `query JerichoTeams($first: Int!, $after: String, $filter: TeamFilter) {
+      teams(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id key name updatedAt }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+  users: {
+    root: 'users',
+    query: `query JerichoUsers($first: Int!, $after: String, $filter: UserFilter) {
+      users(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id name email updatedAt }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+  projects: {
+    root: 'projects',
+    query: `query JerichoProjects($first: Int!, $after: String, $filter: ProjectFilter) {
+      projects(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id name state updatedAt }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+  'workflow-states': {
+    root: 'workflowStates',
+    query: `query JerichoWorkflowStates($first: Int!, $after: String, $filter: WorkflowStateFilter) {
+      workflowStates(first: $first, after: $after, filter: $filter, orderBy: updatedAt) {
+        nodes { id name type color updatedAt team { id name } }
+        pageInfo { hasNextPage endCursor }
+      }
+    }`,
+  },
+};
 
 interface LinearGraphqlIssue {
   id: string;
@@ -225,6 +395,34 @@ function fromLinearGraphqlIssue(issue: LinearGraphqlIssue): LinearIssue {
       ? { assignee: { id: issue.assignee.id, name: issue.assignee.name } }
       : {}),
   };
+}
+
+function fromLinearGraphqlRecord(
+  surface: LinearSurface,
+  raw: Record<string, unknown>,
+): LinearRecord {
+  switch (surface) {
+    case 'issues': return fromLinearGraphqlIssue(raw as unknown as LinearGraphqlIssue);
+    case 'comments': return raw as unknown as LinearComment;
+    case 'teams': return raw as unknown as LinearTeam;
+    case 'users': return raw as unknown as LinearUser;
+    case 'projects': {
+      const state = raw.state;
+      return {
+        ...(raw as unknown as LinearProject),
+        ...(typeof state === 'string'
+          ? { state }
+          : isRuntimeRecord(state) && typeof state.name === 'string'
+            ? { state: state.name }
+            : {}),
+      };
+    }
+    case 'workflow-states': return raw as unknown as LinearWorkflowState;
+  }
+}
+
+function isRuntimeRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function gatewayUrl(base: string, pathname: string): URL {

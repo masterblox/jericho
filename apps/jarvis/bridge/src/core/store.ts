@@ -89,6 +89,10 @@ export interface AppendEventResult {
   inserted: boolean;
 }
 
+export interface CommitLocalCaptureResult extends AppendEventResult {
+  change?: ChangeLog;
+}
+
 export interface EventListOptions {
   source?: string;
   limit?: number;
@@ -723,6 +727,36 @@ export class JerichoStore {
     return this.#writeTransaction(() => this.#appendEventRecord(normalized));
   }
 
+  commitLocalCapture(event: EventEnvelope): CommitLocalCaptureResult {
+    const authorityFields = ['status', 'route', 'risk', 'confidence', 'integrityHash'] as const;
+    if (authorityFields.some((field) => Object.hasOwn(event, field))) {
+      throw new TypeError('Local capture events cannot supply lifecycle or authority fields');
+    }
+    if (
+      !event.source.startsWith('local:') ||
+      !event.type.startsWith('local.capture.') ||
+      ![SourceType.User, SourceType.Sensor, SourceType.Import].includes(event.sourceType)
+    ) {
+      throw new TypeError('Local capture event source is invalid');
+    }
+    assertEventEnvelope(event);
+    const normalized = normalizeEvent(event);
+    return this.#writeTransaction(() => {
+      const result = this.#appendEventRecord(normalized);
+      if (!result.inserted) return result;
+      const change = this.#appendChangeLog({
+        kind: ChangeLogKind.EventCaptured,
+        connectorId: 'local',
+        recordType: 'event',
+        recordId: result.event.id,
+        eventId: result.event.id,
+        changedAt: result.event.ingestedAt,
+        payload: { eventType: result.event.type },
+      });
+      return { ...result, change };
+    });
+  }
+
   getEvent(id: string): EventEnvelope | undefined {
     const row = this.#database
       .prepare('SELECT * FROM events WHERE id = ?')
@@ -1010,6 +1044,17 @@ export class JerichoStore {
       'change_log', String(row.id), row,
       (value) => assertChangeLog(value), (value) => value.id,
     ));
+  }
+
+  getLatestChangeSequence(): number {
+    const row = this.#database.prepare(`
+      SELECT * FROM change_log ORDER BY sequence DESC LIMIT 1
+    `).get();
+    if (!row) return 0;
+    return this.#readRecord<ChangeLog>(
+      'change_log', String(row.id), row,
+      (value) => assertChangeLog(value), (value) => value.id,
+    ).sequence;
   }
 
   acquireConnectorLease(input: AcquireConnectorLeaseInput): ConnectorLease | undefined {
@@ -2490,6 +2535,12 @@ export class JerichoStore {
         provenance: mergeProvenance(existing.provenance, [provenance]),
       };
       this.#writeExternalIdentity(link);
+      this.#refreshEntityFromExternalObservation(
+        existing.entityId,
+        observation,
+        provenance,
+        committedAt,
+      );
       if (observation.claimedEntityId && observation.claimedEntityId !== existing.entityId) {
         const reviewCandidate = this.#identityReview(
           IdentityReviewKind.Contradiction,
@@ -2709,6 +2760,56 @@ export class JerichoStore {
       stored.id, stored.type, stored.status ?? null, stored.risk ?? null,
       stored.confidence ?? null, stored.freshness.observedAt, stored.createdAt,
       stored.updatedAt, sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #refreshEntityFromExternalObservation(
+    entityId: string,
+    observation: ExternalIdentityObservation,
+    provenance: Provenance,
+    committedAt: string,
+  ): void {
+    const current = this.getEntity(entityId);
+    if (!current) throw new Error(`External identity entity ${entityId} does not exist`);
+    const incomingIsNewer = timestampEpoch(observation.observedAt) >
+      timestampEpoch(current.freshness.observedAt);
+    const canonicalName = incomingIsNewer && observation.displayName
+      ? observation.displayName
+      : current.canonicalName;
+    const aliases = uniqueStrings([
+      ...current.aliases,
+      ...(canonicalName !== current.canonicalName ? [current.canonicalName] : []),
+      ...(observation.displayName && observation.displayName !== canonicalName
+        ? [observation.displayName]
+        : []),
+    ]).filter((alias) => alias !== canonicalName);
+    const refreshed: Entity = {
+      ...current,
+      ...(incomingIsNewer ? { type: observation.entityType } : {}),
+      canonicalName,
+      aliases,
+      attributes: incomingIsNewer
+        ? { ...current.attributes, ...observation.attributes }
+        : { ...observation.attributes, ...current.attributes },
+      confidence: Math.max(current.confidence ?? 0, observation.confidence),
+      freshness: incomingIsNewer
+        ? { observedAt: observation.observedAt }
+        : current.freshness,
+      provenance: mergeProvenance(current.provenance, [provenance]),
+      updatedAt: laterTimestamp(current.updatedAt, committedAt),
+    };
+    assertEntity(refreshed);
+    const sealed = this.#sealRecord('entities', refreshed.id, refreshed);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      UPDATE entities SET
+        entity_type = ?, status = ?, risk = ?, confidence = ?, freshness_at = ?,
+        created_at = ?, updated_at = ?, integrity_hash = ?, body = ?
+      WHERE id = ?
+    `).run(
+      stored.type, stored.status ?? null, stored.risk ?? null,
+      stored.confidence ?? null, stored.freshness.observedAt,
+      stored.createdAt, stored.updatedAt, sealed.integrityHash, sealed.body, stored.id,
     );
   }
 
