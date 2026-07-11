@@ -64,14 +64,15 @@ describe('persistent dual-hand tracks', () => {
     expect(manager.update([], 351)).toHaveLength(0);
   });
 
-  it('uses geometry for pinch even when the generic classifier says Closed_Fist', () => {
+  it('suppresses and resets geometric pinch whenever the classifier says Closed_Fist', () => {
     const manager = new HandTrackManager();
     const pinch = { recognizedGesture: 'Closed_Fist', pinchRatio: 0.2, openPalm: false };
     manager.update([observation('Right', 0.7, pinch)], 0);
     const engaged = manager.update([observation('Right', 0.7, { ...pinch, atFrameEdge: false })], 80)[0];
-    expect(engaged.state).toBe('pinch');
+    expect(engaged.state).toBe('idle');
+    expect(engaged.pinchPhase).toBe('open');
     const atEdge = manager.update([observation('Right', 0.7, { ...pinch, atFrameEdge: true })], 100)[0];
-    expect(atEdge.state).toBe('pinch');
+    expect(atEdge.state).toBe('idle');
   });
 
   it('applies the persisted role swap without changing track identity', () => {

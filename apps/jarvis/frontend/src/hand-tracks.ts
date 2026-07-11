@@ -163,14 +163,17 @@ export class HandTrackManager {
     const filter = new AdaptivePointFilter();
     const pinch = new PinchLatch();
     const smoothedAnchor = filter.push(observation.palmAnchor);
-    const pinched = pinch.update(observation.pinchRatio, observation.atFrameEdge, now);
+    const closedFist = observation.recognizedGesture === 'Closed_Fist';
+    const pinched = closedFist
+      ? false
+      : pinch.update(observation.pinchRatio, observation.atFrameEdge, now);
     const frame: TrackedHandFrame = {
       trackId: this.nextTrackId++,
       handedness,
       handednessConfidence: observation.handednessConfidence,
       rawHandedness: observation.rawHandedness,
       rawHandednessConfidence: observation.handednessConfidence,
-      state: pinched ? 'pinch' : observation.openPalm ? 'palm' : 'idle',
+      state: pinched ? 'pinch' : !closedFist && observation.openPalm ? 'palm' : 'idle',
       recognizedGesture: observation.recognizedGesture,
       gestureConfidence: observation.gestureConfidence,
       confidence: observation.confidence,
@@ -208,7 +211,11 @@ export class HandTrackManager {
       x: track.velocity.x * 0.65 + instantaneous.x * 0.35,
       y: track.velocity.y * 0.65 + instantaneous.y * 0.35,
     };
-    const pinched = track.pinch.update(observation.pinchRatio, observation.atFrameEdge, now);
+    const closedFist = observation.recognizedGesture === 'Closed_Fist';
+    if (closedFist) track.pinch.reset();
+    const pinched = closedFist
+      ? false
+      : track.pinch.update(observation.pinchRatio, observation.atFrameEdge, now);
     track.lastSeenAt = now;
     track.lastRawAnchor = observation.palmAnchor;
     track.frame = {
@@ -217,7 +224,7 @@ export class HandTrackManager {
       handednessConfidence: Math.max(track.frame.handednessConfidence * 0.9, observation.handednessConfidence),
       rawHandedness: observation.rawHandedness,
       rawHandednessConfidence: observation.handednessConfidence,
-      state: pinched ? 'pinch' : observation.openPalm ? 'palm' : 'idle',
+      state: pinched ? 'pinch' : !closedFist && observation.openPalm ? 'palm' : 'idle',
       recognizedGesture: observation.recognizedGesture,
       gestureConfidence: observation.gestureConfidence,
       confidence: observation.confidence,

@@ -309,8 +309,10 @@ export class JarvisRuntime {
 
     const leftPoint = frame.left ? this.screenPoint(frame.left, viewport) : undefined;
     const rightPoint = frame.right ? this.screenPoint(frame.right, viewport) : undefined;
-    const leftSuppressed = this.consumeSuppression(frame.left);
-    const rightSuppressed = this.consumeSuppression(frame.right);
+    const leftClosedFist = frame.left?.fresh === true && frame.left.recognizedGesture === 'Closed_Fist';
+    const rightClosedFist = frame.right?.fresh === true && frame.right.recognizedGesture === 'Closed_Fist';
+    const leftSuppressed = leftClosedFist || this.consumeSuppression(frame.left);
+    const rightSuppressed = rightClosedFist || this.consumeSuppression(frame.right);
     const leftTarget = leftPoint ? this.registry.resolveAt(leftPoint) : null;
     const rightTarget = rightPoint ? this.registry.resolveAt(rightPoint) : null;
     const rightCursorPoint = rightPoint && rightTarget?.draggable && frame.right?.state !== 'pinch'

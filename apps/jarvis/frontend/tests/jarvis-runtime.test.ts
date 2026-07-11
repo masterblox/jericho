@@ -322,6 +322,43 @@ describe('JarvisRuntime lifecycle', () => {
     document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, listener);
   });
 
+  it('treats a reported closed fist as inert and cancels any geometric pinch interaction', async () => {
+    const harness = createHarness({ viewport: () => ({ width: 500, height: 500 }) });
+    const target = document.createElement('button');
+    harness.root.append(target);
+    vi.spyOn(target, 'getBoundingClientRect').mockReturnValue({
+      left: 0, top: 0, right: 500, bottom: 500,
+      width: 500, height: 500, x: 0, y: 0, toJSON: () => ({}),
+    });
+    const onTap = vi.fn();
+    const onHold = vi.fn();
+    const onDragStart = vi.fn();
+    const onDragEnd = vi.fn();
+    harness.registry.register({
+      id: 'closed-fist-target', element: target, draggable: true,
+      onTap, onHold, onDragStart, onDragEnd,
+    });
+    Object.defineProperty(document, 'elementsFromPoint', {
+      configurable: true, value: vi.fn().mockReturnValue([target]),
+    });
+    const decisions: unknown[] = [];
+    const decisionListener = (event: Event) => decisions.push((event as CustomEvent).detail);
+    document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, decisionListener);
+    await harness.runtime.engage();
+
+    harness.emit(frame(0, undefined, tracked('Right', 'pinch', 0.5, 0.5)));
+    harness.emit(frame(1_000, undefined, tracked('Right', 'pinch', 0.5, 0.5, 'Closed_Fist')));
+    harness.emit(frame(2_000, undefined, tracked('Right', 'pinch', 0.6, 0.5, 'Closed_Fist')));
+    harness.emit(frame(3_000, undefined, tracked('Right', 'idle', 0.6, 0.5, 'None')));
+
+    expect(onTap).not.toHaveBeenCalled();
+    expect(onHold).not.toHaveBeenCalled();
+    expect(onDragStart).not.toHaveBeenCalled();
+    expect(onDragEnd.mock.calls.every(([, cancelled]) => cancelled === true)).toBe(true);
+    expect(decisions).toEqual([]);
+    document.removeEventListener(JERICHO_APPROVAL_GESTURE_EVENT, decisionListener);
+  });
+
   it('clutches the camera only from empty Nucleus space and emits local semantic deltas', async () => {
     const harness = createHarness({ viewport: () => ({ width: 1_000, height: 1_000 }) });
     const nucleus = nucleusSpace(harness.root);
