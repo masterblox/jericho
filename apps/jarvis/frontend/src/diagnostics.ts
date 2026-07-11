@@ -25,6 +25,7 @@ export interface SanitizedDiagnosticSnapshot {
     lossAgeMs: number;
     pinchPhase: PinchPhase;
     pinchRatio: number;
+    recognizedGesture?: string;
   }>;
   actions: Array<{ channel: 'left' | 'right'; type: string }>;
   scrollTop: number;
@@ -51,6 +52,7 @@ export class DiagnosticRecorder {
         lossAgeMs: Math.round(hand.lossAgeMs),
         pinchPhase: hand.pinchPhase,
         pinchRatio: round(hand.pinchRatio, 2),
+        recognizedGesture: hand.recognizedGesture,
       })),
       actions: input.actions.map(({ channel, action }) => ({ channel, type: action.type })),
       scrollTop: Math.round(input.scrollTop),

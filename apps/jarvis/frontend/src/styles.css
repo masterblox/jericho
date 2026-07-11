@@ -1458,3 +1458,25 @@ a:focus-visible {
     transition-duration: 0.001ms !important;
   }
 }
+
+/* Dedicated hardware test surface. The command-center route does not use these rules. */
+.gesture-lab { min-height: 100vh; padding: 18px; color: #d8f8ff; background: radial-gradient(circle at 48% 35%, #0b3140 0, #061219 43%, #02070a 100%); display: grid; grid-template-columns: minmax(560px, 2fr) minmax(280px, 1fr); gap: 14px; }
+.gesture-lab__header { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; padding: 12px 16px; border: 1px solid #1b6577; background: #06141bcc; }
+.gesture-lab__header h1 { margin: 2px 0 0; font-size: 26px; letter-spacing: .08em; }
+.gesture-lab__header button, .gesture-lab__header a { color: #bdf7ff; border: 1px solid #25879b; background: #09232c; padding: 10px 14px; text-decoration: none; cursor: pointer; }
+.gesture-lab__status { margin-left: auto; font: 11px/1.2 monospace; text-transform: uppercase; }
+.gesture-lab__status i { display: inline-block; width: 7px; height: 7px; margin-right: 7px; border-radius: 50%; background: #35e7ff; box-shadow: 0 0 12px #35e7ff; }
+.gesture-lab__stage { position: relative; min-height: 520px; overflow: hidden; border: 1px solid #1c7185; background: #02090d; }
+.gesture-lab__camera, .gesture-lab__camera video { position: absolute; inset: 0; width: 100%; height: 100%; }
+.gesture-lab__camera video { object-fit: cover; transform: scaleX(-1); opacity: .58; }
+.gesture-lab__camera span { position: absolute; left: 12px; bottom: 10px; font: 9px monospace; letter-spacing: .15em; color: #7ec5d1; }
+.gesture-lab__nucleus { position: absolute; inset: 14% 24%; display: grid; place-content: center; text-align: center; border: 1px solid #23b7d0aa; border-radius: 50%; box-shadow: inset 0 0 90px #0bc7e71c, 0 0 45px #0bc7e722; }
+.gesture-lab__nucleus strong { letter-spacing: .18em; }.gesture-lab__nucleus small { margin-top: 7px; color: #74aeb8; }
+.gesture-lab__target, .gesture-lab__drag { position: absolute; z-index: 2; color: #d9fbff; background: #0a2933dd; border: 1px solid #39dff6; box-shadow: 0 0 25px #25cde633; cursor: pointer; }
+.gesture-lab__target { right: 5%; top: 8%; width: 150px; height: 110px; display: grid; place-content: center; font-size: 18px; }.gesture-lab__target small,.gesture-lab__target span { display:block;font-size:9px;margin-top:5px;color:#81cbd6; }.gesture-lab__drag { left: 6%; top: 42%; width: 95px; height: 65px; }
+.gesture-lab__telemetry, .gesture-lab__tests, .gesture-lab__comms, .gesture-lab__approval { border: 1px solid #174c59; background: #06151bd9; padding: 14px; }
+.gesture-lab h2 { margin: 0 0 12px; font-size: 12px; letter-spacing: .14em; text-transform: uppercase; }
+.gesture-lab__telemetry dl { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }.gesture-lab__telemetry dl div { border: 1px solid #153d47; padding: 8px; }.gesture-lab__telemetry dt { font: 8px monospace; color: #6999a3; }.gesture-lab__telemetry dd { margin: 3px 0 0; font: 11px monospace; word-break: break-word; }.gesture-lab__telemetry article { display:grid;grid-template-columns:1fr 1fr;gap:4px;margin-top:8px;padding:8px;border-left:2px solid #2cd9ee;font:10px monospace; }.gesture-lab__telemetry > p { color:#53e8fa;font:10px monospace; }
+.gesture-lab__tests ol { list-style:none;padding:0;margin:0;display:grid;grid-template-columns:1fr 1fr;gap:6px; }.gesture-lab__tests li { display:flex;gap:8px;padding:8px;border:1px solid #163e48; }.gesture-lab__tests li b { color:#7898a0;font:8px monospace; }.gesture-lab__tests li div { display:grid; }.gesture-lab__tests li strong { font-size:10px; }.gesture-lab__tests li span { color:#6f98a1;font-size:9px;margin-top:3px; }.gesture-lab__tests li.is-pass { border-color:#22cc9a;background:#0a3027; }.gesture-lab__tests li.is-pass b { color:#45edb8; }
+.gesture-lab__comms { max-height:190px;overflow:auto; }.gesture-lab__comms p { padding:10px;margin:4px 0;border:1px solid #143843;font-size:10px; }.gesture-lab__approval { display:grid;border-color:#a9772d; }.gesture-lab__approval span { color:#bda879;font-size:10px;margin-top:5px; }
+@media(max-width:900px){.gesture-lab{grid-template-columns:1fr}.gesture-lab__header,.gesture-lab__stage{grid-column:1}.gesture-lab__stage{min-height:440px}.gesture-lab__header{flex-wrap:wrap}.gesture-lab__status{margin-left:0}}

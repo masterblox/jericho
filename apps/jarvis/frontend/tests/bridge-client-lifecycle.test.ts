@@ -58,7 +58,7 @@ describe('BridgeClient lifecycle', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('keeps local clap wake and the exact greeting available while the voice socket is offline', async () => {
+  it('queues clap wake while the voice socket is connecting without leaking audio', async () => {
     const harness = createBridgeHarness();
     await harness.client.start();
 
@@ -66,9 +66,6 @@ describe('BridgeClient lifecycle', () => {
     harness.emitClap();
     await flushPromises();
 
-    expect(harness.speakGreeting).toHaveBeenCalledWith(
-      'Hello, sir. What are we doing today?',
-    );
     expect(sentMessages(harness.socket)).not.toContainEqual({ type: 'wake' });
     expect(harness.mic.stop).not.toHaveBeenCalled();
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
@@ -88,23 +85,25 @@ describe('BridgeClient lifecycle', () => {
     });
   });
 
-  it('starts the exact local greeting before manual wake opens an active turn', async () => {
-    const greeting = deferred<void>();
-    const harness = createBridgeHarness({ speakGreeting: vi.fn(() => greeting.promise) });
+  it('keeps the mic muted while Gemini greets, plays greeting audio, then listens', async () => {
+    const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
 
     harness.client.wake();
 
-    expect(harness.speakGreeting).toHaveBeenCalledWith(
-      'Hello, sir. What are we doing today?',
-    );
-    expect(sentMessages(harness.socket)).not.toContainEqual({ type: 'wake' });
+    expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.emitChunk('blocked-during-greeting');
+    expect(sentMessages(harness.socket)).not.toContainEqual({
+      type: 'audio', data: 'blocked-during-greeting',
+    });
+
+    harness.socket.message({ type: 'audio', data: 'gemini-greeting-audio' });
+    expect(harness.speaker.enqueue).toHaveBeenCalledWith('gemini-greeting-audio');
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
 
-    greeting.resolve();
-    await flushPromises();
-    expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    harness.socket.message({ type: 'greeting_complete' });
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
 
     harness.emitChunk('active-audio');
@@ -114,7 +113,7 @@ describe('BridgeClient lifecycle', () => {
     });
   });
 
-  it('uses the same local greeting and active gate for a detected clap', async () => {
+  it('uses the same Gemini greeting and active gate for a detected clap', async () => {
     const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
@@ -122,25 +121,22 @@ describe('BridgeClient lifecycle', () => {
     harness.emitClap();
     await flushPromises();
 
-    expect(harness.speakGreeting).toHaveBeenCalledWith(
-      'Hello, sir. What are we doing today?',
-    );
     expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.socket.message({ type: 'greeting_complete' });
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
 
   it('does not let a delayed initial standby frame cancel an in-progress greeting', async () => {
-    const greeting = deferred<void>();
-    const harness = createBridgeHarness({ speakGreeting: vi.fn(() => greeting.promise) });
+    const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
     harness.client.wake();
 
     harness.socket.message({ type: 'armed', armed: false });
-    greeting.resolve();
-    await flushPromises();
-
     expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.socket.message({ type: 'greeting_complete' });
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
 
@@ -151,14 +147,13 @@ describe('BridgeClient lifecycle', () => {
     await harness.socket.open();
     await flushPromises();
 
-    expect(harness.speakGreeting).toHaveBeenCalledWith(
-      'Hello, sir. What are we doing today?',
-    );
     expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.socket.message({ type: 'greeting_complete' });
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
 
-  it('speaks the exact greeting through the local browser synthesizer by default', async () => {
+  it('never uses the local browser synthesizer for wake', async () => {
     class FakeUtterance {
       onend: (() => void) | null = null;
       onerror: (() => void) | null = null;
@@ -174,11 +169,9 @@ describe('BridgeClient lifecycle', () => {
     harness.client.wake();
     await flushPromises();
 
-    expect(speak).toHaveBeenCalledTimes(1);
-    expect(speak.mock.calls[0][0].text).toBe(
-      'Hello, sir. What are we doing today?',
-    );
+    expect(speak).not.toHaveBeenCalled();
     expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
   });
 
   it('mutes upstream audio and returns to standby on turn completion', async () => {
@@ -187,6 +180,7 @@ describe('BridgeClient lifecycle', () => {
     await harness.socket.open();
     harness.client.wake();
     await flushPromises();
+    harness.socket.message({ type: 'greeting_complete' });
     harness.socket.send.mockClear();
 
     harness.socket.message({ type: 'turn_complete' });
@@ -202,6 +196,7 @@ describe('BridgeClient lifecycle', () => {
     await harness.socket.open();
     harness.client.wake();
     await flushPromises();
+    harness.socket.message({ type: 'greeting_complete' });
     harness.socket.send.mockClear();
 
     await vi.advanceTimersByTimeAsync(1_000);
@@ -214,18 +209,15 @@ describe('BridgeClient lifecycle', () => {
   });
 
   it('cannot activate from a stale greeting after disconnect and reconnect', async () => {
-    const greeting = deferred<void>();
-    const harness = createBridgeHarness({ speakGreeting: vi.fn(() => greeting.promise) });
+    const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
     harness.client.wake();
 
     harness.socket.disconnect();
-    greeting.resolve();
     await flushPromises();
 
-    expect(sentMessages(harness.socket)).not.toContainEqual({ type: 'wake' });
-    expect(harness.cancelGreeting).toHaveBeenCalled();
+    expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
     await vi.advanceTimersByTimeAsync(1_500);
     expect(harness.sockets).toHaveLength(2);
     await harness.sockets[1].open();
@@ -241,6 +233,7 @@ describe('BridgeClient lifecycle', () => {
     await harness.socket.open();
     harness.client.wake();
     await flushPromises();
+    harness.socket.message({ type: 'greeting_complete' });
 
     await vi.advanceTimersByTimeAsync(100);
 
@@ -298,7 +291,6 @@ class FakeSocket {
 
 interface BridgeHarnessOptions {
   activeTurnMs?: number;
-  speakGreeting?: ReturnType<typeof vi.fn>;
   useDefaultGreeting?: boolean;
   clapDuringStart?: boolean;
 }
@@ -324,8 +316,6 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}) {
     dispose: vi.fn(),
   };
   const sockets: FakeSocket[] = [];
-  const speakGreeting = options.speakGreeting ?? vi.fn().mockResolvedValue(undefined);
-  const cancelGreeting = vi.fn();
   const dependencies: BridgeClientDependencies = {
     createMic: (chunk, clap) => {
       onChunk = chunk;
@@ -340,10 +330,6 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}) {
     },
     activeTurnMs: options.activeTurnMs,
   };
-  if (!options.useDefaultGreeting) {
-    dependencies.speakGreeting = speakGreeting;
-    dependencies.cancelGreeting = cancelGreeting;
-  }
   const client = new BridgeClient({}, dependencies);
 
   return {
@@ -356,8 +342,6 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}) {
       if (!socket) throw new Error('Bridge test socket is not connected');
       return socket;
     },
-    speakGreeting,
-    cancelGreeting,
     emitChunk: (data: string) => onChunk?.(data),
     emitClap: () => onClap?.(),
   };
@@ -365,12 +349,6 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}) {
 
 function sentMessages(socket: FakeSocket): Array<Record<string, unknown>> {
   return socket.send.mock.calls.map(([raw]) => JSON.parse(String(raw)) as Record<string, unknown>);
-}
-
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void;
-  const promise = new Promise<T>((resolvePromise) => { resolve = resolvePromise; });
-  return { promise, resolve };
 }
 
 async function flushPromises(): Promise<void> {

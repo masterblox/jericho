@@ -95,6 +95,7 @@ export interface ReflectionReviewPort {
 }
 
 export interface VoiceSessionPort {
+  sendClientContent(input: unknown): void;
   sendRealtimeInput(input: unknown): void;
   sendToolResponse(input: unknown): void;
   close(): void;
@@ -1018,6 +1019,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let activeTimer: ReturnType<typeof setTimeout> | undefined;
   let transcriptTimer: ReturnType<typeof setTimeout> | undefined;
   let personaRevertTimer: ReturnType<typeof setTimeout> | undefined;
+  let greetingActive = false;
+  let greetingPending = false;
   let captureTurn: { id: string; transcript: string } | undefined;
 
   const send = (message: Record<string, unknown>) => {
@@ -1025,6 +1028,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const deactivate = (turnComplete = false) => {
     active = false;
+    greetingActive = false;
+    greetingPending = false;
     if (activeTimer) clearTimeout(activeTimer);
     activeTimer = undefined;
     if (captureTurn) {
@@ -1042,7 +1047,27 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     captureTurn = { id: randomUUID(), transcript: '' };
     if (activeTimer) clearTimeout(activeTimer);
     send({ type: 'armed', armed: true });
-    activeTimer = setTimeout(() => deactivate(), activeTurnMs);
+    activeTimer = setTimeout(() => {
+      if (greetingActive || greetingPending) send({ type: 'error', message: 'wake greeting unavailable' });
+      deactivate();
+    }, activeTurnMs);
+  };
+  const requestWakeGreeting = () => {
+    if (!active || clientClosed) return;
+    if (!session) {
+      greetingPending = true;
+      return;
+    }
+    greetingPending = false;
+    greetingActive = true;
+    send({ type: 'greeting_started' });
+    session.sendClientContent({
+      turns: [{
+        role: 'user',
+        parts: [{ text: 'Say exactly: “Hello, sir. What are we doing today?”' }],
+      }],
+      turnComplete: true,
+    });
   };
   const captureInputTranscription = (value: unknown) => {
     if (!captureTurn || !isRecord(value)) return;
@@ -1150,10 +1175,23 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
               }
             }).catch(() => send({ type: 'error', message: 'tool execution failed' }));
           }
-          if (message.serverContent?.turnComplete) deactivate(true);
+          if (message.serverContent?.turnComplete) {
+            if (greetingActive) {
+              greetingActive = false;
+              if (activeTimer) clearTimeout(activeTimer);
+              activeTimer = setTimeout(() => deactivate(), activeTurnMs);
+              send({ type: 'greeting_complete' });
+              send({ type: 'armed', armed: true });
+            } else {
+              deactivate(true);
+            }
+          }
         },
         onerror: () => {
-          if (connectionGeneration === generation) send({ type: 'error', message: 'voice unavailable' });
+          if (connectionGeneration === generation) {
+            send({ type: 'error', message: 'voice unavailable' });
+            if (greetingActive || greetingPending) deactivate();
+          }
         },
         onclose: () => {
           if (!clientClosed && connectionGeneration === generation) {
@@ -1168,8 +1206,12 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         return;
       }
       session = connected;
+      if (greetingPending && active) requestWakeGreeting();
     }).catch(() => {
-      if (connectionGeneration === generation) send({ type: 'error', message: 'voice unavailable' });
+      if (connectionGeneration === generation) {
+        send({ type: 'error', message: 'voice unavailable' });
+        if (greetingActive || greetingPending) deactivate();
+      }
     });
   };
 
@@ -1181,7 +1223,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     try {
       const message = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (message.type === 'audio' && typeof message.data === 'string') {
-        if (active) {
+        if (active && !greetingActive && !greetingPending) {
           session?.sendRealtimeInput({
             media: { data: message.data, mimeType: 'audio/pcm;rate=16000' },
           });
@@ -1200,7 +1242,10 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         connect(personas[currentMode].voice);
       }
       if (message.type === 'wake') {
-        activate();
+        if (!active) {
+          activate();
+          requestWakeGreeting();
+        }
       }
       if (message.type === 'standby') {
         deactivate();

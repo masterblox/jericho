@@ -11,6 +11,8 @@ describe('production React entry', () => {
     expect(entry).toContain('createRoot');
     expect(entry).toContain('CommandCenterApp');
     expect(entry).toContain('EngageGate');
+    expect(entry).toContain("get('lab') === 'gestures'");
+    expect(entry).toContain('GestureLab');
     expect(entry).not.toMatch(/HUD|SAMPLE_TASKS|NAV_COMMANDS/);
     expect(existsSync(new URL('src/main.ts', root))).toBe(false);
     expect(existsSync(new URL('src/hud.ts', root))).toBe(false);

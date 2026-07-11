@@ -79,11 +79,16 @@ Denial or hardware failure leaves the entire command center usable by keyboard
 and pointer. Escape pauses or resumes tracking and restores the normal cursor.
 
 Standby microphone samples stay in the browser and are used only by the local
-clap detector. A clap immediately starts the local greeting, “Hello, sir. What
-are we doing today?” Once the greeting finishes, a connected Gemini Live session
-receives microphone audio only for the active turn (30 seconds by default).
-Without Gemini, Core and the command center still work and clap wake returns to
-standby after the 1.5-second connection grace period.
+clap detector. A clap or manual wake asks the existing Gemini Live session to
+speak exactly “Hello, sir. What are we doing today?” through the configured
+Algieba Jericho voice. The microphone remains muted and server-side input is
+rejected until `greeting_complete`; that event opens one active turn without
+closing it. There is no browser speech-synthesis fallback. Without Gemini, Core
+and the command center still work and wake returns safely to standby.
+
+The focused production-runtime test surface is available at
+`/?lab=gestures`. Frontend redesign work must preserve the wiring contracts in
+[`frontend/FRONTEND_HANDOFF.md`](frontend/FRONTEND_HANDOFF.md).
 
 Gemini input transcription for a completed active turn becomes an encrypted
 local spoken-capture event and enters normal intake. Audio frames are never

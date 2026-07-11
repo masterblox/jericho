@@ -13,7 +13,7 @@ import {
 } from './calibration';
 import { ContextHoldController, type ContextHoldAction } from './context-hold-controller';
 import { mapHandToScreen } from './coords';
-import { DiagnosticRecorder, type DiagnosticActionInput } from './diagnostics';
+import { DiagnosticRecorder, type DiagnosticActionInput, type SanitizedDiagnosticSnapshot } from './diagnostics';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
   JERICHO_CANCEL_PENDING_EVENT,
@@ -63,7 +63,7 @@ export interface GestureEngineRuntimePort {
 
 export interface BridgeRuntimePort {
   start(): void | Promise<void>;
-  wake(): void;
+  wake(source?: 'clap' | 'manual'): void;
   dispose(): void | Promise<void>;
 }
 
@@ -95,6 +95,16 @@ export interface JarvisRuntimeOptions {
   observeTargets?: (root: ParentNode, registry: GestureTargetRegistry) => () => void;
   storage?: RuntimeStorage;
   diagnosticsExporter?: (contents: string) => void;
+  onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
+}
+
+export interface GestureLabSnapshot extends SanitizedDiagnosticSnapshot {
+  status: string;
+  wakeSource?: 'clap' | 'manual';
+  targets: SanitizedDiagnosticSnapshot['targets'] & {
+    leftId: string | null;
+    rightId: string | null;
+  };
 }
 
 /**
@@ -114,6 +124,7 @@ export class JarvisRuntime {
   private readonly observeTargets: (root: ParentNode, registry: GestureTargetRegistry) => () => void;
   private readonly storage: RuntimeStorage;
   private readonly diagnosticsExporter: (contents: string) => void;
+  private readonly onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
   private readonly coordinator = new GestureCoordinator();
   private readonly context = new ContextHoldController();
   private readonly heldGestures = new HeldGestureInterpreter();
@@ -132,6 +143,7 @@ export class JarvisRuntime {
   private disposed = false;
   private keyListenerAttached = false;
   private status = 'gesture runtime standby';
+  private lastWakeSource?: 'clap' | 'manual';
   private cameraId = 'default';
   private cameraAspectRatio = 16 / 9;
   private readonly profiles = new Map<Handedness, CalibrationProfile>();
@@ -159,6 +171,7 @@ export class JarvisRuntime {
     this.storage = options.storage ?? browserStorage(options.root.ownerDocument);
     this.diagnosticsExporter = options.diagnosticsExporter ?? ((contents) =>
       downloadDiagnostics(options.root.ownerDocument, contents));
+    this.onGestureLabSnapshot = options.onGestureLabSnapshot;
     this.swapped = safeGet(this.storage, 'jericho.swap-hands') === 'true';
     this.renderer.configureControls({
       calibrate: (handedness) => this.startCalibration(handedness),
@@ -199,7 +212,7 @@ export class JarvisRuntime {
   }
 
   wake(): void {
-    this.bridge?.wake();
+    this.bridge?.wake('manual');
   }
 
   dispose(): Promise<void> {
@@ -259,6 +272,7 @@ export class JarvisRuntime {
       this.bridge = this.createBridge({
         onReady: () => this.setStatus('voice and gestures online'),
         onStatus: (value) => this.setStatus(`voice ${value}`),
+        onWake: (source) => { this.lastWakeSource = source; },
         onToolStart: (name) => this.setStatus(`agent action · ${name}`),
         onToolResult: (name) => this.setStatus(`agent action complete · ${name}`),
         onModePending: (_mode, name) => {
@@ -698,6 +712,19 @@ export class JarvisRuntime {
       leftTarget,
       rightTarget,
     });
+    const snapshot = this.recorder.latest();
+    if (snapshot) {
+      this.onGestureLabSnapshot?.({
+        ...snapshot,
+        status: this.status,
+        wakeSource: this.lastWakeSource,
+        targets: {
+          ...snapshot.targets,
+          leftId: leftTarget,
+          rightId: rightTarget,
+        },
+      });
+    }
   }
 
   private updateDiagnosticsPanel(): void {

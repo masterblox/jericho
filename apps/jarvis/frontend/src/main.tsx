@@ -7,6 +7,7 @@ import { CommandCenterStore } from './command-center-store';
 import { CoreClient } from './core-client';
 import { EngageGate } from './engage-gate';
 import { GestureTargetRegistry } from './gesture-target-registry';
+import { GestureLab } from './gesture-lab';
 import { JarvisRuntime } from './jarvis-runtime';
 
 const rootElement = document.getElementById('app');
@@ -16,12 +17,16 @@ const store = new CommandCenterStore();
 const client = new CoreClient(store);
 const gestureTargets = new GestureTargetRegistry(document);
 
+const gestureLab = new URLSearchParams(window.location.search).get('lab') === 'gestures';
+
 createRoot(rootElement).render(
   <StrictMode>
-    <CommandCenterApp store={store} client={client} />
-    <EngageGate createRuntime={() => new JarvisRuntime({
-      root: rootElement,
-      registry: gestureTargets,
-    })} />
+    {gestureLab ? <GestureLab root={rootElement} /> : <>
+      <CommandCenterApp store={store} client={client} />
+      <EngageGate createRuntime={() => new JarvisRuntime({
+        root: rootElement,
+        registry: gestureTargets,
+      })} />
+    </>}
   </StrictMode>,
 );

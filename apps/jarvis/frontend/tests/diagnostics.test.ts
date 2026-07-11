@@ -31,7 +31,7 @@ describe('sanitized local gesture diagnostics', () => {
         performance: { fps: 59.9, inferenceMs: 11.7 },
         hands: [{
           handedness: 'Right', state: 'pinch', fresh: true, lossAgeMs: 0,
-          pinchPhase: 'pinched', pinchRatio: 0.21,
+          pinchPhase: 'pinched', pinchRatio: 0.21, recognizedGesture: 'None',
         }],
         actions: [{ channel: 'right', type: 'drag-start' }],
         scrollTop: 32,

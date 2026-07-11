@@ -33,8 +33,6 @@ export interface BridgeClientDependencies {
   ) => BridgeMicPort;
   createSpeaker?: () => BridgeSpeakerPort;
   createWebSocket?: (url: string) => BridgeWebSocketPort;
-  speakGreeting?: (text: string) => Promise<void>;
-  cancelGreeting?: () => void;
   activeTurnMs?: number;
 }
 
@@ -53,9 +51,9 @@ export interface BridgeEvents {
   onToolResult?: (name: string, result: Record<string, unknown>) => void;
   onStatus?: (status: string) => void;
   onError?: (msg: string) => void;
+  onWake?: (source: 'clap' | 'manual') => void;
 }
 
-export const LOCAL_WAKE_GREETING = 'Hello, sir. What are we doing today?';
 const DEFAULT_ACTIVE_TURN_MS = 30_000;
 const REMOTE_WAKE_GRACE_MS = 1_500;
 
@@ -71,23 +69,17 @@ export class BridgeClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnState: VoiceTurnState = 'standby';
-  private greetingGeneration = 0;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
   private bargeCooldown = 0;
 
   private readonly createWebSocket: (url: string) => BridgeWebSocketPort;
-  private readonly speakGreeting: (text: string) => Promise<void>;
-  private readonly cancelGreeting: () => void;
   private readonly activeTurnMs: number;
 
   constructor(private events: BridgeEvents = {}, dependencies: BridgeClientDependencies = {}) {
     this.spk = dependencies.createSpeaker?.() ?? new SpeakerPlayback();
     this.createWebSocket = dependencies.createWebSocket ?? ((url) => new WebSocket(url));
-    const localGreeting = createLocalGreeting();
-    this.speakGreeting = dependencies.speakGreeting ?? localGreeting.speak;
-    this.cancelGreeting = dependencies.cancelGreeting ?? localGreeting.cancel;
     this.activeTurnMs = dependencies.activeTurnMs ?? DEFAULT_ACTIVE_TURN_MS;
     if (!Number.isFinite(this.activeTurnMs) || this.activeTurnMs <= 0) {
       throw new Error('Active voice turn duration must be positive');
@@ -97,7 +89,7 @@ export class BridgeClient {
         this.ws.send(JSON.stringify({ type: 'audio', data: b64 }));
       }
     };
-    const onClap = () => this.wake();
+    const onClap = () => this.wake('clap');
     this.mic = dependencies.createMic?.(onChunk, onClap) ?? new MicCapture(onChunk, onClap);
   }
 
@@ -173,7 +165,7 @@ export class BridgeClient {
   }
 
   /** Manual wake fallback. Clap detection enters through this same local gate. */
-  wake() {
+  wake(source: 'clap' | 'manual' = 'manual') {
     const socket = this.ws;
     if (
       !this.started ||
@@ -181,47 +173,34 @@ export class BridgeClient {
       this.turnState !== 'standby'
     ) return;
 
-    const greetingGeneration = ++this.greetingGeneration;
-    this.turnState = 'greeting';
     this.mic.setMuted(true);
-    this.events.onStatus?.('greeting');
-    let greeting: Promise<void>;
-    try {
-      greeting = this.speakGreeting(LOCAL_WAKE_GREETING);
-    } catch (error) {
-      greeting = Promise.reject(error);
+    this.events.onWake?.(source);
+    if (!socket || this.ws !== socket || socket.readyState !== 1) {
+      this.turnState = 'waiting';
+      this.events.onStatus?.('voice-connecting');
+      this.turnTimer = setTimeout(() => {
+        if (this.turnState !== 'waiting') return;
+        this.enterStandby();
+        this.events.onStatus?.('voice-unavailable');
+      }, REMOTE_WAKE_GRACE_MS);
+      return;
     }
-    void greeting
-      .catch((error) => {
-        this.events.onError?.(`greeting: ${(error as Error).message}`);
-      })
-      .then(() => {
-        if (
-          this.greetingGeneration !== greetingGeneration ||
-          this.turnState !== 'greeting' ||
-          !this.started ||
-          this.disposed
-        ) return;
-        if (!socket || this.ws !== socket || socket.readyState !== 1) {
-          // A clap may land while the same-origin socket is still handshaking.
-          // Retain that explicit intent only for the wake-time SLA window.
-          this.turnState = 'waiting';
-          this.events.onStatus?.('voice-connecting');
-          this.turnTimer = setTimeout(() => {
-            if (this.turnState !== 'waiting') return;
-            this.enterStandby();
-            this.events.onStatus?.('voice-unavailable');
-          }, REMOTE_WAKE_GRACE_MS);
-          return;
-        }
-        this.activateRemoteTurn(socket);
-      });
+    this.requestRemoteGreeting(socket);
   }
 
-  private activateRemoteTurn(socket: BridgeWebSocketPort): void {
+  private requestRemoteGreeting(socket: BridgeWebSocketPort): void {
     if (this.ws !== socket || socket.readyState !== 1 || !this.started || this.disposed) return;
-    if (this.turnTimer) clearTimeout(this.turnTimer);
+    if (this.turnTimer) {
+      clearTimeout(this.turnTimer);
+      this.turnTimer = null;
+    }
     socket.send(JSON.stringify({ type: 'wake' }));
+    this.turnState = 'greeting';
+    this.events.onStatus?.('greeting');
+  }
+
+  private beginListening(): void {
+    if (this.turnState !== 'greeting') return;
     this.turnState = 'active';
     this.mic.setMuted(false);
     this.events.onArmed?.(true);
@@ -269,7 +248,7 @@ export class BridgeClient {
       if (this.ws !== socket || !this.started || this.disposed) return;
       void this.spk.resume();
       if (this.turnState === 'waiting') {
-        this.activateRemoteTurn(socket);
+        this.requestRemoteGreeting(socket);
         return;
       }
       if (this.turnState === 'standby') this.events.onStatus?.('standby');
@@ -322,7 +301,13 @@ export class BridgeClient {
         this.events.onArmed?.(!!msg.armed);
         break;
       case 'audio':
-        if (this.turnState === 'active') this.spk.enqueue(msg.data);
+        if (this.turnState === 'greeting' || this.turnState === 'active') this.spk.enqueue(msg.data);
+        break;
+      case 'greeting_started':
+        if (this.turnState === 'greeting') this.events.onStatus?.('greeting');
+        break;
+      case 'greeting_complete':
+        this.beginListening();
         break;
       case 'interrupt':
         this.spk.interrupt();
@@ -340,6 +325,10 @@ export class BridgeClient {
         this.events.onToolResult?.(msg.name, msg.result);
         break;
       case 'error':
+        if (this.turnState === 'greeting' || this.turnState === 'waiting') {
+          this.enterStandby({ interrupt: true });
+          this.events.onStatus?.('voice-unavailable');
+        }
         this.events.onError?.(msg.message);
         break;
       case 'closed':
@@ -352,12 +341,10 @@ export class BridgeClient {
   private enterStandby(options: { interrupt?: boolean } = {}): void {
     const changed = this.turnState !== 'standby';
     this.turnState = 'standby';
-    this.greetingGeneration += 1;
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;
     }
-    this.cancelGreeting();
     this.mic.setMuted(true);
     if (options.interrupt) this.spk.interrupt();
     if (changed) {
@@ -365,36 +352,4 @@ export class BridgeClient {
       this.events.onStatus?.('standby');
     }
   }
-}
-
-function createLocalGreeting(): {
-  speak(text: string): Promise<void>;
-  cancel(): void;
-} {
-  let finish: (() => void) | undefined;
-  const cancel = () => {
-    globalThis.speechSynthesis?.cancel();
-    finish?.();
-    finish = undefined;
-  };
-  const speak = (text: string) => {
-    cancel();
-    if (
-      typeof globalThis.speechSynthesis === 'undefined' ||
-      typeof globalThis.SpeechSynthesisUtterance === 'undefined'
-    ) return Promise.resolve();
-    return new Promise<void>((resolve) => {
-      const utterance = new SpeechSynthesisUtterance(text);
-      const complete = () => {
-        if (finish !== complete) return;
-        finish = undefined;
-        resolve();
-      };
-      finish = complete;
-      utterance.onend = complete;
-      utterance.onerror = complete;
-      globalThis.speechSynthesis.speak(utterance);
-    });
-  };
-  return { speak, cancel };
 }

@@ -37,6 +37,21 @@ afterEach(() => {
 });
 
 describe('JarvisRuntime lifecycle', () => {
+  it('emits only sanitized Gesture Lab snapshots from the production frame path', async () => {
+    const onGestureLabSnapshot = vi.fn();
+    const harness = createHarness({ onGestureLabSnapshot });
+    await harness.runtime.engage();
+    harness.emit(frame(100, undefined, tracked('Right', 'pinch', 0.5, 0.5, 'Closed_Fist')));
+
+    expect(onGestureLabSnapshot).toHaveBeenCalledTimes(1);
+    const snapshot = onGestureLabSnapshot.mock.calls[0][0];
+    expect(snapshot.hands[0]).toMatchObject({
+      handedness: 'Right', state: 'pinch', recognizedGesture: 'Closed_Fist',
+    });
+    expect(snapshot).not.toHaveProperty('landmarks');
+    expect(JSON.stringify(snapshot)).not.toMatch(/landmarks|audio|transcript|srcObject/);
+  });
+
   it('engages hardware once, toggles pause safely, and tears every resource down idempotently', async () => {
     const harness = createHarness();
     await Promise.all([harness.runtime.engage(), harness.runtime.engage()]);
@@ -458,6 +473,7 @@ function createHarness(options: {
   storage?: MemoryStorage;
   trackSettings?: MediaTrackSettings;
   diagnosticsExporter?: ReturnType<typeof vi.fn>;
+  onGestureLabSnapshot?: ReturnType<typeof vi.fn>;
 } = {}) {
   const root = appRoot();
   const track = { stop: vi.fn(), getSettings: vi.fn(() => options.trackSettings ?? {}) };
@@ -496,6 +512,7 @@ function createHarness(options: {
     ...(options.observeTargets ? { observeTargets: options.observeTargets } : {}),
     ...(options.storage ? { storage: options.storage } : {}),
     ...(options.diagnosticsExporter ? { diagnosticsExporter: options.diagnosticsExporter } : {}),
+    ...(options.onGestureLabSnapshot ? { onGestureLabSnapshot: options.onGestureLabSnapshot } : {}),
   });
   return {
     root, track, getUserMedia, video, engine, bridge, renderer, registry,

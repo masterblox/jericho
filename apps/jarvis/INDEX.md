@@ -15,6 +15,7 @@
 | Contracts | `shared/src/index.ts` | Shared envelopes and command-center projections. |
 | Command center | `frontend/src/main.tsx` | React application bootstrap and local hardware engagement boundary. |
 | Gesture runtime | `frontend/src/jarvis-runtime.ts` | Disposable camera/MediaPipe integration and semantic gesture dispatch. |
+| Frontend gesture handoff | `frontend/FRONTEND_HANDOFF.md` | Contracts the visual pass must preserve and the final wiring checklist. |
 | Local gesture assets | `frontend/public/mediapipe/` | Same-origin model, SIMD/non-SIMD WASM, and third-party notices. |
 
 ## Knowledge and authority map

@@ -31,10 +31,46 @@ afterEach(async () => {
 });
 
 describe('voice socket privacy gate', () => {
+  it('speaks wake through Gemini, drops greeting-time input, then keeps listening', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledWith({
+      turns: [{ role: 'user', parts: [{ text: 'Say exactly: “Hello, sir. What are we doing today?”' }] }],
+      turnComplete: true,
+    }));
+    socket.send(JSON.stringify({ type: 'audio', data: 'must-not-pass-during-greeting' }));
+    await flushIo();
+    expect(session.sendRealtimeInput).not.toHaveBeenCalled();
+
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
+    expect(messages()).not.toContainEqual({ type: 'turn_complete' });
+    socket.send(JSON.stringify({ type: 'audio', data: 'listen-now' }));
+    await vi.waitFor(() => expect(session.sendRealtimeInput).toHaveBeenCalledWith({
+      media: { data: 'listen-now', mimeType: 'audio/pcm;rate=16000' },
+    }));
+  });
+
   it('binds Gemini search_vault calls to the configured bounded gateway port', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
-      sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
     };
     const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
       callbacks = request.callbacks;
@@ -80,7 +116,7 @@ describe('voice socket privacy gate', () => {
     const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
       request.callbacks.onopen();
       return {
-        sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+        sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
       };
     });
     const runtime = await startVoiceServer(voiceConnect);
@@ -93,6 +129,7 @@ describe('voice socket privacy gate', () => {
   it('drops standby audio and closes the active gate when Gemini completes a turn', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
+      sendClientContent: vi.fn(),
       sendRealtimeInput: vi.fn(),
       sendToolResponse: vi.fn(),
       close: vi.fn(),
@@ -113,6 +150,8 @@ describe('voice socket privacy gate', () => {
 
     socket.send(JSON.stringify({ type: 'wake' }));
     await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'armed', armed: true }));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
     socket.send(JSON.stringify({ type: 'audio', data: 'active-audio' }));
     await vi.waitFor(() => expect(session.sendRealtimeInput).toHaveBeenCalledTimes(1));
     expect(session.sendRealtimeInput).toHaveBeenCalledWith({
@@ -135,6 +174,7 @@ describe('voice socket privacy gate', () => {
       callbacks = request.callbacks;
       request.callbacks.onopen();
       return {
+        sendClientContent: vi.fn(),
         sendRealtimeInput: vi.fn(),
         sendToolResponse: vi.fn(),
         close: vi.fn(),
@@ -178,6 +218,7 @@ describe('voice socket privacy gate', () => {
 
   it('honors client standby and independently expires an abandoned active turn', async () => {
     const session = {
+      sendClientContent: vi.fn(),
       sendRealtimeInput: vi.fn(),
       sendToolResponse: vi.fn(),
       close: vi.fn(),
@@ -217,6 +258,7 @@ describe('voice socket privacy gate', () => {
     const sessions: Array<{ close: ReturnType<typeof vi.fn> }> = [];
     const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
       const session = {
+        sendClientContent: vi.fn(),
         sendRealtimeInput: vi.fn(),
         sendToolResponse: vi.fn(),
         close: vi.fn(),
