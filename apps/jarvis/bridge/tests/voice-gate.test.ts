@@ -180,9 +180,46 @@ describe('voice socket privacy gate', () => {
     await flushIo();
     expect(session.sendRealtimeInput).not.toHaveBeenCalled();
   });
+
+  it('disposes presentation-mode revert timers and sessions when the server closes', async () => {
+    const sessions: Array<{ close: ReturnType<typeof vi.fn> }> = [];
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      const session = {
+        sendRealtimeInput: vi.fn(),
+        sendToolResponse: vi.fn(),
+        close: vi.fn(),
+      };
+      sessions.push(session);
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect, 1_000, {
+      defaultPersonaMode: 'jarvis',
+      megatronVoice: 'Fenrir',
+      personaAutoRevertMs: 200,
+    });
+    const socket = await connectSocket(runtime.port);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'set_mode', mode: 'megatron' }));
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(2));
+    await runtime.server.close();
+    await new Promise((resolve) => setTimeout(resolve, 250));
+
+    expect(voiceConnect).toHaveBeenCalledTimes(2);
+    expect(sessions.every((session) => session.close.mock.calls.length > 0)).toBe(true);
+  });
 });
 
-async function startVoiceServer(voiceConnect: VoiceConnect, voiceActiveTurnMs = 1_000) {
+async function startVoiceServer(
+  voiceConnect: VoiceConnect,
+  voiceActiveTurnMs = 1_000,
+  persona: {
+    defaultPersonaMode: 'jarvis' | 'megatron';
+    megatronVoice: string;
+    personaAutoRevertMs: number;
+  } | undefined = undefined,
+) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });
   openStores.push(store);
   const intake = new IntakeProcessor({ store });
@@ -194,10 +231,11 @@ async function startVoiceServer(voiceConnect: VoiceConnect, voiceActiveTurnMs = 
     voiceConnect,
     voiceActiveTurnMs,
     intake,
+    ...persona,
   });
   openServers.push(server);
   const address = await server.listen(0);
-  return { ...address, address, store };
+  return { ...address, address, store, server };
 }
 
 function connectSocket(port: number): Promise<WebSocket> {

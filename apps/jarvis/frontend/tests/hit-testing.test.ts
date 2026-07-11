@@ -23,7 +23,7 @@ describe('fresh-pinch card footprint geometry', () => {
     expect(movedLeft).toBe(card.left + 7);
   });
 
-  it('acquires an overlapping cursor footprint but rejects beyond 18px', () => {
+  it('acquires an overlapping cursor footprint but rejects beyond the configured hit slop', () => {
     expect(nearestCardHit({ x: card.right + CARD_HIT_SLOP_PX, y: 150 }, [card])?.target.id).toBe('card:0');
     expect(nearestCardHit({ x: card.right + CARD_HIT_SLOP_PX + 0.1, y: 150 }, [card])).toBeNull();
   });

@@ -67,6 +67,24 @@ describe('JarvisRuntime lifecycle', () => {
     expect(harness.engine.start).toHaveBeenCalledTimes(2);
   });
 
+  it('renders persona pending and active state without changing execution authority', async () => {
+    const harness = createHarness();
+    await harness.runtime.engage();
+    const events = harness.createBridge.mock.calls[0][0];
+
+    events.onModePending?.('megatron', 'Megatron');
+    expect(harness.root.classList.contains('jericho-persona--pending')).toBe(true);
+    expect(harness.renderer.setSystemStatus).toHaveBeenLastCalledWith('persona pending · Megatron');
+
+    events.onModeChange?.('megatron', 'Megatron');
+    expect(harness.root.classList.contains('jericho-persona--pending')).toBe(false);
+    expect(harness.root.classList.contains('jericho-persona--megatron')).toBe(true);
+    expect(harness.renderer.setSystemStatus).toHaveBeenLastCalledWith('persona active · Megatron');
+
+    events.onModeChange?.('jarvis', 'Jericho');
+    expect(harness.root.classList.contains('jericho-persona--megatron')).toBe(false);
+  });
+
   it('cleans partial state and leaves the React keyboard surface usable when camera permission fails', async () => {
     const root = appRoot();
     const renderer = fakeRenderer();
@@ -140,6 +158,19 @@ describe('JarvisRuntime lifecycle', () => {
     harness.emit(frame(20, undefined, tracked('Right', 'pinch', 0.7, 0.5)));
     expect(harness.renderer.render).toHaveBeenLastCalledWith(expect.objectContaining({
       right: expect.objectContaining({ x: raw.px, y: raw.py }),
+    }));
+  });
+
+  it('aims the right-hand cursor at the smoothed thumb/index pinch point', async () => {
+    const viewport = { width: 1_000, height: 1_000 };
+    const harness = createHarness({ viewport: () => viewport });
+    await harness.runtime.engage();
+
+    harness.emit(frame(0, undefined, tracked('Right', 'palm', 0.5, 0.5, 'Open_Palm', 0.58, 0.44)));
+
+    const expected = mapHandToScreen(0.58, 0.44, viewport.width, viewport.height);
+    expect(harness.renderer.render).toHaveBeenLastCalledWith(expect.objectContaining({
+      right: expect.objectContaining({ x: expected.px, y: expected.py }),
     }));
   });
 
@@ -554,6 +585,8 @@ function tracked(
   x: number,
   y: number,
   recognizedGesture = state === 'palm' ? 'Open_Palm' : 'None',
+  pinchX = x,
+  pinchY = y,
 ): TrackedHandFrame {
   return {
     trackId: handedness === 'Left' ? 1 : 2,
@@ -561,7 +594,9 @@ function tracked(
     rawHandednessConfidence: 1, state, recognizedGesture,
     gestureConfidence: 1, confidence: 1,
     landmarks: Array.from({ length: 21 }, () => ({ x, y, z: 0 })),
-    palmAnchor: { x, y }, smoothedAnchor: { x, y }, velocity: { x: 0, y: 0 },
+    palmAnchor: { x, y }, smoothedAnchor: { x, y },
+    pinchPoint: { x: pinchX, y: pinchY }, smoothedPinch: { x: pinchX, y: pinchY },
+    velocity: { x: 0, y: 0 },
     pinchRatio: state === 'pinch' ? 0.2 : 0.8,
     pinchPhase: state === 'pinch' ? 'pinched' : 'open', pinchCandidateMs: 0,
     fresh: true, lastSeenAt: 0, lossAgeMs: 0, associationDistance: 0,

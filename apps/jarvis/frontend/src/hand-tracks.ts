@@ -19,6 +19,7 @@ export interface RawHandObservation {
   confidence: number;
   landmarks: Landmark[];
   palmAnchor: Point;
+  pinchPoint: Point;
   pinchRatio: number;
   atFrameEdge: boolean;
   openPalm: boolean;
@@ -37,6 +38,8 @@ export interface TrackedHandFrame {
   landmarks: Landmark[];
   palmAnchor: Point;
   smoothedAnchor: Point;
+  pinchPoint: Point;
+  smoothedPinch: Point;
   velocity: Point;
   pinchRatio: number;
   pinchPhase: PinchPhase;
@@ -51,6 +54,7 @@ interface TrackRuntime {
   id: HandTrackId;
   handedness: Handedness;
   filter: AdaptivePointFilter;
+  pinchFilter: AdaptivePointFilter;
   pinch: PinchLatch;
   lastSeenAt: number;
   lastRawAnchor: Point;
@@ -161,8 +165,10 @@ export class HandTrackManager {
 
   private createTrack(observation: RawHandObservation, handedness: Handedness, now: number): TrackRuntime {
     const filter = new AdaptivePointFilter();
+    const pinchFilter = new AdaptivePointFilter();
     const pinch = new PinchLatch();
     const smoothedAnchor = filter.push(observation.palmAnchor);
+    const smoothedPinch = pinchFilter.push(observation.pinchPoint);
     const closedFist = observation.recognizedGesture === 'Closed_Fist';
     const pinched = closedFist
       ? false
@@ -180,6 +186,8 @@ export class HandTrackManager {
       landmarks: observation.landmarks,
       palmAnchor: observation.palmAnchor,
       smoothedAnchor,
+      pinchPoint: observation.pinchPoint,
+      smoothedPinch,
       velocity: { x: 0, y: 0 },
       pinchRatio: observation.pinchRatio,
       pinchPhase: pinch.phase,
@@ -193,6 +201,7 @@ export class HandTrackManager {
       id: frame.trackId,
       handedness,
       filter,
+      pinchFilter,
       pinch,
       lastSeenAt: now,
       lastRawAnchor: observation.palmAnchor,
@@ -231,6 +240,8 @@ export class HandTrackManager {
       landmarks: observation.landmarks,
       palmAnchor: observation.palmAnchor,
       smoothedAnchor: track.filter.push(observation.palmAnchor),
+      pinchPoint: observation.pinchPoint,
+      smoothedPinch: track.pinchFilter.push(observation.pinchPoint),
       velocity: track.velocity,
       pinchRatio: observation.pinchRatio,
       pinchPhase: track.pinch.phase,

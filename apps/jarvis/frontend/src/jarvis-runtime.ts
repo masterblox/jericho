@@ -221,7 +221,7 @@ export class JarvisRuntime {
     this.coordinator.cancelAll();
     this.resetSemanticGestures();
     this.registry.releaseSticky();
-    this.root.classList.remove('gestures-frozen');
+    this.root.classList.remove('gestures-frozen', 'jericho-persona--megatron', 'jericho-persona--pending');
 
     const engine = this.engine;
     this.engine = null;
@@ -261,6 +261,15 @@ export class JarvisRuntime {
         onStatus: (value) => this.setStatus(`voice ${value}`),
         onToolStart: (name) => this.setStatus(`agent action · ${name}`),
         onToolResult: (name) => this.setStatus(`agent action complete · ${name}`),
+        onModePending: (_mode, name) => {
+          this.root.classList.add('jericho-persona--pending');
+          this.setStatus(`persona pending · ${name}`);
+        },
+        onModeChange: (mode, name) => {
+          this.root.classList.remove('jericho-persona--pending');
+          this.root.classList.toggle('jericho-persona--megatron', mode === 'megatron');
+          this.setStatus(`persona active · ${name}`);
+        },
         onError: (message) => this.setStatus(`voice unavailable · ${message}`),
       });
       this.assertNotDisposed();
@@ -541,12 +550,19 @@ export class JarvisRuntime {
     hand: TrackedHandFrame,
     viewport: { width: number; height: number },
   ): Point {
+    // The right hand aims and grabs, so place its cursor at the live
+    // thumb/index midpoint while keeping the stable palm-based calibration.
+    const offsetX = hand.handedness === 'Right' ? hand.smoothedPinch.x - hand.smoothedAnchor.x : 0;
+    const offsetY = hand.handedness === 'Right' ? hand.smoothedPinch.y - hand.smoothedAnchor.y : 0;
     const profile = this.profiles.get(hand.handedness);
     if (profile) {
       const normalized = applyCalibration(profile.matrix, hand.smoothedAnchor);
-      return { x: normalized.x * viewport.width, y: normalized.y * viewport.height };
+      return {
+        x: (normalized.x + offsetX) * viewport.width,
+        y: (normalized.y + offsetY) * viewport.height,
+      };
     }
-    return fallbackScreenPoint(hand, viewport);
+    return fallbackScreenPoint(hand, viewport, { x: offsetX, y: offsetY });
   }
 
   private consumeSuppression(hand: TrackedHandFrame | undefined): boolean {
@@ -699,10 +715,14 @@ function defaultVideo(ownerDocument: Document): HTMLVideoElement {
   return video;
 }
 
-function fallbackScreenPoint(hand: TrackedHandFrame, viewport: { width: number; height: number }): Point {
+function fallbackScreenPoint(
+  hand: TrackedHandFrame,
+  viewport: { width: number; height: number },
+  offset: Point = { x: 0, y: 0 },
+): Point {
   const mapped = mapHandToScreen(
-    hand.smoothedAnchor.x,
-    hand.smoothedAnchor.y,
+    hand.smoothedAnchor.x + offset.x,
+    hand.smoothedAnchor.y + offset.y,
     viewport.width,
     viewport.height,
   );

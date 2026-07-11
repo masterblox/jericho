@@ -18,6 +18,17 @@
   --jericho-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
 }
 
+#app.jericho-persona--megatron {
+  --jericho-cyan: #ff5757;
+  --jericho-cyan-hot: #ffd0d0;
+  --jericho-rule: rgba(255, 74, 74, 0.25);
+  --jericho-rule-strong: rgba(255, 88, 88, 0.55);
+}
+
+#app.jericho-persona--pending .jericho-runtime-status {
+  color: var(--jericho-amber);
+}
+
 *,
 *::before,
 *::after {

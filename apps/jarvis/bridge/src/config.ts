@@ -7,6 +7,8 @@ import { fileURLToPath } from 'node:url';
 
 import { MutationClass, type RepositoryGrant } from '@jericho/shared';
 
+import type { PersonaMode } from './personas.js';
+
 const directory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(directory, '../../.env') });
 
@@ -17,6 +19,9 @@ export interface JerichoConfig {
   geminiApiKey?: string;
   model: string;
   voice: string;
+  megatronVoice: string;
+  defaultPersonaMode: PersonaMode;
+  personaAutoRevertMs: number;
   systemInstruction: string;
   allowedOrigins: string[];
   telegramGatewayUrl?: string;
@@ -137,6 +142,7 @@ export function loadConfig(
   if (hermesMaxWaitMs < hermesPollIntervalMs) {
     throw new Error('JERICHO_HERMES_MAX_WAIT_MS must be at least JERICHO_HERMES_POLL_INTERVAL_MS');
   }
+  const defaultPersonaMode = parsePersonaMode(environment.DEFAULT_MODE);
   return {
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
@@ -144,6 +150,12 @@ export function loadConfig(
     geminiApiKey: environment.GEMINI_API_KEY,
     model: environment.LIVE_MODEL ?? 'gemini-2.5-flash-native-audio-latest',
     voice: environment.LIVE_VOICE ?? 'Algieba',
+    megatronVoice: environment.MEGATRON_VOICE ?? 'Fenrir',
+    defaultPersonaMode,
+    personaAutoRevertMs: parsePositiveInteger(
+      environment.AUTO_REVERT_MS ?? '120000',
+      'AUTO_REVERT_MS',
+    ),
     systemInstruction: environment.SYSTEM_INSTRUCTION ?? DEFAULT_SYSTEM_INSTRUCTION,
     allowedOrigins: parseCsv(environment.JERICHO_ALLOWED_ORIGINS),
     telegramGatewayUrl: optionalString(environment.JERICHO_TELEGRAM_GATEWAY_URL),
@@ -190,6 +202,14 @@ export function loadConfig(
       'JERICHO_VOICE_ACTIVE_TURN_MS',
     ),
   };
+}
+
+function parsePersonaMode(value: string | undefined): PersonaMode {
+  const mode = optionalString(value) ?? 'jarvis';
+  if (mode !== 'jarvis' && mode !== 'megatron') {
+    throw new Error('DEFAULT_MODE must be jarvis or megatron');
+  }
+  return mode;
 }
 
 function assertCompleteHermesWorkspace(input: {

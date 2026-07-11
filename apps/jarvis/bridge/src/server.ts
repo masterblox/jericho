@@ -54,6 +54,7 @@ import {
   type MissionQueueResult,
 } from './orchestration/intake.js';
 import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
+import { createPersonas, isPersonaMode, type PersonaMode } from './personas.js';
 import {
   ProductionRuntimeLifecycle,
   createConnectorRuntime,
@@ -118,6 +119,9 @@ export interface JerichoServerOptions {
   geminiApiKey?: string;
   geminiModel?: string;
   geminiVoice?: string;
+  megatronVoice?: string;
+  defaultPersonaMode?: PersonaMode;
+  personaAutoRevertMs?: number;
   systemInstruction?: string;
   frontendDir?: string;
   supervisor?: SyncPort;
@@ -164,6 +168,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     options.voiceActiveTurnMs !== undefined &&
     (!Number.isFinite(options.voiceActiveTurnMs) || options.voiceActiveTurnMs <= 0)
   ) throw new Error('Active voice turn duration must be positive');
+  if (
+    options.personaAutoRevertMs !== undefined &&
+    (!Number.isFinite(options.personaAutoRevertMs) || options.personaAutoRevertMs <= 0)
+  ) throw new Error('Persona auto-revert duration must be positive');
   const host = options.host ?? '127.0.0.1';
   requireLoopbackBind(host);
   const allowedOrigins = new Set(options.allowedOrigins ?? []);
@@ -984,12 +992,20 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     ai!.live.connect(request as never) as unknown as Promise<Session>);
   const activeTurnMs = options.voiceActiveTurnMs ?? 30_000;
   let session: VoiceSessionPort | undefined;
-  let currentVoice = options.geminiVoice ?? 'Algieba';
+  const personaEnabled = options.defaultPersonaMode !== undefined || options.megatronVoice !== undefined;
+  let currentMode: PersonaMode = options.defaultPersonaMode ?? 'jarvis';
+  const personas = createPersonas({
+    jarvisVoice: options.geminiVoice ?? 'Algieba',
+    megatronVoice: options.megatronVoice ?? 'Fenrir',
+    coreInstruction: options.systemInstruction ?? '',
+  });
+  let currentVoice = personas[currentMode].voice;
   let generation = 0;
   let clientClosed = false;
   let active = false;
   let activeTimer: ReturnType<typeof setTimeout> | undefined;
   let transcriptTimer: ReturnType<typeof setTimeout> | undefined;
+  let personaRevertTimer: ReturnType<typeof setTimeout> | undefined;
   let captureTurn: { id: string; transcript: string } | undefined;
 
   const send = (message: Record<string, unknown>) => {
@@ -1050,7 +1066,23 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       send({ type: 'error', message: 'spoken capture unavailable' });
     }
   };
+  const armPersonaRevert = () => {
+    if (personaRevertTimer) clearTimeout(personaRevertTimer);
+    personaRevertTimer = undefined;
+    if (clientClosed || currentMode !== 'megatron') return;
+    personaRevertTimer = setTimeout(() => {
+      personaRevertTimer = undefined;
+      if (clientClosed) return;
+      currentMode = 'jarvis';
+      connect(personas.jarvis.voice);
+    }, options.personaAutoRevertMs ?? 120_000);
+    // Presentation cleanup must never keep the private Core process alive.
+    personaRevertTimer.unref();
+  };
   const connect = (voice: string) => {
+    if (personaRevertTimer) clearTimeout(personaRevertTimer);
+    personaRevertTimer = undefined;
+    if (clientClosed) return;
     const connectionGeneration = ++generation;
     if (active) deactivate();
     session?.close();
@@ -1062,13 +1094,19 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       config: {
         responseModalities: [Modality.AUDIO],
         inputAudioTranscription: {},
-        systemInstruction: options.systemInstruction,
+        systemInstruction: personaEnabled
+          ? personas[currentMode].systemInstruction
+          : options.systemInstruction,
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as never }],
       },
       callbacks: {
         onopen: () => {
-          if (connectionGeneration === generation) send({ type: 'ready', voice });
+          if (connectionGeneration === generation) {
+            send({ type: 'ready', voice });
+            send({ type: 'mode_change', mode: currentMode, name: personas[currentMode].name });
+            armPersonaRevert();
+          }
         },
         onmessage: (message: any) => {
           if (connectionGeneration !== generation) return;
@@ -1124,6 +1162,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
 
   send({ type: 'voices', voices: [...VOICES], active: currentVoice });
+  send({ type: 'mode_change', mode: currentMode, name: personas[currentMode].name });
   send({ type: 'armed', armed: false });
   connect(currentVoice);
   webSocket.on('message', (raw) => {
@@ -1144,6 +1183,10 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       ) {
         connect(message.voice);
       }
+      if (message.type === 'set_mode' && isPersonaMode(message.mode) && message.mode !== currentMode) {
+        currentMode = message.mode;
+        connect(personas[currentMode].voice);
+      }
       if (message.type === 'wake') {
         activate();
       }
@@ -1157,6 +1200,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     generation += 1;
     if (activeTimer) clearTimeout(activeTimer);
     if (transcriptTimer) clearTimeout(transcriptTimer);
+    if (personaRevertTimer) clearTimeout(personaRevertTimer);
     captureTurn = undefined;
     session?.close();
   });
@@ -1694,6 +1738,9 @@ async function main(): Promise<void> {
     geminiApiKey: config.geminiApiKey,
     geminiModel: config.model,
     geminiVoice: config.voice,
+    megatronVoice: config.megatronVoice,
+    defaultPersonaMode: config.defaultPersonaMode,
+    personaAutoRevertMs: config.personaAutoRevertMs,
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),

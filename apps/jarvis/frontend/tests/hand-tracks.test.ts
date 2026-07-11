@@ -17,6 +17,7 @@ function observation(
     confidence: 0.9,
     landmarks,
     palmAnchor: { x, y: 0.5 },
+    pinchPoint: { x, y: 0.5 },
     pinchRatio: 0.8,
     atFrameEdge: false,
     openPalm: true,

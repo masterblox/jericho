@@ -176,6 +176,8 @@ function hand(handedness: 'Left' | 'Right', recognizedGesture: string): TrackedH
     landmarks: [],
     palmAnchor: { x: 0.5, y: 0.5 },
     smoothedAnchor: { x: 0.5, y: 0.5 },
+    pinchPoint: { x: 0.5, y: 0.5 },
+    smoothedPinch: { x: 0.5, y: 0.5 },
     velocity: { x: 0, y: 0 },
     pinchRatio: 1,
     pinchPhase: 'open',

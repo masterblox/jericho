@@ -70,6 +70,7 @@ function hand(): TrackedHandFrame {
     state: 'pinch', recognizedGesture: 'None', gestureConfidence: 0.8, confidence: 0.9,
     landmarks: Array.from({ length: 21 }, () => ({ x: 0.12345, y: 0.6789, z: -0.01 })),
     palmAnchor: { x: 0.12345, y: 0.6789 }, smoothedAnchor: { x: 0.13, y: 0.67 },
+    pinchPoint: { x: 0.12, y: 0.68 }, smoothedPinch: { x: 0.13, y: 0.67 },
     velocity: { x: 1, y: 2 }, pinchRatio: 0.2134, pinchPhase: 'pinched', pinchCandidateMs: 20,
     fresh: true, lastSeenAt: 100, lossAgeMs: 0, associationDistance: 0.1,
   };
