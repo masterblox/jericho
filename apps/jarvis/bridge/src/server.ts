@@ -1178,7 +1178,10 @@ function contentType(path: string): string {
 async function main(): Promise<void> {
   const config = loadConfig();
   const store = new JerichoStore();
-  const intake = new IntakeProcessor({ store });
+  const intake = new IntakeProcessor({
+    store,
+    repositoryGrants: config.missionRepositoryGrants,
+  });
   intake.recover();
   const connectors = createConnectorRuntime(config, store, { intake });
   const knowledge = new KnowledgeRuntime({

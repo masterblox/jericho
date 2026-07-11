@@ -7,6 +7,8 @@ import { join } from 'node:path';
 
 import {
   ConnectorCapability,
+  ConnectorHealthStatus,
+  MutationClass,
   SourceType,
   type EventEnvelope,
   type NormalizedCapture,
@@ -46,6 +48,7 @@ describe('runtime config', () => {
       JERICHO_HERMES_BRANCH: 'masterblox/approved',
       JERICHO_HERMES_POLL_INTERVAL_MS: '125',
       JERICHO_HERMES_MAX_WAIT_MS: '120000',
+      JERICHO_MISSION_REPOSITORY_GRANTS: '[{"repository":"jericho","writablePaths":["apps/jarvis"],"mutationClasses":["reversible"]}]',
       JERICHO_REFLECTION_INTERVAL_MS: '3600000',
       LINEAR_API_KEY: 'linear-token',
       JERICHO_GIT_REPOSITORIES: '[{"id":"jericho","path":"/repos/jericho"}]',
@@ -67,6 +70,11 @@ describe('runtime config', () => {
       hermesBranch: 'masterblox/approved',
       hermesPollIntervalMs: 125,
       hermesMaxWaitMs: 120_000,
+      missionRepositoryGrants: [{
+        repository: 'jericho',
+        writablePaths: ['apps/jarvis'],
+        mutationClasses: [MutationClass.Reversible],
+      }],
       reflectionIntervalMs: 3_600_000,
       linearApiKey: 'linear-token',
       gitRepositories: [{ id: 'jericho', path: '/repos/jericho' }],
@@ -96,6 +104,10 @@ describe('runtime config', () => {
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',
     }, [])).toThrow(/JERICHO_GIT_REPOSITORIES/);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_MISSION_REPOSITORY_GRANTS: '[{"repository":"jericho","writablePaths":[],"mutationClasses":["root_access"]}]',
+    }, [])).toThrow(/JERICHO_MISSION_REPOSITORY_GRANTS/);
   });
 
   it('fails closed when only part of the Hermes execution workspace is configured', () => {
@@ -122,7 +134,7 @@ describe('runtime config', () => {
 });
 
 describe('production Core composition', () => {
-  it('boots explicit Hermes execution and exposes the scheduled knowledge runtime', async () => {
+  it('boots with legacy Hermes execution disabled and exposes fail-closed health', async () => {
     const root = mkdtempSync(join(tmpdir(), 'jericho-production-main-'));
     directories.push(root);
     const home = join(root, 'home');
@@ -178,8 +190,19 @@ describe('production Core composition', () => {
 
     expect(reflected.status).toBe(200);
     expect(await reflected.json()).toEqual({ proposals: [] });
-    expect(existsSync(join(busRoot, 'outbox'))).toBe(true);
-    expect(existsSync(join(busRoot, 'inbox'))).toBe(true);
+    const health = await fetch(`${listeningUrl}/api/v1/health`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(health.status).toBe(200);
+    const healthBody = await health.json() as { ok: boolean; connectors: unknown[] };
+    expect(healthBody.ok).toBe(true);
+    expect(healthBody.connectors).toEqual(expect.arrayContaining([expect.objectContaining({
+        connectorId: 'hermes-execution',
+        status: ConnectorHealthStatus.Unavailable,
+        details: { reason: 'missing_manifest', executable: false, protocolVersion: 1 },
+      })]));
+    expect(existsSync(join(busRoot, 'outbox'))).toBe(false);
+    expect(existsSync(join(busRoot, 'inbox'))).toBe(false);
     await closeChild();
     expect(child.exitCode).toBe(0);
   });
