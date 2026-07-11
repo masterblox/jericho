@@ -110,15 +110,17 @@ export class MicCapture {
 
 /** Speaker playback: plays 24kHz 16-bit PCM base64 chunks, gapless, with interrupt. */
 export class SpeakerPlayback {
-  private ctx: AudioContext;
+  private ctx: AudioContext | null;
   private nextStart = 0;
   private sources: AudioBufferSourceNode[] = [];
+  private disposed = false;
 
   constructor() {
     this.ctx = new AudioContext({ sampleRate: 24000 });
   }
 
   enqueue(b64: string) {
+    if (!this.ctx || this.disposed) return;
     void this.resume();
     const pcm = base64ToInt16(b64);
     const float = int16ToFloat32(pcm);
@@ -158,6 +160,15 @@ export class SpeakerPlayback {
   resume() {
     if (this.ctx?.state === 'suspended') return this.ctx.resume();
     return Promise.resolve();
+  }
+
+  async dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.interrupt();
+    const context = this.ctx;
+    this.ctx = null;
+    if (context && context.state !== 'closed') await context.close();
   }
 }
 

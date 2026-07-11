@@ -1,5 +1,37 @@
 import { MicCapture, SpeakerPlayback } from './audio';
 
+export interface BridgeWebSocketPort {
+  readyState: number;
+  onopen: ((event: Event) => void | Promise<void>) | null;
+  onmessage: ((event: MessageEvent) => void) | null;
+  onclose: ((event: CloseEvent) => void) | null;
+  onerror: ((event: Event) => void) | null;
+  send(data: string): void;
+  close(code?: number, reason?: string): void;
+}
+
+export interface BridgeMicPort {
+  readonly live: boolean;
+  start(): Promise<void>;
+  stop(): void;
+  setMuted(muted: boolean): void;
+  getRms(): number;
+}
+
+export interface BridgeSpeakerPort {
+  resume(): Promise<void>;
+  enqueue(data: string): void;
+  interrupt(): void;
+  isPlaying(): boolean;
+  dispose(): void | Promise<void>;
+}
+
+export interface BridgeClientDependencies {
+  createMic?: (onChunk: (data: string) => void) => BridgeMicPort;
+  createSpeaker?: () => BridgeSpeakerPort;
+  createWebSocket?: (url: string) => BridgeWebSocketPort;
+}
+
 export interface BridgeEvents {
   onReady?: () => void;
   onVoices?: (voices: string[], active: string) => void;
@@ -28,41 +60,84 @@ export interface BridgeEvents {
  *  2. Client-side VAD backup (mic energy above noise floor → hard speaker cut).
  */
 export class BridgeClient {
-  private ws: WebSocket | null = null;
-  private mic: MicCapture;
-  private spk: SpeakerPlayback;
+  private ws: BridgeWebSocketPort | null = null;
+  private mic: BridgeMicPort;
+  private spk: BridgeSpeakerPort;
   private started = false;
+  private disposed = false;
   private retry: ReturnType<typeof setTimeout> | null = null;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
   private bargeCooldown = 0;
 
-  constructor(private events: BridgeEvents = {}) {
-    this.spk = new SpeakerPlayback();
+  private readonly createWebSocket: (url: string) => BridgeWebSocketPort;
+
+  constructor(private events: BridgeEvents = {}, dependencies: BridgeClientDependencies = {}) {
+    this.spk = dependencies.createSpeaker?.() ?? new SpeakerPlayback();
+    this.createWebSocket = dependencies.createWebSocket ?? ((url) => new WebSocket(url));
     // mic ALWAYS forwards audio while the socket is open — no armed gate.
     // Gemini's system instruction handles the wake word, not the client.
-    this.mic = new MicCapture((b64) => {
-      if (this.ws?.readyState === WebSocket.OPEN) {
+    const onChunk = (b64: string) => {
+      if (this.ws?.readyState === 1) {
         this.ws.send(JSON.stringify({ type: 'audio', data: b64 }));
       }
-    });
+    };
+    this.mic = dependencies.createMic?.(onChunk) ?? new MicCapture(onChunk);
   }
 
   async start() {
+    if (this.started) return;
+    if (this.disposed) throw new Error('Voice bridge is disposed');
     this.started = true;
     this.connect();
   }
 
+  stop() {
+    this.started = false;
+    if (this.retry) {
+      clearTimeout(this.retry);
+      this.retry = null;
+    }
+    if (this.vadTimer) {
+      clearInterval(this.vadTimer);
+      this.vadTimer = null;
+    }
+    const socket = this.ws;
+    this.ws = null;
+    if (socket) {
+      socket.onopen = null;
+      socket.onmessage = null;
+      socket.onclose = null;
+      socket.onerror = null;
+      if (socket.readyState === 0 || socket.readyState === 1) {
+        try {
+          socket.close(1000, 'client stop');
+        } catch {
+          /* already closed */
+        }
+      }
+    }
+    this.mic.stop();
+    this.spk.interrupt();
+  }
+
+  async dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    this.stop();
+    await this.spk.dispose();
+  }
+
   setVoice(voice: string) {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === 1) {
       this.ws.send(JSON.stringify({ type: 'set_voice', voice }));
     }
   }
 
   /** Manual nudge — sends a wake signal to the bridge (click-to-talk fallback). */
   wake() {
-    if (this.ws?.readyState === WebSocket.OPEN) {
+    if (this.ws?.readyState === 1) {
       this.ws.send(JSON.stringify({ type: 'wake' }));
     }
   }
@@ -90,16 +165,23 @@ export class BridgeClient {
   }
 
   private connect() {
+    if (!this.started || this.disposed) return;
     if (this.retry) {
       clearTimeout(this.retry);
       this.retry = null;
     }
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    this.ws = new WebSocket(`${proto}://${location.host}/ws`);
-    this.ws.onopen = async () => {
+    const socket = this.createWebSocket(`${proto}://${location.host}/ws`);
+    this.ws = socket;
+    socket.onopen = async () => {
+      if (this.ws !== socket || !this.started || this.disposed) return;
       // Always-on: acquire the mic immediately and start streaming.
       try {
         await this.mic.start();
+        if (this.ws !== socket || !this.started || this.disposed) {
+          this.mic.stop();
+          return;
+        }
         this.mic.setMuted(false);
       } catch (err) {
         this.events.onError?.(`mic: ${(err as Error).message}`);
@@ -108,13 +190,19 @@ export class BridgeClient {
       void this.spk.resume();
       this.events.onStatus?.('listening');
     };
-    this.ws.onmessage = (e) => this.onMessage(e.data);
-    this.ws.onclose = () => {
+    socket.onmessage = (event) => {
+      if (this.ws === socket) this.onMessage(String(event.data));
+    };
+    socket.onclose = () => {
+      if (this.ws !== socket) return;
+      this.ws = null;
       this.events.onStatus?.('reconnecting');
       this.mic.stop();
-      if (this.started) this.retry = setTimeout(() => this.connect(), 1500);
+      if (this.started && !this.disposed) this.retry = setTimeout(() => this.connect(), 1500);
     };
-    this.ws.onerror = () => this.events.onError?.('websocket error');
+    socket.onerror = () => {
+      if (this.ws === socket) this.events.onError?.('websocket error');
+    };
   }
 
   private onMessage(raw: string) {

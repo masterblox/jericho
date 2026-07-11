@@ -120,4 +120,10 @@ export class GestureEngine {
     cancelAnimationFrame(this.raf);
     this.tracks.reset();
   }
+
+  dispose() {
+    this.stop();
+    this.recognizer?.close();
+    this.recognizer = null;
+  }
 }
