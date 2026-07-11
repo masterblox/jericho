@@ -146,3 +146,4 @@ vite.config.ts.timestamp-*
 
 # Serena MCP tooling artifacts
 .serena/
+.playwright-mcp/

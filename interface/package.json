@@ -4,16 +4,16 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev:a": "VITE_DESIGN_VARIANT=workshop vite --host 127.0.0.1 --port 4173",
-    "dev:b": "VITE_DESIGN_VARIANT=hadal vite --host 127.0.0.1 --port 4174",
-    "build:a": "VITE_DESIGN_VARIANT=workshop vite build --outDir dist/workshop",
-    "build:b": "VITE_DESIGN_VARIANT=hadal vite build --outDir dist/hadal",
+    "dev": "vite --host 127.0.0.1 --port 4173",
+    "build": "vite build",
+    "preview": "vite preview --host 127.0.0.1 --port 4173",
     "test:e2e": "playwright test"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
     "react": "latest",
     "react-dom": "latest",
+    "three": "^0.185.1",
     "vite": "latest"
   },
   "devDependencies": {
