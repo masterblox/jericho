@@ -2867,6 +2867,42 @@ export class JerichoStore {
       });
       if (!retry) {
         const mission = this.getMission(assignment.missionId)!;
+        const cancelReason = `Mission failed because assignment ${assignment.id} exhausted retries`;
+        for (const candidate of this.listAssignments({ missionId: mission.id })) {
+          if (candidate.id === assignment.id) continue;
+          if (
+            candidate.status === LifecycleStatus.Queued ||
+            candidate.status === LifecycleStatus.Paused
+          ) {
+            this.#writeAssignmentRecord(withoutLease({
+              ...candidate,
+              status: LifecycleStatus.Cancelled,
+              cancelRequestedAt: at,
+              cancelReason,
+              completedAt: at,
+            }));
+          } else if (candidate.status === LifecycleStatus.Active) {
+            this.#writeAssignmentRecord({
+              ...candidate,
+              cancelRequestedAt: at,
+              cancelReason,
+            });
+          }
+        }
+        for (const candidate of this.listMissionTasks(mission.id)) {
+          if (candidate.id === task.id) continue;
+          if (
+            candidate.status === LifecycleStatus.Queued ||
+            candidate.status === LifecycleStatus.Paused
+          ) {
+            this.#writeMissionTaskRecord({
+              ...candidate,
+              status: LifecycleStatus.Cancelled,
+              updatedAt: at,
+              completedAt: at,
+            });
+          }
+        }
         this.#writeMissionRecord({
           ...mission,
           status: LifecycleStatus.Failed,

@@ -1211,8 +1211,19 @@ a:focus-visible {
   line-height: 1.6;
 }
 
+.jericho-engage-actions {
+  display: grid;
+  gap: 8px;
+}
+
 .jericho-engage-button {
   width: 100%;
+}
+
+.jericho-engage-button--secondary {
+  border-color: rgba(244, 231, 211, 0.28);
+  background: transparent;
+  color: var(--jericho-muted);
 }
 
 .jericho-engage-error {

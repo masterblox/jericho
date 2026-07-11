@@ -918,6 +918,14 @@ function Nucleus({
     () => snapshot.nucleus.nodes.filter((node) => node.verified === true),
     [snapshot.nucleus.nodes],
   );
+  const relationshipNodes = useMemo(
+    () => allNodes.filter((node) => node.recordType === 'entity'),
+    [allNodes],
+  );
+  const relationshipNodeIds = useMemo(
+    () => new Set(relationshipNodes.map((node) => node.id)),
+    [relationshipNodes],
+  );
   const verifiedEdges = useMemo(() => {
     const nodeIds = new Set(allNodes.map((node) => node.id));
     return snapshot.nucleus.edges.filter((edge) =>
@@ -949,17 +957,22 @@ function Nucleus({
   const nodeIds = new Set(nodes.map((node) => node.id));
   const edges = verifiedEdges.filter((edge) =>
     nodeIds.has(edge.fromNodeId) && nodeIds.has(edge.toNodeId));
-  const selectedFrom = relationshipFrom ?? allNodes[0]?.id ?? '';
+  const selectedFrom = relationshipFrom && relationshipNodeIds.has(relationshipFrom)
+    ? relationshipFrom
+    : relationshipNodes[0]?.id ?? '';
   const selectedTo = relationshipTo
-    ?? allNodes.find((node) => node.id !== selectedFrom)?.id
+    && relationshipNodeIds.has(relationshipTo)
+    ? relationshipTo
+    : relationshipNodes.find((node) => node.id !== selectedFrom)?.id
     ?? '';
 
   const previewRelationship = useCallback((fromNodeId: string, toNodeId: string) => {
-    if (!fromNodeId || !toNodeId || fromNodeId === toNodeId) return;
+    if (!fromNodeId || !toNodeId || fromNodeId === toNodeId
+      || !relationshipNodeIds.has(fromNodeId) || !relationshipNodeIds.has(toNodeId)) return;
     setRelationshipFrom(fromNodeId);
     setRelationshipTo(toNodeId);
     setRelationshipDraft({ fromNodeId, toNodeId, relation: relationshipType });
-  }, [relationshipType]);
+  }, [relationshipNodeIds, relationshipType]);
 
   useEffect(() => {
     const onDepth = (event: Event) => {
@@ -1108,13 +1121,13 @@ function Nucleus({
       }}>
         <span>LOCAL RELATIONSHIP WORKBENCH</span>
         <label>From<select aria-label="Relationship source" value={selectedFrom} onChange={(event) => setRelationshipFrom(event.target.value)}>
-          {allNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
+          {relationshipNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
         </select></label>
         <label>Type<select aria-label="Relationship type" value={relationshipType} onChange={(event) => setRelationshipType(event.target.value as RelationType)}>
           {RELATIONSHIP_TYPES.map((relation) => <option key={relation} value={relation}>{relation.replaceAll('_', ' ')}</option>)}
         </select></label>
         <label>To<select aria-label="Relationship destination" value={selectedTo} onChange={(event) => setRelationshipTo(event.target.value)}>
-          {allNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
+          {relationshipNodes.map((node) => <option key={node.id} value={node.id}>{node.label}</option>)}
         </select></label>
         <button type="submit" disabled={!selectedFrom || !selectedTo || selectedFrom === selectedTo}>Preview relationship</button>
       </form>

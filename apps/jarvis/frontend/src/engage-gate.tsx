@@ -32,8 +32,10 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
     runtime.current = next;
     try {
       await next.engage();
+      if (runtime.current !== next) return;
       setState('engaged');
     } catch (reason) {
+      if (runtime.current !== next) return;
       setError(reason instanceof Error ? reason.message : 'Local runtime permission failed');
       setState('failed');
     } finally {
@@ -44,8 +46,8 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
   const continueWithKeyboard = async () => {
     const current = runtime.current;
     runtime.current = null;
-    if (current) await current.dispose();
     setState('dismissed');
+    if (current) await current.dispose();
   };
 
   if (state === 'engaged' || state === 'dismissed') return null;
@@ -56,20 +58,25 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
         <h2 id="jericho-engage-title">Enable voice + gestures</h2>
         <p>Camera frames and standby clap analysis stay on this laptop. After wake, active-turn microphone audio is sent only to the configured Gemini Live session. The command center remains fully usable by keyboard.</p>
         {error && <p className="jericho-engage-error" role="alert">{error}</p>}
-        {state === 'failed' ? (
-          <button className="jericho-engage-button" type="button" onClick={() => void continueWithKeyboard()}>
+        <div className="jericho-engage-actions">
+          {state !== 'failed' && (
+            <button
+              className="jericho-engage-button"
+              type="button"
+              disabled={state === 'engaging'}
+              onClick={() => void engage()}
+            >
+              {state === 'engaging' ? 'Engaging…' : 'Engage local runtime'}
+            </button>
+          )}
+          <button
+            className="jericho-engage-button jericho-engage-button--secondary"
+            type="button"
+            onClick={() => void continueWithKeyboard()}
+          >
             Continue with keyboard
           </button>
-        ) : (
-          <button
-            className="jericho-engage-button"
-            type="button"
-            disabled={state === 'engaging'}
-            onClick={() => void engage()}
-          >
-            {state === 'engaging' ? 'Engaging…' : 'Engage local runtime'}
-          </button>
-        )}
+        </div>
       </div>
     </section>
   );

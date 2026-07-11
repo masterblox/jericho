@@ -285,6 +285,7 @@ describe('CommandCenterApp', () => {
   it('previews typed relationships locally from keyboard or gesture and never mutates verified truth', () => {
     const store = new CommandCenterStore();
     const snapshot = populatedSnapshot();
+    addVerifiedRelationshipEntities(snapshot);
     store.replace(snapshot);
 
     render(<CommandCenterApp
@@ -294,17 +295,17 @@ describe('CommandCenterApp', () => {
     />);
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship source' }), {
-      target: { value: 'node-dev' },
+      target: { value: 'node-person-michael' },
     });
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship destination' }), {
-      target: { value: 'node-mission' },
+      target: { value: 'node-org-apl' },
     });
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship type' }), {
       target: { value: 'supports' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Preview relationship' }));
     expect(screen.getByText('LOCAL PREVIEW · NOT SAVED')).toBeTruthy();
-    expect(screen.getByText('DEV —[supports]→ Deploy bounded Core')).toBeTruthy();
+    expect(screen.getByText('Michael —[supports]→ APL')).toBeTruthy();
     expect(snapshot.nucleus.edges).toHaveLength(1);
 
     fireEvent.click(screen.getByRole('button', { name: 'Cancel pending' }));
@@ -324,13 +325,16 @@ describe('CommandCenterApp', () => {
       bubbles: true,
       detail: { targetId: 'nucleus:node-mission', point: { x: 200, y: 200 }, cancelled: false },
     })));
-    expect(screen.getByText('Deploy bounded Core —[supports]→ DEV')).toBeTruthy();
+    expect(screen.queryByText('Deploy bounded Core —[supports]→ DEV')).toBeNull();
+    expect(screen.queryByText('LOCAL PREVIEW · NOT SAVED')).toBeNull();
     expect(snapshot.nucleus.edges).toHaveLength(1);
   });
 
   it('submits exact selected-mission cancellation and relationship proposals to Core', async () => {
     const store = new CommandCenterStore();
-    store.replace(populatedSnapshot());
+    const snapshot = populatedSnapshot();
+    addVerifiedRelationshipEntities(snapshot);
+    store.replace(snapshot);
     const cancelMission = vi.fn().mockResolvedValue({});
     const proposeRelationship = vi.fn().mockResolvedValue({});
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
@@ -361,15 +365,15 @@ describe('CommandCenterApp', () => {
     expect(confirm).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship source' }), {
-      target: { value: 'node-dev' },
+      target: { value: 'node-person-michael' },
     });
     fireEvent.change(screen.getByRole('combobox', { name: 'Relationship destination' }), {
-      target: { value: 'node-mission' },
+      target: { value: 'node-org-apl' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Preview relationship' }));
     fireEvent.click(screen.getByRole('button', { name: 'Submit relationship for review' }));
     await waitFor(() => expect(proposeRelationship).toHaveBeenCalledWith({
-      fromNodeId: 'node-dev', toNodeId: 'node-mission', relation: 'related_to',
+      fromNodeId: 'node-person-michael', toNodeId: 'node-org-apl', relation: 'related_to',
     }));
     expect(store.getSnapshot().snapshot?.nucleus.edges).toHaveLength(1);
   });
@@ -630,6 +634,23 @@ function emptyCommandCenter(): CommandCenterSnapshot {
     captureFailures: [], lastChangeSequence: 0,
     nucleus: { nodes: [], edges: [], activityPulses: [] },
   };
+}
+
+function addVerifiedRelationshipEntities(snapshot: CommandCenterSnapshot): void {
+  snapshot.nucleus.nodes.push(
+    {
+      id: 'node-person-michael', kind: NucleusNodeKind.Entity,
+      recordType: 'entity', recordId: 'person-michael', label: 'Michael',
+      entityType: EntityType.Person, updatedAt: snapshot.generatedAt,
+      evidenceEventIds: ['event-message-1'], verified: true,
+    },
+    {
+      id: 'node-org-apl', kind: NucleusNodeKind.Entity,
+      recordType: 'entity', recordId: 'org-apl', label: 'APL',
+      entityType: EntityType.Organization, updatedAt: snapshot.generatedAt,
+      evidenceEventIds: ['event-message-1'], verified: true,
+    },
+  );
 }
 
 function populatedSnapshot(): CommandCenterSnapshot {

@@ -41,4 +41,29 @@ describe('EngageGate', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(runtime.dispose).toHaveBeenCalledTimes(1);
   });
+
+  it('enters keyboard mode without constructing hardware and can cancel a pending permission request', async () => {
+    const directCreateRuntime = vi.fn();
+    const direct = render(<EngageGate createRuntime={directCreateRuntime} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with keyboard' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(directCreateRuntime).not.toHaveBeenCalled();
+    direct.unmount();
+
+    let finishEngagement!: () => void;
+    const runtime = {
+      engage: vi.fn(() => new Promise<void>((resolve) => { finishEngagement = resolve; })),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    render(<EngageGate createRuntime={() => runtime} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Engage local runtime' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Continue with keyboard' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(runtime.dispose).toHaveBeenCalledTimes(1);
+    finishEngagement();
+    await Promise.resolve();
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
 });

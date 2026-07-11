@@ -322,6 +322,7 @@ describe('durable assignment queue', () => {
     const store = openStore();
     seedApprovedMission(store, { maxRetriesPerAssignment: 1, maxConcurrency: 2 });
     store.enqueueAssignment(makeAssignment());
+    store.enqueueAssignment(makeCodeAssignment());
     const [active] = store.leaseReadyAssignments({ workerId: 'worker', now: T1, leaseMs: 120_000, limit: 1 });
 
     const retrying = store.failAssignment(active.id, active.leaseToken!, { message: 'temporary' }, T2, T2);
@@ -331,6 +332,20 @@ describe('durable assignment queue', () => {
     expect(terminal.status).toBe(LifecycleStatus.Failed);
 
     expect(store.getMission('mission-v1')?.status).toBe(LifecycleStatus.Failed);
+    expect(store.getAssignment('assignment-code')).toMatchObject({
+      status: LifecycleStatus.Cancelled,
+      cancelRequestedAt: T3,
+      completedAt: T3,
+    });
+    expect(store.getMissionTask('task-code')).toMatchObject({
+      status: LifecycleStatus.Cancelled,
+      completedAt: T3,
+    });
+    expect(store.listAssignments({ missionId: 'mission-v1' }).filter((item) =>
+      item.status === LifecycleStatus.Queued ||
+      item.status === LifecycleStatus.Active ||
+      item.status === LifecycleStatus.Paused
+    )).toEqual([]);
   });
 
   it('cancels an expired cancel-requested lease and propagates terminal failure to the mission', () => {
