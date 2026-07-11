@@ -7,19 +7,31 @@ export const NUCLEUS_DEPTH_HOLD_MS = 700;
 export const NUCLEUS_DEPTH_STEP_PX = 72;
 export const NUCLEUS_DEPTH_DEBOUNCE_MS = 240;
 
+export interface ActiveApprovalScope {
+  missionId: string;
+  planHash: string;
+  version: number;
+}
+
 export type HeldGestureAction =
-  | { type: 'approval-decision'; outcome: 'approved' | 'rejected' }
+  | {
+    type: 'approval-decision';
+    outcome: 'approved' | 'rejected';
+    approval: ActiveApprovalScope;
+  }
   | { type: 'cancel-pending' };
 
 export interface HeldGestureInput {
   left?: TrackedHandFrame;
   right?: TrackedHandFrame;
   now: number;
-  activeApproval: boolean;
+  activeApproval?: ActiveApprovalScope;
   cancelEnabled: boolean;
 }
 
-type Candidate = 'approve' | 'reject' | 'cancel';
+type Candidate =
+  | { type: 'approve' | 'reject'; approval: ActiveApprovalScope }
+  | { type: 'cancel' };
 
 /** Deterministic recognition only: callers own every resulting side effect. */
 export class HeldGestureInterpreter {
@@ -35,7 +47,7 @@ export class HeldGestureInterpreter {
       this.latched = false;
       return [];
     }
-    if (candidate !== this.candidate) {
+    if (candidateKey(candidate) !== candidateKey(this.candidate)) {
       this.candidate = candidate;
       this.candidateSince = input.now;
       this.latched = false;
@@ -49,10 +61,11 @@ export class HeldGestureInterpreter {
 
     this.latched = true;
     this.lastFiredAt = input.now;
-    if (candidate === 'cancel') return [{ type: 'cancel-pending' }];
+    if (candidate.type === 'cancel') return [{ type: 'cancel-pending' }];
     return [{
       type: 'approval-decision',
-      outcome: candidate === 'approve' ? 'approved' : 'rejected',
+      outcome: candidate.type === 'approve' ? 'approved' : 'rejected',
+      approval: { ...candidate.approval },
     }];
   }
 
@@ -69,7 +82,7 @@ function classify(input: HeldGestureInput): Candidate | null {
     input.cancelEnabled
     && isFreshGesture(input.left, 'Open_Palm')
     && isFreshGesture(input.right, 'Open_Palm')
-  ) return 'cancel';
+  ) return { type: 'cancel' };
 
   if (!input.activeApproval) return null;
   const thumbs = [input.left, input.right]
@@ -78,7 +91,17 @@ function classify(input: HeldGestureInput): Candidate | null {
     .filter((gesture): gesture is 'Thumb_Up' | 'Thumb_Down' =>
       gesture === 'Thumb_Up' || gesture === 'Thumb_Down');
   if (!thumbs.length || new Set(thumbs).size !== 1) return null;
-  return thumbs[0] === 'Thumb_Up' ? 'approve' : 'reject';
+  return {
+    type: thumbs[0] === 'Thumb_Up' ? 'approve' : 'reject',
+    approval: input.activeApproval,
+  };
+}
+
+function candidateKey(candidate: Candidate | null): string {
+  if (!candidate) return '';
+  if (candidate.type === 'cancel') return 'cancel';
+  const { missionId, planHash, version } = candidate.approval;
+  return `${candidate.type}:${missionId}:${planHash}:${version}`;
 }
 
 function isFreshGesture(hand: TrackedHandFrame | undefined, gesture: string): boolean {

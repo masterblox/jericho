@@ -275,6 +275,9 @@ describe('JarvisRuntime lifecycle', () => {
     const harness = createHarness();
     const approval = document.createElement('article');
     approval.dataset.jerichoActiveApproval = 'true';
+    approval.dataset.jerichoApprovalMissionId = 'mission-1';
+    approval.dataset.jerichoApprovalPlanHash = 'a'.repeat(64);
+    approval.dataset.jerichoApprovalVersion = '3';
     harness.root.append(approval);
     const decisions: unknown[] = [];
     const listener = (event: Event) => decisions.push((event as CustomEvent).detail);
@@ -285,7 +288,12 @@ describe('JarvisRuntime lifecycle', () => {
     harness.emit(frame(0, undefined, thumbUp));
     harness.emit(frame(GESTURE_HOLD_MS, undefined, thumbUp));
     harness.emit(frame(GESTURE_HOLD_MS + 300, undefined, thumbUp));
-    expect(decisions).toEqual([{ outcome: 'approved' }]);
+    expect(decisions).toEqual([{
+      outcome: 'approved',
+      missionId: 'mission-1',
+      planHash: 'a'.repeat(64),
+      version: 3,
+    }]);
 
     approval.remove();
     harness.emit(frame(GESTURE_HOLD_MS + 400, undefined, tracked('Right', 'idle', 0.5, 0.5, 'None')));

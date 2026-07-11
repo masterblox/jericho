@@ -5,6 +5,9 @@ export const JERICHO_NUCLEUS_DEPTH_EVENT = 'jericho:nucleus-depth';
 
 export interface ApprovalGestureDetail {
   outcome: 'approved' | 'rejected';
+  missionId: string;
+  planHash: string;
+  version: number;
 }
 
 export interface CancelPendingDetail {

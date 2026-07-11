@@ -21,6 +21,7 @@ import {
   JERICHO_NUCLEUS_DEPTH_EVENT,
 } from './gesture-events';
 import {
+  type ActiveApprovalScope,
   HeldGestureInterpreter,
   NucleusGestureInterpreter,
   type NucleusGestureAction,
@@ -343,7 +344,7 @@ export class JarvisRuntime {
       left: leftSuppressed ? undefined : frame.left,
       right: rightSuppressed ? undefined : frame.right,
       now: frame.timestamp,
-      activeApproval: this.root.ownerDocument.querySelector('[data-jericho-active-approval="true"]') !== null,
+      activeApproval: readActiveApprovalScope(this.root.ownerDocument),
       cancelEnabled: !bothOpenPalmsInsideNucleus,
     });
     if (heldActions.length) {
@@ -354,7 +355,7 @@ export class JarvisRuntime {
       for (const action of heldActions) {
         if (action.type === 'approval-decision') {
           this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
-            detail: { outcome: action.outcome },
+            detail: { outcome: action.outcome, ...action.approval },
           }));
         } else {
           this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CANCEL_PENDING_EVENT, {
@@ -711,6 +712,16 @@ function pointInRect(point: Point, rect: DOMRect): boolean {
     && point.x <= rect.right
     && point.y >= rect.top
     && point.y <= rect.bottom;
+}
+
+function readActiveApprovalScope(ownerDocument: Document): ActiveApprovalScope | undefined {
+  const element = ownerDocument.querySelector<HTMLElement>('[data-jericho-active-approval="true"]');
+  if (!element) return undefined;
+  const missionId = element.dataset.jerichoApprovalMissionId;
+  const planHash = element.dataset.jerichoApprovalPlanHash;
+  const version = Number(element.dataset.jerichoApprovalVersion);
+  if (!missionId || !planHash || !Number.isSafeInteger(version) || version < 1) return undefined;
+  return { missionId, planHash, version };
 }
 
 function cursorView(hand?: TrackedHandFrame, point?: Point) {

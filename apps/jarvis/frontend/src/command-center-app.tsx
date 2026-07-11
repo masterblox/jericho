@@ -124,10 +124,20 @@ export function CommandCenterApp({
 
   useEffect(() => {
     const onApprovalGesture = (event: Event) => {
-      const outcome = (event as CustomEvent<ApprovalGestureDetail>).detail?.outcome;
+      const detail = (event as CustomEvent<ApprovalGestureDetail>).detail;
+      const outcome = detail?.outcome;
       if (outcome !== DecisionOutcome.Approved && outcome !== DecisionOutcome.Rejected) return;
       const approval = snapshot?.approvals[0];
-      const action = approval?.actions.find((candidate) => candidate.payload.outcome === outcome);
+      if (
+        !approval
+        || detail.missionId !== approval.missionId
+        || detail.planHash !== approval.planHash
+        || detail.version !== approval.version
+      ) return;
+      const action = approval.actions.find((candidate) =>
+        candidate.payload.outcome === outcome
+        && candidate.payload.planHash === detail.planHash
+        && candidate.payload.version === detail.version);
       if (approval && action) void decide(approval, action, 'gesture');
     };
     document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, onApprovalGesture);
@@ -624,6 +634,9 @@ function ApprovalCard({
       className="jericho-approval-card"
       data-gesture-target={`approval:${approval.id}`}
       data-jericho-active-approval={active ? 'true' : undefined}
+      data-jericho-approval-mission-id={active ? approval.missionId : undefined}
+      data-jericho-approval-plan-hash={active ? approval.planHash : undefined}
+      data-jericho-approval-version={active ? approval.version : undefined}
     >
       <div className="jericho-approval-title"><div><span>{approval.risk} RISK</span><h3>{approval.title}</h3></div><strong>V{approval.version}</strong></div>
       <p>{approval.objective}</p>

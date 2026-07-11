@@ -11,44 +11,40 @@ import {
 import type { TrackedHandFrame } from '../src/hand-tracks';
 
 describe('HeldGestureInterpreter', () => {
+  const activeApproval = { missionId: 'mission-1', planHash: 'a'.repeat(64), version: 3 };
+
   it('emits one held thumb approval decision only while an approval is active', () => {
     const interpreter = new HeldGestureInterpreter();
     const right = hand('Right', 'Thumb_Up');
 
-    expect(interpreter.update({ right, now: 0, activeApproval: true, cancelEnabled: false })).toEqual([]);
-    expect(interpreter.update({ right, now: GESTURE_HOLD_MS - 1, activeApproval: true, cancelEnabled: false })).toEqual([]);
-    expect(interpreter.update({ right, now: GESTURE_HOLD_MS, activeApproval: true, cancelEnabled: false }))
-      .toEqual([{ type: 'approval-decision', outcome: 'approved' }]);
-    expect(interpreter.update({ right, now: GESTURE_HOLD_MS + 400, activeApproval: true, cancelEnabled: false }))
+    expect(interpreter.update({ right, now: 0, activeApproval, cancelEnabled: false })).toEqual([]);
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS - 1, activeApproval, cancelEnabled: false })).toEqual([]);
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS, activeApproval, cancelEnabled: false }))
+      .toEqual([{ type: 'approval-decision', outcome: 'approved', approval: activeApproval }]);
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS + 400, activeApproval, cancelEnabled: false }))
       .toEqual([]);
 
-    interpreter.update({ right: hand('Right', 'None'), now: GESTURE_HOLD_MS + 10, activeApproval: true, cancelEnabled: false });
-    expect(interpreter.update({ right, now: GESTURE_HOLD_MS + 11, activeApproval: true, cancelEnabled: false })).toEqual([]);
+    interpreter.update({ right: hand('Right', 'None'), now: GESTURE_HOLD_MS + 10, activeApproval, cancelEnabled: false });
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS + 11, activeApproval, cancelEnabled: false })).toEqual([]);
     expect(interpreter.update({
-      right,
-      now: GESTURE_HOLD_MS * 2 + 11,
-      activeApproval: true,
-      cancelEnabled: false,
+      right, now: GESTURE_HOLD_MS * 2 + 11, activeApproval, cancelEnabled: false,
     })).toEqual([]);
     expect(interpreter.update({
-      right,
-      now: GESTURE_HOLD_MS + GESTURE_DEBOUNCE_MS,
-      activeApproval: true,
-      cancelEnabled: false,
-    })).toEqual([{ type: 'approval-decision', outcome: 'approved' }]);
+      right, now: GESTURE_HOLD_MS + GESTURE_DEBOUNCE_MS, activeApproval, cancelEnabled: false,
+    })).toEqual([{ type: 'approval-decision', outcome: 'approved', approval: activeApproval }]);
   });
 
   it('keeps thumb decisions inert without an active approval and maps thumb down to rejection', () => {
     const interpreter = new HeldGestureInterpreter();
     const down = hand('Left', 'Thumb_Down');
 
-    interpreter.update({ left: down, now: 0, activeApproval: false, cancelEnabled: false });
-    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS + 10, activeApproval: false, cancelEnabled: false }))
+    interpreter.update({ left: down, now: 0, cancelEnabled: false });
+    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS + 10, cancelEnabled: false }))
       .toEqual([]);
-    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS + 20, activeApproval: true, cancelEnabled: false }))
+    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS + 20, activeApproval, cancelEnabled: false }))
       .toEqual([]);
-    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS * 2 + 20, activeApproval: true, cancelEnabled: false }))
-      .toEqual([{ type: 'approval-decision', outcome: 'rejected' }]);
+    expect(interpreter.update({ left: down, now: GESTURE_HOLD_MS * 2 + 20, activeApproval, cancelEnabled: false }))
+      .toEqual([{ type: 'approval-decision', outcome: 'rejected', approval: activeApproval }]);
   });
 
   it('emits one cancel only after both fresh Open_Palm hands are held', () => {
@@ -56,15 +52,15 @@ describe('HeldGestureInterpreter', () => {
     const left = hand('Left', 'Open_Palm');
     const right = hand('Right', 'Open_Palm');
 
-    interpreter.update({ left, right, now: 0, activeApproval: false, cancelEnabled: true });
-    expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS, activeApproval: false, cancelEnabled: true }))
+    interpreter.update({ left, right, now: 0, cancelEnabled: true });
+    expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS, cancelEnabled: true }))
       .toEqual([{ type: 'cancel-pending' }]);
-    expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS + 100, activeApproval: false, cancelEnabled: true }))
+    expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS + 100, cancelEnabled: true }))
       .toEqual([]);
 
     const staleRight = { ...right, fresh: false };
-    interpreter.update({ left, right: staleRight, now: GESTURE_HOLD_MS + 200, activeApproval: false, cancelEnabled: true });
-    expect(interpreter.update({ left, right: staleRight, now: GESTURE_HOLD_MS * 2 + 300, activeApproval: false, cancelEnabled: true }))
+    interpreter.update({ left, right: staleRight, now: GESTURE_HOLD_MS + 200, cancelEnabled: true });
+    expect(interpreter.update({ left, right: staleRight, now: GESTURE_HOLD_MS * 2 + 300, cancelEnabled: true }))
       .toEqual([]);
   });
 
@@ -75,11 +71,23 @@ describe('HeldGestureInterpreter', () => {
       [hand('Left', 'Victory'), undefined],
       [hand('Left', 'Thumb_Up'), hand('Right', 'Thumb_Down')],
     ] as const) {
-      interpreter.update({ left, right, now: 0, activeApproval: true, cancelEnabled: true });
-      expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS + 50, activeApproval: true, cancelEnabled: true }))
+      interpreter.update({ left, right, now: 0, activeApproval, cancelEnabled: true });
+      expect(interpreter.update({ left, right, now: GESTURE_HOLD_MS + 50, activeApproval, cancelEnabled: true }))
         .toEqual([]);
       interpreter.reset();
     }
+  });
+
+  it('restarts the hold when the active immutable plan scope changes', () => {
+    const interpreter = new HeldGestureInterpreter();
+    const right = hand('Right', 'Thumb_Up');
+    const revised = { ...activeApproval, planHash: 'b'.repeat(64), version: 4 };
+
+    interpreter.update({ right, now: 0, activeApproval, cancelEnabled: false });
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS, activeApproval: revised, cancelEnabled: false }))
+      .toEqual([]);
+    expect(interpreter.update({ right, now: GESTURE_HOLD_MS * 2, activeApproval: revised, cancelEnabled: false }))
+      .toEqual([{ type: 'approval-decision', outcome: 'approved', approval: revised }]);
   });
 });
 

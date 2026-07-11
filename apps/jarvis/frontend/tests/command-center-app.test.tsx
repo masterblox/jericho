@@ -96,7 +96,12 @@ describe('CommandCenterApp', () => {
 
     act(() => {
       document.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
-        detail: { outcome: DecisionOutcome.Approved },
+        detail: {
+          outcome: DecisionOutcome.Approved,
+          missionId: 'mission-1',
+          planHash: 'a'.repeat(64),
+          version: 3,
+        },
       }));
     });
     await waitFor(() => expect(decideMission).toHaveBeenCalledTimes(1));
@@ -111,10 +116,40 @@ describe('CommandCenterApp', () => {
 
     act(() => {
       document.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
-        detail: { outcome: DecisionOutcome.Approved },
+        detail: {
+          outcome: DecisionOutcome.Approved,
+          missionId: 'mission-1',
+          planHash: 'a'.repeat(64),
+          version: 3,
+        },
       }));
     });
     expect(decideMission).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores a held approval gesture bound to a stale plan version or hash', () => {
+    const store = new CommandCenterStore();
+    store.replace(populatedSnapshot());
+    const decideMission = vi.fn();
+
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission }}
+      autoStart={false}
+    />);
+
+    act(() => {
+      document.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
+        detail: {
+          outcome: DecisionOutcome.Approved,
+          missionId: 'mission-1',
+          planHash: 'b'.repeat(64),
+          version: 2,
+        },
+      }));
+    });
+
+    expect(decideMission).not.toHaveBeenCalled();
   });
 
   it('renders missing timeline attribution explicitly without inventing an actor', () => {
