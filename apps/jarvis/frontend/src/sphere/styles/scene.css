@@ -122,6 +122,17 @@
 }
 .core-sphere canvas { width: 100% !important; height: 100% !important; display: block; }
 @keyframes core-sphere-in { from { opacity: 0; transform: scale(.85); } }
+.core-command-target {
+  position: absolute;
+  z-index: 4;
+  inset: 35%;
+  border: 1px solid transparent;
+  border-radius: 50%;
+  background: transparent;
+  cursor: crosshair;
+}
+.core-command-target:hover,
+.core-command-target:focus-visible { border-color: rgba(var(--hud), .45); box-shadow: inset 0 0 24px rgba(var(--hud), .08); }
 
 /* =========================================================
    ID LINE (the only chrome)
@@ -138,6 +149,31 @@
 .view-tabs [role="tab"]:hover .micro { color: var(--muted); }
 .view-tabs [role="tab"][aria-selected="true"] { border-bottom-color: var(--cyan); }
 .view-tabs [role="tab"][aria-selected="true"] .micro { color: var(--cyan); }
+
+.fleet-lifecycle {
+  position: absolute;
+  right: 26px;
+  bottom: 22px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(82px, 1fr));
+  width: min(620px, calc(100vw - 52px));
+  margin: 0;
+  padding: 0;
+  border-block: 1px solid var(--stroke-dim);
+  list-style: none;
+}
+.fleet-lifecycle li { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; padding: 8px 9px; color: var(--faint); }
+.fleet-lifecycle li + li { border-left: 1px solid var(--stroke-dim); }
+.fleet-lifecycle span, .fleet-lifecycle b { font: 8px var(--mono); }
+.fleet-lifecycle strong { font: 600 9px var(--cond); letter-spacing: .12em; }
+.fleet-lifecycle li.active { background: rgba(var(--hud), .05); color: var(--cyan); }
+.fleet-lifecycle li.active b { text-shadow: 0 0 8px rgba(var(--hud), .75); }
+
+@media (max-width: 720px) {
+  .fleet-lifecycle { right: 8px; bottom: 8px; width: calc(100vw - 16px); grid-template-columns: repeat(5, minmax(0, 1fr)); }
+  .fleet-lifecycle li { grid-template-columns: 1fr; gap: 2px; padding: 7px 4px; text-align: center; }
+  .fleet-lifecycle span { display: none; }
+}
 
 /* status dots breathe (the one ambient motion outside the core) */
 .status-dot { animation: dot-pulse 2.4s ease-in-out infinite; }
@@ -201,6 +237,78 @@
   position: absolute; left: 50%; top: 50%;
   width: 224px;
   animation: card-pop 380ms calc(var(--ci, 0) * 70ms) cubic-bezier(.22, 1, .36, 1) both;
+}
+
+/* =========================================================
+   SPHERE COMMAND — operator plates, never graph bubbles
+   ========================================================= */
+.sphere-command {
+  position: fixed;
+  z-index: 150;
+  inset: 8vh 5vw;
+  display: grid;
+  grid-template-columns: 190px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  border: 1px solid var(--stroke);
+  background: rgba(2, 6, 9, .96);
+  box-shadow: 0 0 80px rgba(0, 0, 0, .72), inset 0 0 60px rgba(var(--hud), .025);
+  animation: summon 180ms ease-out both;
+  color: var(--text);
+}
+.sphere-command > header { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 18px; padding: 12px 16px; border-bottom: 1px solid var(--stroke); }
+.sphere-command > header strong { font: 600 13px var(--cond); letter-spacing: .2em; color: var(--cyan); }
+.sphere-command > header button { width: 34px; height: 34px; color: var(--muted); font-size: 20px; }
+.sphere-command > nav { display: grid; align-content: start; border-right: 1px solid var(--stroke); }
+.sphere-command > nav button { display: grid; grid-template-columns: 24px 1fr; gap: 8px; min-height: 54px; padding: 10px 12px; border-bottom: 1px solid var(--stroke-dim); color: var(--muted); text-align: left; font: 600 9px var(--cond); letter-spacing: .12em; }
+.sphere-command > nav button span { color: var(--faint); font-family: var(--mono); }
+.sphere-command > nav button[aria-pressed="true"] { background: rgba(var(--hud), .07); color: var(--cyan); }
+.sphere-command__body { min-width: 0; overflow: auto; padding: 18px; }
+.sphere-command__status { grid-column: 1 / -1; min-height: 31px; padding: 8px 16px; border-top: 1px solid var(--stroke); color: var(--cyan); font: 9px var(--mono); letter-spacing: .12em; }
+.sphere-command__intro { max-width: 660px; }
+.sphere-command__intro > p { color: var(--muted); font: 13px/1.6 var(--sans); }
+.sphere-command__intro dl, .sphere-mission-detail dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.sphere-command__intro dl div, .sphere-mission-detail dl div { padding: 10px; border: 1px solid var(--stroke-dim); }
+.sphere-command dt { color: var(--faint); font: 8px var(--mono); letter-spacing: .1em; }
+.sphere-command dd { margin: 5px 0 0; color: var(--text); font: 15px var(--cond); }
+.sphere-command__form { display: grid; gap: 9px; }
+.sphere-command__form label { color: var(--cyan); font: 8px var(--mono); letter-spacing: .14em; }
+.sphere-command__form > div { display: grid; grid-template-columns: 1fr auto; }
+.sphere-command__form textarea, .sphere-command__form input { width: 100%; border: 1px solid var(--stroke); border-radius: 0; padding: 11px; background: rgba(var(--hud), .025); color: var(--text); font: 12px var(--mono); }
+.sphere-command__form textarea { min-height: 150px; resize: vertical; }
+.sphere-command__form button, .sphere-memory__preview > button, .sphere-mission-detail footer button { border: 1px solid var(--stroke); padding: 10px 13px; color: var(--cyan); font: 600 9px var(--cond); letter-spacing: .1em; }
+.sphere-command button:disabled { opacity: .35; }
+.sphere-command__error { color: var(--fault); }
+.sphere-memory { display: grid; grid-template-columns: minmax(260px, .8fr) minmax(300px, 1.2fr); gap: 14px; }
+.sphere-memory > form { grid-column: 1 / -1; }
+.sphere-memory ol, .sphere-missions ol { display: grid; align-content: start; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.sphere-memory li button, .sphere-missions li button { width: 100%; display: grid; grid-template-columns: 1fr auto; gap: 5px; padding: 10px; border: 1px solid var(--stroke-dim); color: var(--text); text-align: left; }
+.sphere-memory li button:hover, .sphere-missions li button:hover, .sphere-missions li button[aria-pressed="true"] { border-color: var(--stroke); background: rgba(var(--hud), .05); }
+.sphere-memory li strong, .sphere-missions li strong { font: 12px var(--sans); }
+.sphere-memory li span, .sphere-missions li span { color: var(--cyan); font: 8px var(--mono); }
+.sphere-memory li code { grid-column: 1 / -1; color: var(--faint); overflow-wrap: anywhere; font-size: 8px; }
+.sphere-memory__preview, .sphere-mission-detail, .sphere-outcomes article { padding: 15px; border: 1px solid var(--stroke); background: rgba(var(--hud), .025); }
+.sphere-memory__preview header, .sphere-mission-detail > header { display: grid; gap: 5px; }
+.sphere-memory__preview code, .sphere-mission-detail code { color: var(--faint); overflow-wrap: anywhere; font-size: 8px; }
+.sphere-memory__preview p, .sphere-mission-detail p { color: var(--muted); line-height: 1.55; }
+.sphere-missions { display: grid; grid-template-columns: minmax(220px, .65fr) minmax(360px, 1.35fr); gap: 14px; }
+.sphere-mission-detail > header { grid-template-columns: auto 1fr auto; color: var(--cyan); font: 9px var(--mono); }
+.sphere-mission-detail > header strong { color: var(--text); font: 14px var(--sans); }
+.sphere-mission-detail dl { grid-template-columns: repeat(4, 1fr); }
+.sphere-mission-detail footer { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 14px; }
+.sphere-mission-detail footer .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
+.sphere-outcomes { display: grid; gap: 7px; }
+.sphere-outcomes article { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; }
+.sphere-outcomes code { color: var(--faint); }
+
+@media (max-width: 760px) {
+  .sphere-command { inset: 8px; grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto; }
+  .sphere-command > nav { grid-template-columns: repeat(5, 1fr); border-right: 0; border-bottom: 1px solid var(--stroke); }
+  .sphere-command > nav button { grid-template-columns: 1fr; min-height: 50px; padding: 6px 3px; text-align: center; font-size: 7px; }
+  .sphere-command > nav button span { display: none; }
+  .sphere-command__body { padding: 10px; }
+  .sphere-memory, .sphere-missions { grid-template-columns: 1fr; }
+  .sphere-mission-detail dl, .sphere-command__intro dl { grid-template-columns: repeat(2, 1fr); }
 }
 @keyframes card-pop {
   from { transform: translate(-50%, -50%) scale(.55); opacity: 0; }

@@ -1,6 +1,13 @@
-import type { Handedness, Point } from './tracking';
+import {
+  PINCH_ENGAGE_RATIO,
+  PINCH_RELEASE_RATIO,
+  validPinchThresholds,
+  type Handedness,
+  type PinchThresholds,
+  type Point,
+} from './tracking';
 
-export const CALIBRATION_VERSION = 1;
+export const CALIBRATION_VERSION = 2;
 export const MAX_CENTER_RESIDUAL = 0.05;
 
 export type CalibrationTarget = 'center' | 'top-left' | 'top-right' | 'bottom-right' | 'bottom-left';
@@ -11,7 +18,7 @@ export interface CalibrationSample {
 }
 
 export interface CalibrationProfile {
-  version: 1;
+  version: 2;
   cameraId: string;
   cameraAspectRatio: number;
   handedness: Handedness;
@@ -19,6 +26,8 @@ export interface CalibrationProfile {
   /** Row-major 3x3 projective transform; matrix[8] is always 1. */
   matrix: [number, number, number, number, number, number, number, number, number];
   centerResidual: number;
+  pinchEngageRatio: number;
+  pinchReleaseRatio: number;
   createdAt: string;
 }
 
@@ -93,6 +102,10 @@ export function createCalibrationProfile(
   cameraAspectRatio: number,
   handedness: Handedness,
   createdAt = new Date().toISOString(),
+  pinchThresholds: PinchThresholds = {
+    engageRatio: PINCH_ENGAGE_RATIO,
+    releaseRatio: PINCH_RELEASE_RATIO,
+  },
 ): CalibrationProfile {
   const center = samples.find((sample) => sample.target === 'center');
   if (!center || samples.length !== 5 || new Set(samples.map((sample) => sample.target)).size !== 5) {
@@ -104,6 +117,7 @@ export function createCalibrationProfile(
   if (centerResidual > MAX_CENTER_RESIDUAL) {
     throw new Error(`Center residual ${(centerResidual * 100).toFixed(1)}% is too high`);
   }
+  if (!validPinchThresholds(pinchThresholds)) throw new Error('Pinch calibration thresholds are invalid');
   return {
     version: CALIBRATION_VERSION,
     cameraId,
@@ -112,8 +126,24 @@ export function createCalibrationProfile(
     samples,
     matrix,
     centerResidual,
+    pinchEngageRatio: pinchThresholds.engageRatio,
+    pinchReleaseRatio: pinchThresholds.releaseRatio,
     createdAt,
   };
+}
+
+export function derivePinchThresholds(openRatios: number[], closedRatios: number[]): PinchThresholds {
+  const open = median(openRatios.filter(validRatio));
+  const closed = median(closedRatios.filter(validRatio));
+  if (open === undefined || closed === undefined || open - closed < 0.12) {
+    throw new Error('Open and closed pinch samples are too similar');
+  }
+  const thresholds = {
+    engageRatio: round(closed + (open - closed) * 0.28),
+    releaseRatio: round(closed + (open - closed) * 0.62),
+  };
+  if (!validPinchThresholds(thresholds)) throw new Error('Derived pinch thresholds are invalid');
+  return thresholds;
 }
 
 export function isCalibrationCompatible(
@@ -131,6 +161,20 @@ export function isCalibrationCompatible(
 
 function storageKey(cameraId: string, handedness: Handedness): string {
   return `jericho.calibration.v${CALIBRATION_VERSION}.${encodeURIComponent(cameraId)}.${handedness}`;
+}
+
+function validRatio(value: number): boolean {
+  return Number.isFinite(value) && value >= 0.02 && value <= 2;
+}
+
+function median(values: number[]): number | undefined {
+  if (!values.length) return undefined;
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.floor(ordered.length / 2)];
+}
+
+function round(value: number): number {
+  return Math.round(value * 1_000) / 1_000;
 }
 
 export function loadCalibration(

@@ -194,6 +194,15 @@ default) and may also be requested through the authenticated API. Conflicts,
 incompatible assumptions, and abandoned commitments become pending proposals.
 Reflection cannot approve, merge, or resolve them.
 
+Verified retention now also seals a content-addressed knowledge package before
+writing the managed Obsidian projection. Curated Notion projections require an
+explicit field allowlist and approval, and their receipts remain bound to the
+package hash. Federated retrieval keeps private-vault, Core-evidence, and
+shared-Notion results collection-explicit with provenance. Candidate index
+promotion is automatic only after the fixed benchmark improves without
+freshness, latency, evidence, duplication, or contradiction regressions. See
+[`../../docs/FLEET-DELIVERY-KNOWLEDGE.md`](../../docs/FLEET-DELIVERY-KNOWLEDGE.md).
+
 ## Verification and known live boundary
 
 ```bash

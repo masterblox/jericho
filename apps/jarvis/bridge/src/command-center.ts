@@ -36,6 +36,7 @@ import {
 } from '@jericho/shared';
 
 import type { JerichoStore } from './core/store.js';
+import { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
 
 const ACTIVE_MISSION_STATUSES = new Set<LifecycleStatus>([
   LifecycleStatus.Approved,
@@ -82,6 +83,15 @@ export function buildCommandCenterSnapshot(
   const costs = new Map(missions.map((mission) => [mission.id, store.listCosts(mission.id)]));
   const knownEventIds = new Set(events.map((event) => event.id));
   const entityById = new Map(entities.map((entity) => [entity.id, entity]));
+  const fleetKnowledge = new FleetKnowledgeService(store);
+  const knowledge = {
+    packages: fleetKnowledge.listPackages(),
+    projections: fleetKnowledge.listProjections(),
+    projectionReceipts: fleetKnowledge.listProjectionReceipts(),
+    indexes: fleetKnowledge.listIndexes(),
+    evaluations: fleetKnowledge.listEvaluations(),
+    paperclip: fleetKnowledge.listPaperclip(),
+  };
 
   const tasks = rankCards(
     entities.filter((entity) => entity.type === EntityType.Task),
@@ -153,6 +163,7 @@ export function buildCommandCenterSnapshot(
     identityReviews,
     reviewIntents,
     costs: [...costs.values()],
+    knowledge,
     lastChangeSequence: store.getLatestChangeSequence(),
   };
 
@@ -185,6 +196,7 @@ export function buildCommandCenterSnapshot(
     reviewIntents,
     lastChangeSequence: source.lastChangeSequence,
     nucleus,
+    knowledge,
   };
 }
 

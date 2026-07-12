@@ -1120,6 +1120,155 @@ export interface CommandCenterNucleus {
   activityPulses: NucleusActivityPulse[];
 }
 
+export enum KnowledgeSensitivity {
+  Private = 'private',
+  Internal = 'internal',
+  Shared = 'shared',
+}
+
+export enum KnowledgeDestination {
+  Obsidian = 'obsidian',
+  Notion = 'notion',
+}
+
+export enum RetrievalCollection {
+  PrivateVault = 'private_vault',
+  CoreEvidence = 'core_evidence',
+  SharedNotion = 'shared_notion',
+}
+
+export enum IndexLifecycleStatus {
+  Candidate = 'candidate',
+  Active = 'active',
+  Superseded = 'superseded',
+  Rejected = 'rejected',
+  RolledBack = 'rolled_back',
+}
+
+export interface KnowledgeEvidenceSelector {
+  eventId: string;
+  selector?: string;
+}
+
+export interface KnowledgePackage {
+  id: string;
+  version: number;
+  packageHash: string;
+  missionId: string;
+  planHash: string;
+  title: string;
+  objective: string;
+  classification: string[];
+  sensitivity: KnowledgeSensitivity;
+  retentionPolicy: string;
+  deliverables: string[];
+  outcomeTaskIds: string[];
+  decisionIds: string[];
+  receiptIds: string[];
+  decisions: Array<{ id: string; outcome: string; rationale: string; decidedBy: string; decidedAt: IsoTimestamp }>;
+  outcomes: Array<{ taskId: string; status: string; completedAt: IsoTimestamp }>;
+  receipts: Array<{ id: string; connectorId: string; action: string; destination: string; externalId: string }>;
+  evidence: KnowledgeEvidenceSelector[];
+  createdAt: IsoTimestamp;
+  completedAt: IsoTimestamp;
+}
+
+export interface KnowledgeProjection {
+  id: string;
+  packageId: string;
+  packageHash: string;
+  destination: KnowledgeDestination;
+  status: LifecycleStatus;
+  approvedFieldNames: string[];
+  redactedFieldNames: string[];
+  createdAt: IsoTimestamp;
+  approvedAt?: IsoTimestamp;
+}
+
+export interface ProjectionReceipt {
+  id: string;
+  projectionId: string;
+  packageId: string;
+  packageHash: string;
+  destination: KnowledgeDestination;
+  status: ReceiptStatus;
+  relativePath?: string;
+  externalId?: string;
+  verified: boolean;
+  attemptedAt: IsoTimestamp;
+  verifiedAt?: IsoTimestamp;
+}
+
+export interface RetrievalResult {
+  collection: RetrievalCollection;
+  packageId?: string;
+  packageVersion?: number;
+  title: string;
+  excerpt: string;
+  source: string;
+  evidence: KnowledgeEvidenceSelector[];
+  freshness: Freshness;
+  score: number;
+}
+
+export interface RetrievalMetrics {
+  quality: number;
+  freshness: number;
+  latencyMs: number;
+  duplicateRate: number;
+  contradictionRate: number;
+  evidenceCoverage: number;
+}
+
+export interface IndexVersion {
+  id: string;
+  collection: RetrievalCollection;
+  version: number;
+  status: IndexLifecycleStatus;
+  configurationHash: string;
+  metrics: RetrievalMetrics;
+  createdAt: IsoTimestamp;
+  promotedAt?: IsoTimestamp;
+  supersedesId?: string;
+}
+
+export interface EvaluationRun {
+  id: string;
+  candidateIndexId: string;
+  activeIndexId?: string;
+  benchmarkVersion: string;
+  candidateMetrics: RetrievalMetrics;
+  baselineMetrics?: RetrievalMetrics;
+  passed: boolean;
+  privacyPassed: boolean;
+  reasons: string[];
+  completedAt: IsoTimestamp;
+}
+
+export interface PaperclipReconciliation {
+  id: string;
+  missionId: string;
+  missionTaskId: string;
+  assignmentId: string;
+  planHash: string;
+  idempotencyKey: string;
+  status: LifecycleStatus;
+  issueId?: string;
+  observedStatus?: string;
+  verifiedByCore: boolean;
+  lastObservedAt: IsoTimestamp;
+  error?: string;
+}
+
+export interface CommandCenterKnowledge {
+  packages: KnowledgePackage[];
+  projections: KnowledgeProjection[];
+  projectionReceipts: ProjectionReceipt[];
+  indexes: IndexVersion[];
+  evaluations: EvaluationRun[];
+  paperclip: PaperclipReconciliation[];
+}
+
 export interface CommandCenterSnapshot {
   revision: string;
   generatedAt: IsoTimestamp;
@@ -1143,6 +1292,8 @@ export interface CommandCenterSnapshot {
   identityReviews?: ExternalIdentityReview[];
   lastChangeSequence: number;
   nucleus: CommandCenterNucleus;
+  /** Typed projections replayed from the encrypted Core event ledger. */
+  knowledge?: CommandCenterKnowledge;
 }
 
 export interface MissionDecisionRequest {

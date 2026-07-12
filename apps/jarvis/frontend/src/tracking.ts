@@ -19,6 +19,11 @@ export const PINCH_ENGAGE_MS = 80;
 export const PINCH_RELEASE_MS = 60;
 export const OWNER_LOSS_MS = 350;
 
+export interface PinchThresholds {
+  engageRatio: number;
+  releaseRatio: number;
+}
+
 const PALM_LANDMARKS = [0, 5, 9, 13, 17] as const;
 
 export function palmAnchor(landmarks: Landmark[]): Point {
@@ -71,12 +76,25 @@ export class PinchLatch {
   private pinched = false;
   private candidateSince: number | null = null;
   private candidatePhase: PinchPhase = 'open';
+  private armed = false;
+
+  constructor(private thresholds: PinchThresholds = {
+    engageRatio: PINCH_ENGAGE_RATIO,
+    releaseRatio: PINCH_RELEASE_RATIO,
+  }) {}
+
+  setThresholds(thresholds: PinchThresholds) {
+    if (!validPinchThresholds(thresholds)) throw new Error('Pinch thresholds are invalid');
+    this.thresholds = { ...thresholds };
+    this.reset();
+  }
 
   update(ratio: number, blockNewEngagement: boolean, now: number): boolean {
-    const wantsPinch = !blockNewEngagement && ratio <= PINCH_ENGAGE_RATIO;
-    const wantsRelease = ratio >= PINCH_RELEASE_RATIO;
+    const wantsPinch = this.armed && !blockNewEngagement && ratio <= this.thresholds.engageRatio;
+    const wantsRelease = ratio >= this.thresholds.releaseRatio;
 
     if (!this.pinched) {
+      if (!this.armed && wantsRelease && !blockNewEngagement) this.armed = true;
       if (!wantsPinch) {
         this.candidateSince = null;
         this.candidatePhase = 'open';
@@ -85,6 +103,7 @@ export class PinchLatch {
         this.candidatePhase = 'engaging';
       } else if (now - this.candidateSince >= PINCH_ENGAGE_MS) {
         this.pinched = true;
+        this.armed = false;
         this.candidateSince = null;
         this.candidatePhase = 'pinched';
       }
@@ -107,6 +126,7 @@ export class PinchLatch {
     this.pinched = false;
     this.candidateSince = null;
     this.candidatePhase = 'open';
+    this.armed = false;
   }
 
   get phase(): PinchPhase {
@@ -116,6 +136,12 @@ export class PinchLatch {
   candidateMs(now: number): number {
     return this.candidateSince === null ? 0 : now - this.candidateSince;
   }
+}
+
+export function validPinchThresholds(value: PinchThresholds): boolean {
+  return Number.isFinite(value.engageRatio) && Number.isFinite(value.releaseRatio)
+    && value.engageRatio >= 0.05 && value.releaseRatio <= 1.5
+    && value.releaseRatio - value.engageRatio >= 0.08;
 }
 
 export class AdaptivePointFilter {

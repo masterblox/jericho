@@ -1,12 +1,15 @@
 import type { GestureContextAction } from './gesture-target-registry';
 import type { CalibrationTarget } from './calibration';
-import type { GestureState, Handedness, Point } from './tracking';
+import type { GestureState, Handedness, PinchPhase, Point } from './tracking';
 
 export interface GestureCursorView {
   visible: boolean;
   x: number;
   y: number;
   mode: GestureState;
+  phase?: PinchPhase;
+  targetId?: string;
+  clutch?: boolean;
 }
 
 export interface GestureSurfaceView {
@@ -215,6 +218,9 @@ function renderCursor(element: HTMLDivElement, view: GestureCursorView) {
   element.classList.toggle('jericho-gesture-cursor--visible', view.visible);
   element.classList.toggle('jericho-gesture-cursor--pinch', view.mode === 'pinch');
   element.dataset.mode = view.mode;
+  element.dataset.phase = view.phase ?? 'open';
+  element.dataset.target = view.targetId ? 'acquired' : 'off-target';
+  element.dataset.clutch = String(view.clutch === true);
 }
 
 function controlButton(

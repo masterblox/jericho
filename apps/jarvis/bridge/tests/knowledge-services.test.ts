@@ -6,15 +6,19 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   DecisionOutcome,
+  IndexLifecycleStatus,
   IntentKind,
   IntentRoute,
   LifecycleStatus,
+  KnowledgeDestination,
+  RetrievalCollection,
   ReceiptStatus,
   RiskLevel,
   RouteType,
   SourceType,
   type ActionReceipt,
   type DecisionRecord,
+  type EventEnvelope,
   type IntentEnvelope,
   type MissionPlan,
   type MissionTask,
@@ -28,6 +32,7 @@ import {
 } from '../src/retention/knowledge-services.js';
 import { KnowledgeRuntime } from '../src/retention/knowledge-runtime.js';
 import { ObsidianRetentionWriter } from '../src/retention/obsidian-writer.js';
+import { FleetKnowledgeService, type FleetKnowledgeStore } from '../src/knowledge/fleet-knowledge.js';
 
 const NOW = '2026-07-11T07:00:00.000Z';
 const directories: string[] = [];
@@ -173,6 +178,46 @@ describe('reflection review publication', () => {
   });
 });
 
+describe('fleet knowledge packages and guarded index promotion', () => {
+  it('creates one immutable verified package and requires explicit Notion approval', () => {
+    const backing = fleetStore(completedMission());
+    const service = new FleetKnowledgeService(backing, () => NOW);
+    const knowledge = service.createPackage('mission-1');
+    expect(knowledge.packageHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(knowledge.receipts[0]).toMatchObject({ externalId: 'message-1', destination: 'person-paula' });
+    expect(service.createPackage('mission-1')).toEqual(knowledge);
+
+    const projection = service.createProjection(
+      knowledge.id, KnowledgeDestination.Notion, ['title', 'deliverables'], ['objective'],
+    );
+    expect(projection.status).toBe(LifecycleStatus.PendingApproval);
+    expect(service.approveProjection(projection.id)).toMatchObject({ status: LifecycleStatus.Approved });
+  });
+
+  it('promotes only a benchmark-improving privacy-safe candidate and preserves rollback binding', () => {
+    const service = new FleetKnowledgeService(fleetStore(completedMission()), () => NOW);
+    service.recordIndex({
+      id: 'index-active', collection: RetrievalCollection.PrivateVault, version: 1,
+      status: IndexLifecycleStatus.Active, configurationHash: 'a'.repeat(64),
+      metrics: metrics(0.7), createdAt: NOW,
+    });
+    service.recordIndex({
+      id: 'index-candidate', collection: RetrievalCollection.PrivateVault, version: 2,
+      status: IndexLifecycleStatus.Candidate, configurationHash: 'b'.repeat(64),
+      metrics: metrics(0.9), createdAt: NOW, supersedesId: 'index-active',
+    });
+    expect(service.evaluateAndPromote('index-candidate', 'benchmark-v1').promoted?.status).toBe(IndexLifecycleStatus.Active);
+
+    service.recordIndex({
+      id: 'index-regression', collection: RetrievalCollection.CoreEvidence, version: 1,
+      status: IndexLifecycleStatus.Candidate, configurationHash: 'c'.repeat(64),
+      metrics: { ...metrics(0.99), evidenceCoverage: 0.8 }, createdAt: NOW,
+    });
+    expect(service.evaluateCandidate('index-regression', 'benchmark-v1')).toMatchObject({ passed: false, privacyPassed: false });
+    expect(() => service.promoteCandidate('index-regression')).toThrow(/not passed/i);
+  });
+});
+
 function knowledgeStore(
   mission: MissionPlan,
   overrides: { tasks?: MissionTask[]; receipts?: ActionReceipt[] } = {},
@@ -186,6 +231,26 @@ function knowledgeStore(
     listDecisions: () => [decision()],
     appendEvent: () => undefined,
     getEvent: () => undefined,
+  };
+}
+
+function fleetStore(mission: MissionPlan): FleetKnowledgeStore {
+  const events = new Map<string, EventEnvelope>();
+  return {
+    ...knowledgeStore(mission),
+    appendEvent: (event) => { events.set(event.id, event); },
+    getEvent: (id) => events.get(id),
+    listEvents: ({ source, limit = 100 } = {}) => [...events.values()]
+      .filter((event) => !source || event.source === source)
+      .sort((left, right) => right.occurredAt.localeCompare(left.occurredAt))
+      .slice(0, limit),
+  };
+}
+
+function metrics(quality: number) {
+  return {
+    quality, freshness: 1, latencyMs: 50, duplicateRate: 0,
+    contradictionRate: 0, evidenceCoverage: 1,
   };
 }
 

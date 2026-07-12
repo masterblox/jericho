@@ -12,9 +12,11 @@ import {
   DecisionOutcome,
   IdentityReviewDisposition,
   IntentRoute,
+  KnowledgeDestination,
   LifecycleStatus,
   ProposalKind,
   RelationType,
+  RetrievalCollection,
   ReviewIntentDisposition,
   RiskLevel,
   SourceType,
@@ -34,6 +36,7 @@ import {
   type ProposalDecisionResponse,
   type ReviewIntentDecisionRequest,
   type ReviewIntentDecisionResponse,
+  type IndexVersion,
 } from '@jericho/shared';
 
 import { buildCommandCenterSnapshot } from './command-center.js';
@@ -54,6 +57,10 @@ import {
   type MissionQueueResult,
 } from './orchestration/intake.js';
 import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
+import type { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
+import { FederatedRetrievalService } from './retrieval/federated-retrieval.js';
+import { HttpPaperclipPort, PaperclipExecutor } from './connectors/paperclip-executor.js';
+import { ObsidianNoteOpener } from './connectors/obsidian-open.js';
 import { createPersonas, isPersonaMode, type PersonaMode } from './personas.js';
 import {
   ProductionRuntimeLifecycle,
@@ -138,6 +145,10 @@ export interface JerichoServerOptions {
   intake?: IntakePort;
   retention?: MissionRetentionPort;
   reflection?: ReflectionReviewPort;
+  knowledge?: FleetKnowledgeService;
+  retrieval?: FederatedRetrievalService;
+  paperclip?: PaperclipExecutor;
+  obsidianOpen?: { open(relativePath: string): Promise<{ relativePath: string }> };
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
   clock?: () => string;
@@ -303,6 +314,121 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
       sendJson(response, 200, buildCommandCenterSnapshot(options.store, now()));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/knowledge/packages') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { packages: options.knowledge.listPackages() });
+      return;
+    }
+    const knowledgeMissionMatch = url.pathname.match(/^\/api\/v1\/missions\/([^/]+)\/knowledge-package$/);
+    if (request.method === 'POST' && knowledgeMissionMatch) {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      const missionId = decodedPathSegment(knowledgeMissionMatch[1], 'invalid_mission_id');
+      try {
+        sendJson(response, 201, { package: options.knowledge.createPackage(missionId) });
+      } catch (error) {
+        if (/not verified|requires verified|unverified/u.test(String(error))) throw new HttpError(409, 'knowledge_not_ready');
+        throw error;
+      }
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/knowledge/projections') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, {
+        projections: options.knowledge.listProjections(),
+        receipts: options.knowledge.listProjectionReceipts(),
+      });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/knowledge/projections') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      const body = await readJsonBody(request, 64 * 1024);
+      const input = recordBody(body);
+      const packageId = requiredBodyString(input.packageId, 'invalid_package_id');
+      const approvedFields = stringList(input.approvedFieldNames, 'invalid_projection_fields');
+      const redactedFields = input.redactedFieldNames === undefined
+        ? [] : stringList(input.redactedFieldNames, 'invalid_projection_redactions');
+      sendJson(response, 201, { projection: options.knowledge.createProjection(
+        packageId, KnowledgeDestination.Notion, approvedFields, redactedFields,
+      ) });
+      return;
+    }
+    const projectionApprovalMatch = url.pathname.match(/^\/api\/v1\/knowledge\/projections\/([^/]+)\/approve$/);
+    if (request.method === 'POST' && projectionApprovalMatch) {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { projection: options.knowledge.approveProjection(
+        decodedPathSegment(projectionApprovalMatch[1], 'invalid_projection_id'),
+      ) });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/retrieval/indexes') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { indexes: options.knowledge.listIndexes(), evaluations: options.knowledge.listEvaluations() });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/paperclip/reconciliation') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { reconciliations: options.knowledge.listPaperclip() });
+      return;
+    }
+    const paperclipReconcileMatch = url.pathname.match(/^\/api\/v1\/paperclip\/assignments\/([^/]+)\/reconcile$/);
+    if (request.method === 'POST' && paperclipReconcileMatch) {
+      if (!options.paperclip || !options.knowledge) throw new HttpError(503, 'paperclip_unavailable');
+      const assignmentId = decodedPathSegment(paperclipReconcileMatch[1], 'invalid_assignment_id');
+      const assignment = options.store.getAssignment(assignmentId);
+      const task = assignment ? options.store.getMissionTask(assignment.missionTaskId) : undefined;
+      const mission = assignment ? options.store.getMission(assignment.missionId) : undefined;
+      if (!assignment || !task || !mission) throw new HttpError(404, 'assignment_not_found');
+      const reconciliation = await options.paperclip.reconcile(mission, task, assignment, requestSignal(request));
+      options.knowledge.recordPaperclip(reconciliation);
+      sendJson(response, 200, { reconciliation });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/retrieval/search') {
+      if (!options.retrieval) throw new HttpError(503, 'retrieval_unavailable');
+      const query = url.searchParams.get('q') ?? '';
+      const requested = (url.searchParams.get('collections') ?? Object.values(RetrievalCollection).join(','))
+        .split(',').filter(Boolean);
+      if (!requested.every((item) => Object.values(RetrievalCollection).includes(item as RetrievalCollection))) {
+        throw new HttpError(400, 'invalid_retrieval_collection');
+      }
+      const limit = boundedInteger(url.searchParams.get('limit'), 10, 1, 50);
+      sendJson(response, 200, { results: await options.retrieval.search(
+        query, requested as RetrievalCollection[], limit,
+      ) });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/retrieval/indexes') {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      const input = recordBody(await readJsonBody(request, 128 * 1024));
+      sendJson(response, 201, { index: options.knowledge.recordIndex(input as unknown as IndexVersion) });
+      return;
+    }
+    const evaluationMatch = url.pathname.match(/^\/api\/v1\/retrieval\/indexes\/([^/]+)\/evaluate$/);
+    if (request.method === 'POST' && evaluationMatch) {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      const input = recordBody(await readJsonBody(request, 16 * 1024));
+      sendJson(response, 201, options.knowledge.evaluateAndPromote(
+        decodedPathSegment(evaluationMatch[1], 'invalid_index_id'),
+        requiredBodyString(input.benchmarkVersion, 'invalid_benchmark_version'),
+      ));
+      return;
+    }
+    const promotionMatch = url.pathname.match(/^\/api\/v1\/retrieval\/indexes\/([^/]+)\/promote$/);
+    if (request.method === 'POST' && promotionMatch) {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { index: options.knowledge.promoteCandidate(
+        decodedPathSegment(promotionMatch[1], 'invalid_index_id'),
+      ) });
+      return;
+    }
+    const rollbackMatch = url.pathname.match(/^\/api\/v1\/retrieval\/indexes\/([^/]+)\/rollback$/);
+    if (request.method === 'POST' && rollbackMatch) {
+      if (!options.knowledge) throw new HttpError(503, 'knowledge_unavailable');
+      sendJson(response, 200, { index: options.knowledge.rollbackIndex(
+        decodedPathSegment(rollbackMatch[1], 'invalid_index_id'),
+      ) });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/identity-reviews') {
@@ -819,7 +945,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/obsidian/search') {
-      if (!options.vaultSearch) {
+      if (!options.vaultSearch && !options.obsidianSearch) {
         sendJson(response, 503, {
           available: false, error: 'vault_search_unavailable', count: 0, results: [],
         });
@@ -828,8 +954,29 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const query = url.searchParams.get('q') ?? '';
       if (!query.trim()) throw new HttpError(400, 'invalid_search_query');
       const limit = boundedInteger(url.searchParams.get('limit'), 5, 1, 10);
+      if (!options.vaultSearch && options.obsidianSearch) {
+        const localResults = await options.obsidianSearch.search(query, limit) as Array<{ path: string; title: string; excerpt: string }>;
+        sendJson(response, 200, {
+          available: true, cached: false, count: localResults.length,
+          results: localResults.map((result, index) => ({ ...result, score: Math.max(0.1, 1 - index * 0.08), provenance: 'obsidian-local' })),
+        });
+        return;
+      }
       const result = await executeVaultSearch(options.vaultSearch, { query, limit });
       sendJson(response, result.available === true ? 200 : 503, result);
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/obsidian/open') {
+      if (!options.obsidianOpen) throw new HttpError(503, 'obsidian_open_unavailable');
+      const input = recordBody(await readJsonBody(request, 8 * 1024));
+      try {
+        sendJson(response, 200, await options.obsidianOpen.open(
+          requiredBodyString(input.relativePath, 'invalid_obsidian_note_path'),
+        ));
+      } catch (error) {
+        if (/path|outside|regular file|resolution/iu.test(String(error))) throw new HttpError(400, 'invalid_obsidian_note_path');
+        throw error;
+      }
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/events') {
@@ -1752,6 +1899,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+function recordBody(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new HttpError(400, 'invalid_request_body');
+  return value;
+}
+
+function requiredBodyString(value: unknown, error: string): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > 1_024) throw new HttpError(400, error);
+  return value.trim();
+}
+
+function stringList(value: unknown, error: string): string[] {
+  if (!Array.isArray(value) || value.length > 64 || !value.every((item) =>
+    typeof item === 'string' && item.trim() && item.length <= 128)) throw new HttpError(400, error);
+  return [...new Set(value.map((item) => item.trim()))];
+}
+
+function requestSignal(request: IncomingMessage): AbortSignal {
+  const controller = new AbortController();
+  request.once('aborted', () => controller.abort());
+  return controller.signal;
+}
+
 function contentType(path: string): string {
   switch (extname(path).toLocaleLowerCase()) {
     case '.html': return 'text/html; charset=utf-8';
@@ -1786,6 +1955,17 @@ async function main(): Promise<void> {
   const execution = createMissionExecutionRuntime(config, store, {
     connectorActions: connectors.actionAdapters,
   });
+  const retrieval = new FederatedRetrievalService(store, connectors.vaultGateway);
+  const paperclip = config.paperclipUrl && config.paperclipApiKey && config.paperclipCompanyId
+    ? new PaperclipExecutor(new HttpPaperclipPort({
+      url: config.paperclipUrl,
+      apiKey: config.paperclipApiKey,
+      companyId: config.paperclipCompanyId,
+    }))
+    : undefined;
+  const obsidianOpen = config.obsidianVaultPath
+    ? new ObsidianNoteOpener({ vaultPath: config.obsidianVaultPath })
+    : undefined;
   const runtime = new ProductionRuntimeLifecycle({
     knowledge,
     connectors,
@@ -1808,9 +1988,14 @@ async function main(): Promise<void> {
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,
     vaultSearch: connectors.vaultGateway,
+    obsidianSearch: connectors.obsidianSearch,
     intake,
     ...(knowledge.retention ? { retention: knowledge.retention } : {}),
     reflection: knowledge.reflection,
+    knowledge: knowledge.fleet,
+    retrieval,
+    ...(paperclip ? { paperclip } : {}),
+    ...(obsidianOpen ? { obsidianOpen } : {}),
   });
   const address = await server.listen(config.port, config.host);
   let shuttingDown = false;

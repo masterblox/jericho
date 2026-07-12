@@ -14,6 +14,7 @@
 | [`HERMES-EXECUTION-PROTOCOL-V1.md`](HERMES-EXECUTION-PROTOCOL-V1.md) | Fail-closed Hermes capability handshake, result, verification, cancellation, and repository-authority contract. | Any Hermes execution protocol or repository grant change. |
 | [`JERICHO-LIVE-SMOKE-TEST.md`](JERICHO-LIVE-SMOKE-TEST.md) | Live-safe operator checks, deterministic gate, privacy boundaries, and physical/Hermes prerequisites. | Any boot, authentication, connector-send, voice, gesture, or smoke acceptance change. |
 | [`VAULT-RAG-GATEWAY.md`](VAULT-RAG-GATEWAY.md) | Narrow vault search/index/health boundary, deployment, cache, and sync-freshness policy. | Any Obsidian RAG, vault health, cache, or maintenance scheduling change. |
+| [`FLEET-DELIVERY-KNOWLEDGE.md`](FLEET-DELIVERY-KNOWLEDGE.md) | Five-stage Fleet projection, Paperclip reconciliation, knowledge packages, curated Notion projection, and guarded retrieval optimization. | Any Fleet learning, projection, or retrieval-evaluation change. |
 
 ## Historical or superseded material
 

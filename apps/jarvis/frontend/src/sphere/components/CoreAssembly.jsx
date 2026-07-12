@@ -44,7 +44,7 @@ function Waveform({ bars = 64 }) {
   </svg>
 }
 
-export function CoreAssembly() {
+export function CoreAssembly({ onOpenCommand }) {
   return <div className="core-wrap">
     <div className="halo" aria-hidden="true" />
     <div className="halo-hot" aria-hidden="true" />
@@ -54,5 +54,6 @@ export function CoreAssembly() {
       <circle cx="50" cy="50" r="35.2" />
     </svg>
     <CoreSphere />
+    <button className="core-command-target" type="button" data-gesture-target="core-command" onClick={onOpenCommand} aria-label="Open sphere command" />
   </div>
 }

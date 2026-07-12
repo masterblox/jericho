@@ -12,6 +12,8 @@
 | Runtime composition | `bridge/src/runtime.ts` | Registers configured source connectors, fail-closed Hermes protocol health, and durable polling supervision. |
 | Private truth | `bridge/src/core/store.ts` | Encrypted SQLite records, immutable events, provenance, identities, missions, decisions, assignments, and receipts. |
 | Orchestration | `bridge/src/orchestration/` | Classify, route, plan, policy-check, lease, execute, verify, and retain bounded missions. |
+| Fleet knowledge | `bridge/src/knowledge/` | Content-addressed packages, projection receipts, Paperclip reconciliation, and guarded index state replayed from Core events. |
+| Retrieval | `bridge/src/retrieval/` | Collection-explicit search, fixed benchmarks, candidate evaluation, promotion, and rollback. |
 | Contracts | `shared/src/index.ts` | Shared envelopes and command-center projections. |
 | Command center | `frontend/src/main.tsx` | React application bootstrap and local hardware engagement boundary. |
 | Sphere interface | `frontend/src/sphere-shell.tsx` | Authenticated Core projection into the HADAL visual surface and exact-plan gesture actions. |
@@ -27,6 +29,8 @@
   acknowledgement alone is not a completed receipt.
 - `bridge/src/orchestration/hermes-filesystem-executor.ts` is the v1 execution boundary. It requires the contract in `../../docs/HERMES-EXECUTION-PROTOCOL-V1.md`; legacy results are review checkpoints, never successes.
 - `bridge/src/command-center.ts` projects persisted truth; it must never fabricate activity for visual effect.
+- Paperclip and Notion adapters are fail-closed projections. Paperclip completion
+  is an observation, and Notion accepts only approved allowlisted fields.
 - `frontend/src/command-center-app.tsx` presents Core projections and records exact-version decisions; it is not a second database.
 - `frontend/src/*controller*.ts`, `tracking.ts`, `calibration.ts`, and `hit-testing.ts` are deterministic gesture primitives.
 - `frontend/src/sphere/` is the production-owned port of the approved interface-v2 visual source. The root `interface/` app remains a design/Playwright source and is not served by Core.

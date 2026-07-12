@@ -294,7 +294,7 @@ describe('ObsidianConnector', () => {
     expect(readdirSync(vault).sort()).toEqual(['.obsidian', 'Client.md', 'Project.md']);
   });
 
-  it('projects gateway sync freshness through connector health and fails closed without it', async () => {
+  it('projects gateway sync freshness while keeping bounded local vault search available without it', async () => {
     const vault = tempDirectory('obsidian-health-');
     const degraded = new ObsidianConnector({
       vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000,
@@ -323,7 +323,10 @@ describe('ObsidianConnector', () => {
       status: ConnectorHealthStatus.Unavailable,
       details: { mode: 'vault_rag_gateway', reason: 'gateway_not_configured' },
     });
-    await expect(disabled.search('anything', 5)).rejects.toThrow(/unavailable/i);
+    writeFileSync(join(vault, 'Local.md'), '# Local knowledge\nAnything Carlos needs.');
+    await expect(disabled.search('anything', 5)).resolves.toEqual([{
+      path: 'Local.md', title: 'Local', excerpt: '# Local knowledge Anything Carlos needs.',
+    }]);
   });
 
   it('detects rename and delete from the durable manifest cursor', async () => {

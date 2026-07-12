@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from 'react';
-import { DecisionOutcome, type CommandCenterApproval, type CommandCenterSnapshot } from '@jericho/shared';
+import {
+  CommandCenterMissionStage,
+  DecisionOutcome,
+  LifecycleStatus,
+  type CommandCenterApproval,
+  type CommandCenterSnapshot,
+} from '@jericho/shared';
 
 import { CoreClient } from './core-client';
 import { CommandCenterStore } from './command-center-store';
@@ -66,12 +72,40 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
     if (!response.ok) throw new Error('Directive capture failed');
   }, []);
 
-  return <SphereApp liveData={liveData} onDirective={captureDirective} />;
+  return <SphereApp liveData={liveData} onDirective={captureDirective} commandActions={{
+    searchMemory: (query: string) => client.searchVault(query, 8),
+    openMemory: (relativePath: string) => client.openVaultNote(relativePath),
+    decide: (approval: CommandCenterApproval, outcome: 'approved' | 'rejected') => client.decideMission({
+      missionId: approval.missionId,
+      planHash: approval.planHash,
+      version: approval.version,
+      outcome: outcome === 'approved' ? DecisionOutcome.Approved : DecisionOutcome.Rejected,
+      reason: `${outcome === 'approved' ? 'Approved' : 'Rejected'} from sphere command overlay`,
+    }),
+    cancel: (mission: { id: string; planHash: string; version: number }) => client.cancelMission({
+      missionId: mission.id,
+      planHash: mission.planHash,
+      version: mission.version,
+      reason: 'Cancelled from sphere command overlay',
+    }),
+    retain: (missionId: string) => client.retainMission(missionId),
+  }} />;
 }
 
 function projectLiveData(snapshot: CommandCenterSnapshot | undefined, connected: boolean) {
-  if (!snapshot) return { connected, tasks: [], signals: [] };
+  if (!snapshot) return {
+    connected, tasks: [], signals: [], missions: [], approvals: [], outcomes: [], paperclip: [],
+    fleetStages: emptyFleetStages(),
+  };
   const approvals = new Map(snapshot.approvals.map((approval) => [approval.missionId, approval]));
+  const taskToMission = new Map(snapshot.missions.flatMap((mission) =>
+    mission.taskGraph.map((task) => [task.id, mission.id] as const)));
+  const receiptCountByMission = new Map<string, number>();
+  for (const receipt of snapshot.receipts) {
+    if (!receipt.missionTaskId) continue;
+    const missionId = taskToMission.get(receipt.missionTaskId);
+    if (missionId) receiptCountByMission.set(missionId, (receiptCountByMission.get(missionId) ?? 0) + 1);
+  }
   return {
     connected,
     tasks: snapshot.missions.slice(0, 5).map((mission) => ({
@@ -90,7 +124,57 @@ function projectLiveData(snapshot: CommandCenterSnapshot | undefined, connected:
       message: entry.title,
       level: entry.risk === 'critical' || entry.status === 'failed' ? 'critical' : entry.verified ? 'ok' : 'info',
     })),
+    missions: snapshot.missions.map((mission) => ({
+      id: mission.id,
+      version: mission.version,
+      planHash: mission.planHash,
+      title: mission.title,
+      objective: mission.objective,
+      status: mission.status,
+      stage: mission.stage,
+      agents: mission.agents.map((agent) => agent.agentId).join(' + '),
+      maxCostMicroUsd: mission.budget.limits.maxCostMicroUsd,
+      actualCostMicroUsd: mission.budget.actualCostMicroUsd,
+      evidenceCount: new Set(mission.timeline.flatMap((entry) => entry.evidenceEventIds)).size,
+      receiptCount: receiptCountByMission.get(mission.id) ?? 0,
+      active: [LifecycleStatus.Approved, LifecycleStatus.Active, LifecycleStatus.Paused, LifecycleStatus.PendingApproval].includes(mission.status),
+      cancellable: [LifecycleStatus.Approved, LifecycleStatus.Active, LifecycleStatus.Paused, LifecycleStatus.PendingApproval].includes(mission.status),
+      retainable: mission.status === LifecycleStatus.Succeeded,
+      approval: approvals.get(mission.id),
+    })),
+    approvals: snapshot.approvals,
+    outcomes: snapshot.outcomes.map((outcome) => ({
+      id: outcome.id,
+      missionTaskId: outcome.missionTaskId,
+      verified: outcome.verified,
+      receiptCount: outcome.receiptIds.length,
+    })),
+    paperclip: snapshot.knowledge?.paperclip ?? [],
+    fleetStages: projectFleetStages(snapshot),
   };
+}
+
+function emptyFleetStages() {
+  return ['INTAKE', 'INTERPRET', 'APPROVE', 'EXECUTE', 'LEARN'].map((label) => ({ label, count: 0, active: false }));
+}
+
+function projectFleetStages(snapshot: CommandCenterSnapshot) {
+  const intake = (snapshot.reviewIntents?.length ?? 0) + snapshot.captureFailures.length;
+  const interpret = snapshot.missions.filter((mission) => mission.stage === CommandCenterMissionStage.Plan).length;
+  const approve = snapshot.approvals.length;
+  const execute = snapshot.missions.filter((mission) => mission.stage === CommandCenterMissionStage.Execute).length;
+  const learnKinds = new Set(['retain', 'present']);
+  const persistedLearning = snapshot.history.filter((entry) => entry.verified && learnKinds.has(entry.kind)).length;
+  const learn = persistedLearning
+    + (snapshot.knowledge?.projectionReceipts.filter((receipt) => receipt.verified).length ?? 0)
+    + (snapshot.knowledge?.evaluations.length ?? 0);
+  return [
+    { label: 'INTAKE', count: intake, active: intake > 0 },
+    { label: 'INTERPRET', count: interpret, active: interpret > 0 },
+    { label: 'APPROVE', count: approve, active: approve > 0 },
+    { label: 'EXECUTE', count: execute, active: execute > 0 },
+    { label: 'LEARN', count: learn, active: learn > 0 },
+  ];
 }
 
 function approvalBinding(approval: CommandCenterApproval | undefined) {
@@ -99,8 +183,8 @@ function approvalBinding(approval: CommandCenterApproval | undefined) {
 
 function missionStatus(status: string, approval: CommandCenterApproval | undefined): string {
   if (approval) return 'READY';
-  if (status === 'failed' || status === 'blocked' || status === 'cancelled') return 'BLOCKED';
-  return status === 'executing' || status === 'completed' ? 'READY' : 'NEW';
+  if (status === LifecycleStatus.Failed || status === LifecycleStatus.Cancelled || status === LifecycleStatus.Rejected) return 'BLOCKED';
+  return status === LifecycleStatus.Active || status === LifecycleStatus.Succeeded ? 'READY' : 'NEW';
 }
 
 function ageLabel(value: string): string {

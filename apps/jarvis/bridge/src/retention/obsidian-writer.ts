@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
+import type { KnowledgePackage } from '@jericho/shared';
 
 export interface VerifiedMissionDecision {
   outcome: string;
@@ -132,6 +133,39 @@ export class ObsidianRetentionWriter {
       rmSync(temporary, { force: true });
     }
     return { ...destination, status };
+  }
+
+  writePackage(knowledge: KnowledgePackage): RetentionWriteResult {
+    return this.write({
+      missionId: knowledge.missionId,
+      planHash: knowledge.planHash,
+      title: knowledge.title,
+      objective: knowledge.objective,
+      completedAt: knowledge.completedAt,
+      deliverables: knowledge.deliverables,
+      decisions: knowledge.decisions.map((decision) => ({
+        outcome: decision.outcome,
+        rationale: decision.rationale,
+        decidedBy: decision.decidedBy,
+        decidedAt: decision.decidedAt,
+        evidenceEventIds: knowledge.evidence.map((item) => item.eventId),
+      })),
+      outcomes: knowledge.outcomes.map((outcome) => ({
+        ...outcome,
+        evidenceEventIds: knowledge.evidence.map((item) => item.eventId),
+      })),
+      receipts: knowledge.receipts.map((receipt) => ({
+        action: receipt.action,
+        destination: receipt.destination,
+        connectorId: receipt.connectorId,
+        status: 'succeeded',
+        verified: true,
+        externalId: receipt.externalId,
+        evidenceEventIds: knowledge.evidence.map((item) => item.eventId),
+      })),
+      evidenceEventIds: knowledge.evidence.map((item) => item.eventId),
+      metadata: { packageId: knowledge.id, packageHash: knowledge.packageHash },
+    });
   }
 
   #ensureManagedDirectory(): string {

@@ -38,6 +38,7 @@ import type {
   RelationshipProposalInput,
   ReviewIntentDecisionInput,
   RetentionResult,
+  VaultSearchResponse,
 } from './core-client';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
@@ -56,6 +57,7 @@ export interface CommandCenterClientPort {
   decideMission(input: MissionDecisionInput): Promise<unknown>;
   cancelMission?(input: MissionCancellationInput): Promise<unknown>;
   retainMission?(missionId: string): Promise<RetentionResult>;
+  searchVault?(query: string, limit?: number): Promise<VaultSearchResponse>;
   proposeRelationship?(input: RelationshipProposalInput): Promise<unknown>;
   decideReviewIntent?(input: ReviewIntentDecisionInput): Promise<unknown>;
   decideCheckpoint?(input: CheckpointDecisionInput): Promise<unknown>;
@@ -446,6 +448,7 @@ export function CommandCenterApp({
                 <EntityList items={snapshot.people} empty="No verified items" />
               </Subsection>
             </Section>
+            <VaultMemory search={client.searchVault?.bind(client)} />
           </div>
         </aside>
 
@@ -557,9 +560,89 @@ export function CommandCenterApp({
             ))}
             {!snapshot.outcomes.length && !snapshot.receipts.length && <EmptyState />}
           </Section>
+
+          <Section
+            title="Knowledge / retrieval"
+            count={(snapshot.knowledge?.packages.length ?? 0) + (snapshot.knowledge?.evaluations.length ?? 0)}
+          >
+            {snapshot.knowledge ? <div className="jericho-knowledge-health">
+              <p><strong>{snapshot.knowledge.packages.length}</strong><span>verified packages</span></p>
+              <p><strong>{snapshot.knowledge.projectionReceipts.filter((item) => item.verified).length}</strong><span>verified projections</span></p>
+              <p><strong>{snapshot.knowledge.indexes.filter((item) => item.status === 'active').length}</strong><span>active indexes</span></p>
+              <p><strong>{snapshot.knowledge.evaluations.filter((item) => item.passed).length}</strong><span>passed evaluations</span></p>
+              <p><strong>{snapshot.knowledge.paperclip.filter((item) => item.error).length}</strong><span>Paperclip blockers</span></p>
+            </div> : <EmptyState label="No persisted learning activity" />}
+          </Section>
         </aside>
       </div>
     </main>
+  );
+}
+
+function VaultMemory({
+  search,
+}: {
+  search?: (query: string, limit?: number) => Promise<VaultSearchResponse>;
+}) {
+  const [query, setQuery] = useState('');
+  const [result, setResult] = useState<VaultSearchResponse>();
+  const [status, setStatus] = useState<'idle' | 'searching' | 'error'>('idle');
+  const [error, setError] = useState<string>();
+
+  const submit = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const normalized = query.trim();
+    if (!search || !normalized || status === 'searching') return;
+    setStatus('searching');
+    setError(undefined);
+    try {
+      setResult(await search(normalized, 6));
+      setStatus('idle');
+    } catch (cause) {
+      setResult(undefined);
+      setError(cause instanceof Error ? cause.message : 'Jarvis memory search failed');
+      setStatus('error');
+    }
+  };
+
+  return (
+    <Section title="Jarvis memory" count={result?.count}>
+      <form className="jericho-vault-search" onSubmit={(event) => void submit(event)}>
+        <label htmlFor="jericho-vault-query">Search the local Obsidian vault</label>
+        <div>
+          <input
+            id="jericho-vault-query"
+            type="search"
+            value={query}
+            maxLength={500}
+            placeholder="Decision, person, project…"
+            disabled={!search}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+          <button type="submit" disabled={!search || !query.trim() || status === 'searching'}>
+            {status === 'searching' ? 'Scanning' : 'Search'}
+          </button>
+        </div>
+      </form>
+      {!search && <p className="jericho-vault-hint">Connect the bounded Jarvis vault gateway to search memory.</p>}
+      {error && <p className="jericho-error" role="alert">{error}</p>}
+      {result && (
+        <>
+          <p className="jericho-vault-hint">{result.cached ? 'Cached index' : 'Fresh index'} · relative paths only</p>
+          {result.results.length ? (
+            <ol className="jericho-vault-results">
+              {result.results.map((item) => (
+                <li key={item.path}>
+                  <div><strong>{item.title}</strong><span>REL {item.score.toFixed(2)}</span></div>
+                  <code>{item.path}</code>
+                  <p>{item.excerpt}</p>
+                </li>
+              ))}
+            </ol>
+          ) : <EmptyState label="No matching memory" />}
+        </>
+      )}
+    </Section>
   );
 }
 
