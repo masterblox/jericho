@@ -57,26 +57,20 @@ authenticated re-encryption migration.
 
 ## Command center
 
-The default surface is the interface-v2 intelligence sphere backed by the same
-authenticated Core snapshot and live change stream. `/?view=command` retains
-the detailed three-bay operator view, and `/?lab=gestures` retains the isolated
-hardware test surface. The sphere never imports the design fixture missions or
-signals; its projections are derived from persisted Core missions and history.
+The product surface is the intelligence sphere at `/`, backed by the
+authenticated Core snapshot and live change stream. `/?lab=gestures` retains the
+isolated hardware test surface. The legacy `?view=command` three-bay operator
+view and the root `interface/` prototype are deleted.
 
-The desktop/TV layout has three evidence-backed bays:
-
-- Left: Today, ranked communications, people, tasks, and commitments.
-- Center: selected mission context, the eight-stage pipeline, Nucleus, verified
-  retention control, and mission timeline replay.
-- Right: Review, checkpoint and relationship proposals, exact-plan approvals,
-  active assignments, outcomes, and destination receipts.
-
-On narrow screens, Today, Communications, Nucleus, and Approvals become explicit
-tabs. Nucleus combines semantic entities and relationships with activity and
-mission lifecycle projections. Nodes and pulses come from persisted Core truth;
-missing stages remain missing rather than being animated as fictional work.
-Dragging typed relation ports creates a pending proposal. It does not silently
-rewrite the truth graph.
+The sphere has four projections (keys 1–4): CORE (the resting reactor),
+AGENTS (the live Hermes fleet read from the Paperclip board through the
+authenticated `/api/v1/fleet` bridge proxy), TASKS (a kanban of Paperclip
+issues plus Jericho Core missions; the mission cards carry exact-plan approval
+bindings), and BRAIN (Obsidian vault BM25 search through the vault gateway
+plus Nucleus truth). Every projection renders live data only and fails closed
+to an explicit OFFLINE state — no fixture roster, task list, or gauge, and the
+Paperclip key never reaches the browser. Dragging typed relation ports creates
+a pending proposal. It does not silently rewrite the truth graph.
 
 ## Voice and gesture boundary
 

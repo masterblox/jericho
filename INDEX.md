@@ -18,7 +18,6 @@
 | `apps/jarvis/` | **Active, canonical runtime** | Local Core, shared contracts, connectors, bounded orchestration, React command center, voice, and gestures. |
 | `ARCHITECTURE.md` | **Active, canonical design** | Source-of-truth boundaries and implemented lifecycle. |
 | `docs/` | **Mixed; indexed** | Current operating notes plus superseded build explorations. Consult `docs/INDEX.md`. |
-| `interface/` | **Design reference, not runtime** | Earlier visual prototype and Operator Bay assets. Production code must not import its fixture data. |
 | `specs/`, `scripts/`, `paperclip/`, `inbox/`, `outbox/`, `reports/` | **Legacy fleet surfaces** | Reconciled inputs or historical automation; never authoritative over direct source APIs, Git, or Jericho Core. |
 | `course/`, `training/`, `review/` | **Reference/archive** | Non-runtime material. |
 | `state/` | **Legacy local runtime state** | Not a Jericho Core contract. New durable private state belongs in encrypted Core storage. |

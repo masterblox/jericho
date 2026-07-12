@@ -453,6 +453,25 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect((await api(runtime.url, '/api/v1/obsidian/search?q=project&limit=11')).status).toBe(400);
   });
 
+  it('serves the fleet snapshot through the injected port and fails closed without one', async () => {
+    const fleetSnapshot = {
+      available: true,
+      agents: [{ id: 'a-1', name: 'Angela', role: 'operations', status: 'idle', lastHeartbeatAt: T0 }],
+      issues: [{
+        id: 'i-1', identifier: 'MAS-1', title: 'Recover host', status: 'in_progress',
+        priority: 'high', assigneeAgentId: 'a-1', createdAt: T0, completedAt: null,
+      }],
+    };
+    const withFleet = await startServer({ fleet: { snapshot: async () => fleetSnapshot } });
+    expect(await apiJson(withFleet.url, '/api/v1/fleet')).toEqual(fleetSnapshot);
+    expect((await fetch(`${withFleet.url}/api/v1/fleet`)).status).toBe(401);
+
+    const withoutFleet = await startServer();
+    const unavailable = await api(withoutFleet.url, '/api/v1/fleet');
+    expect(unavailable.status).toBe(503);
+    expect(await unavailable.json()).toEqual({ available: false, agents: [], issues: [] });
+  });
+
   it('streams resumable change-log events, signals cursor gaps, and delivers live captures', async () => {
     const runtime = await startServer();
     commitCapture(runtime.store, 'event-1', 0, 1);
@@ -707,6 +726,7 @@ interface StartOverrides {
   connectorDescriptors?: Array<{ id: string; partitions: string[] }>;
   obsidianSearch?: { search: ReturnType<typeof vi.fn> };
   vaultSearch?: { search: ReturnType<typeof vi.fn> };
+  fleet?: import('../src/fleet/paperclip-client.js').FleetPort;
   frontendDir?: string;
   clock?: () => string;
   retention?: { retainMission: ReturnType<typeof vi.fn> };

@@ -536,9 +536,21 @@ export class JarvisRuntime {
   }
 
   private readonly onKeyDown: EventListener = (event) => {
-    if (!(event instanceof KeyboardEvent) || event.key !== 'Escape') return;
-    if (this.paused) this.resume();
-    else this.pause();
+    if (!(event instanceof KeyboardEvent)) return;
+    if (event.key === 'Escape') {
+      if (this.paused) this.resume();
+      else this.pause();
+      return;
+    }
+    if (event.key === 'v' || event.key === 'V') {
+      const target = event.target;
+      if (
+        target instanceof HTMLInputElement
+        || target instanceof HTMLTextAreaElement
+        || (target instanceof HTMLElement && target.isContentEditable)
+      ) return;
+      this.wake();
+    }
   };
 
   private setStatus(status: string) {

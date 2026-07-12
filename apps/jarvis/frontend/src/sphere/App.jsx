@@ -4,15 +4,19 @@ import { DispatchModal, Toast } from './components'
 import { store, api, installJerichoApi, setDirectiveHandler } from './jericho-api'
 import { CommandOverlay } from './CommandOverlay'
 
-const VIEW_KEYS = { '1': 'CORE', '2': 'MISSIONS', '3': 'SIGNALS' }
+const VIEW_KEYS = { '1': 'CORE', '2': 'AGENTS', '3': 'TASKS', '4': 'BRAIN' }
 
-export default function App({ liveData, onDirective, commandActions }) {
+export default function App({ liveData, onDirective, onVaultSearch, commandActions }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [commandOpen, setCommandOpen] = React.useState(false)
   const [guidedTestSession, setGuidedTestSession] = React.useState(0)
 
   React.useEffect(() => installJerichoApi(), [])
   React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
+  // live roster only: agent selection follows persisted Core missions
+  React.useEffect(() => {
+    api.setAgents((liveData?.agents ?? []).map(agent => agent.id))
+  }, [liveData])
   React.useEffect(() => {
     const open = event => {
       if (event.target?.closest?.('[data-gesture-target="core-command"]')) setCommandOpen(true)
@@ -33,6 +37,8 @@ export default function App({ liveData, onDirective, commandActions }) {
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
   React.useEffect(() => {
     const onKey = event => {
+      const target = event.target
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
       const modalOpen = Boolean(state.directive)
       if (event.key === 'Escape') {
         if (modalOpen) api.cancelDispatch()
@@ -61,6 +67,7 @@ export default function App({ liveData, onDirective, commandActions }) {
         activeView={state.activeView}
         setActiveView={api.summon}
         liveData={liveData}
+        onVaultSearch={onVaultSearch}
         onOpenCommand={() => setCommandOpen(true)}
       />
       <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} guidedTestSession={guidedTestSession} actions={{
