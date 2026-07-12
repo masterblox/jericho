@@ -320,6 +320,125 @@ describe('JarvisRuntime lifecycle', () => {
     });
   });
 
+  it('runs verification pass and accepts only when all points pass 5% threshold', async () => {
+    const storage = new MemoryStorage();
+    const harness = createHarness({
+      storage,
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    const controls = harness.controls();
+    if (!controls) throw new Error('Runtime controls were not configured');
+
+    controls.calibrate('Right');
+    let timestamp = 0;
+    for (const sample of calibrationSamples) {
+      for (let index = 0; index < 8; index += 1) {
+        harness.emit(frame(timestamp++, undefined, tracked('Right', 'palm', sample.camera.x, sample.camera.y)));
+      }
+      harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.camera.x, sample.camera.y)));
+    }
+
+    const profile = loadCalibration(storage, 'camera-a', 16 / 9, 'Right');
+    expect(profile).not.toBeNull();
+    expect(profile!.residualError).toBeLessThan(0.01);
+    expect(profile!.verificationTimestamp).toBeTruthy();
+    expect(harness.renderer.updateControlState).toHaveBeenLastCalledWith(
+      expect.objectContaining({ calibratedHands: ['Right'] }),
+    );
+  });
+
+  it('retries failed calibration when samples are degenerate', async () => {
+    const storage = new MemoryStorage();
+    const harness = createHarness({
+      storage,
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    const controls = harness.controls();
+    if (!controls) throw new Error('Runtime controls were not configured');
+
+    controls.calibrate('Right');
+    let timestamp = 0;
+    const degenerateSamples = [
+      { x: 0.5, y: 0.5 },
+      { x: 0.5, y: 0.5 },
+      { x: 0.5, y: 0.5 },
+      { x: 0.5, y: 0.5 },
+      { x: 0.5, y: 0.5 },
+    ];
+    for (const sample of degenerateSamples) {
+      for (let index = 0; index < 8; index += 1) {
+        harness.emit(frame(timestamp++, undefined, tracked('Right', 'palm', sample.x, sample.y)));
+      }
+      harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.x, sample.y)));
+    }
+
+    const resetCalls = harness.renderer.showCalibration.mock.calls.filter(
+      (call: [unknown]) => typeof (call[0] as { message?: string })?.message === 'string'
+        && (call[0] as { message: string }).message.includes('Repeat from center'),
+    );
+    expect(resetCalls.length).toBeGreaterThan(0);
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
+  });
+
+  it('detects lost hand during calibration and requires steady visibility', async () => {
+    const harness = createHarness({
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    const controls = harness.controls();
+    if (!controls) throw new Error('Runtime controls were not configured');
+
+    controls.calibrate('Right');
+    harness.emit(frame(0, undefined, tracked('Right', 'palm', 0.5, 0.5)));
+    harness.emit(frame(16, undefined, { ...tracked('Right', 'palm', 0.5, 0.5), fresh: false, lossAgeMs: 200 }));
+    harness.emit(frame(32, undefined, tracked('Right', 'palm', 0.5, 0.5)));
+
+    const calibViews = harness.renderer.showCalibration.mock.calls.filter(
+      (call: [unknown]) => (call[0] as { pinchState?: string })?.pinchState === 'lost',
+    );
+    expect(calibViews.length).toBeGreaterThan(0);
+  });
+
+  it('rejects calibration when pinch thresholds are invalid', async () => {
+    const storage = new MemoryStorage();
+    const harness = createHarness({
+      storage,
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    const controls = harness.controls();
+    if (!controls) throw new Error('Runtime controls were not configured');
+
+    controls.calibrate('Right');
+    let timestamp = 0;
+    for (const sample of calibrationSamples) {
+      for (let index = 0; index < 8; index += 1) {
+        harness.emit(frame(timestamp++, undefined, tracked('Right', 'palm', sample.camera.x, sample.camera.y, 'Open_Palm', sample.camera.x, sample.camera.y, 0.5)));
+      }
+      harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.camera.x, sample.camera.y, 'None', sample.camera.x, sample.camera.y, 0.5)));
+    }
+
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
+  });
+
+  it('shows active cursor during calibration along with target reticle', async () => {
+    const harness = createHarness({
+      viewport: () => ({ width: 1_000, height: 1_000 }),
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    const controls = harness.controls();
+    if (!controls) throw new Error('Runtime controls were not configured');
+
+    controls.calibrate('Right');
+    harness.emit(frame(0, undefined, tracked('Right', 'palm', 0.5, 0.5)));
+
+    const renderCall = harness.renderer.render.mock.calls.at(-1)?.[0] as { right: { visible: boolean } };
+    expect(renderCall.right.visible).toBe(true);
+  });
+
   it('records and exports only sanitized in-memory diagnostics through local controls', async () => {
     const exported = vi.fn();
     const harness = createHarness({ diagnosticsExporter: exported });
@@ -625,6 +744,7 @@ function tracked(
   recognizedGesture = state === 'palm' ? 'Open_Palm' : 'None',
   pinchX = x,
   pinchY = y,
+  customPinchRatio?: number,
 ): TrackedHandFrame {
   return {
     trackId: handedness === 'Left' ? 1 : 2,
@@ -635,7 +755,7 @@ function tracked(
     palmAnchor: { x, y }, smoothedAnchor: { x, y },
     pinchPoint: { x: pinchX, y: pinchY }, smoothedPinch: { x: pinchX, y: pinchY },
     velocity: { x: 0, y: 0 },
-    pinchRatio: state === 'pinch' ? 0.2 : 0.8,
+    pinchRatio: customPinchRatio ?? (state === 'pinch' ? 0.2 : 0.8),
     pinchPhase: state === 'pinch' ? 'pinched' : 'open', pinchCandidateMs: 0,
     fresh: true, lastSeenAt: 0, lossAgeMs: 0, associationDistance: 0,
   };

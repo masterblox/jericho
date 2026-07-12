@@ -301,9 +301,30 @@
 .sphere-outcomes article { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; }
 .sphere-outcomes code { color: var(--faint); }
 
+/* =========================================================
+   GESTURE CALIBRATION CARD
+   ========================================================= */
+.sphere-gesture { max-width: 660px; }
+.sphere-gesture__intro { color: var(--muted); font: 13px/1.6 var(--sans); margin-bottom: 16px; }
+.sphere-gesture__empty { color: var(--faint); font: 12px var(--mono); }
+.sphere-gesture-card { border: 1px solid var(--stroke); background: rgba(var(--hud), .025); padding: 14px; display: grid; gap: 10px; }
+.sphere-gesture-card + .sphere-gesture-card { margin-top: 10px; }
+.sphere-gesture-card header { display: flex; justify-content: space-between; align-items: center; }
+.sphere-gesture-card header strong { font: 600 13px var(--cond); letter-spacing: .12em; color: var(--cyan); }
+.sphere-gesture-card header span { font: 10px var(--mono); }
+.sphere-gesture-card header span.ok { color: var(--ok); }
+.sphere-gesture-card header span.warn { color: var(--fault); }
+.sphere-gesture-card dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
+.sphere-gesture-card dl div { padding: 8px; border: 1px solid var(--stroke-dim); }
+.sphere-gesture-card dt { color: var(--faint); font: 8px var(--mono); letter-spacing: .1em; }
+.sphere-gesture-card dd { margin: 4px 0 0; color: var(--text); font: 12px var(--cond); }
+.sphere-gesture-card footer { display: flex; gap: 7px; }
+.sphere-gesture-card footer button { border: 1px solid var(--stroke); padding: 8px 12px; color: var(--cyan); font: 600 8px var(--cond); letter-spacing: .1em; }
+.sphere-gesture-card footer button:hover { border-color: var(--cyan); background: rgba(var(--hud), .08); }
+
 @media (max-width: 760px) {
   .sphere-command { inset: 8px; grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto; }
-  .sphere-command > nav { grid-template-columns: repeat(5, 1fr); border-right: 0; border-bottom: 1px solid var(--stroke); }
+  .sphere-command > nav { grid-template-columns: repeat(6, 1fr); border-right: 0; border-bottom: 1px solid var(--stroke); }
   .sphere-command > nav button { grid-template-columns: 1fr; min-height: 50px; padding: 6px 3px; text-align: center; font-size: 7px; }
   .sphere-command > nav button span { display: none; }
   .sphere-command__body { padding: 10px; }
