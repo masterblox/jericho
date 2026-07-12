@@ -134,6 +134,7 @@ describe('JerichoStore migrations', () => {
       'entities',
       'events',
       'external_identities',
+      'identity_exclusions',
       'intents',
       'mission_task_dependencies',
       'mission_tasks',
@@ -163,7 +164,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     database.close();
   });
 
@@ -201,7 +202,7 @@ describe('JerichoStore migrations', () => {
         .prepare('SELECT version FROM schema_migrations ORDER BY version')
         .all()
         .map((row) => row.version),
-    ).toEqual([1, 2, 3, 4, 5, 6, 7]);
+    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
     database.close();
   });
 
