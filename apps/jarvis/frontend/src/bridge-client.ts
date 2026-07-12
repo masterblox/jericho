@@ -50,6 +50,8 @@ export interface BridgeEvents {
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
   onToolResult?: (name: string, result: Record<string, unknown>) => void;
   onGuidedTestStart?: (test: 'isabella') => void;
+  onGuidedTestResume?: (test: 'isabella') => void;
+  onGuidedTestEnd?: (test: 'isabella') => void;
   onStatus?: (status: string) => void;
   onError?: (msg: string) => void;
   onWake?: (source: 'clap' | 'manual') => void;
@@ -329,9 +331,13 @@ export class BridgeClient {
         if (msg.test === 'isabella') this.events.onGuidedTestStart?.('isabella');
         break;
       case 'guided_test_resume':
-        if (msg.test === 'isabella' && this.turnState === 'greeting') {
-          this.events.onStatus?.('guided-test-listening');
+        if (msg.test === 'isabella') {
+          this.events.onGuidedTestResume?.('isabella');
+          if (this.turnState === 'greeting') this.events.onStatus?.('guided-test-listening');
         }
+        break;
+      case 'guided_test_end':
+        if (msg.test === 'isabella') this.events.onGuidedTestEnd?.('isabella');
         break;
       case 'error':
         if (this.turnState === 'greeting' || this.turnState === 'waiting') {

@@ -205,7 +205,8 @@ describe('BridgeClient lifecycle', () => {
 
   it('enters listening directly when the server resumes a guided test', async () => {
     const onStatus = vi.fn();
-    const harness = createBridgeHarness({}, { onStatus });
+    const onGuidedTestResume = vi.fn();
+    const harness = createBridgeHarness({}, { onStatus, onGuidedTestResume });
     await harness.client.start();
     await harness.socket.open();
     harness.client.wake();
@@ -215,7 +216,21 @@ describe('BridgeClient lifecycle', () => {
 
     expect(onStatus).toHaveBeenCalledWith('guided-test-listening');
     expect(onStatus).toHaveBeenCalledWith('listening');
+    expect(onGuidedTestResume).toHaveBeenCalledWith('isabella');
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it('forwards only recognized guided test end signals', async () => {
+    const onGuidedTestEnd = vi.fn();
+    const harness = createBridgeHarness({}, { onGuidedTestEnd });
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'guided_test_end', test: 'unknown' });
+    harness.socket.message({ type: 'guided_test_end', test: 'isabella' });
+
+    expect(onGuidedTestEnd).toHaveBeenCalledOnce();
+    expect(onGuidedTestEnd).toHaveBeenCalledWith('isabella');
   });
 
   it('bounds an active turn and tells the server when the client times out', async () => {

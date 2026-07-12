@@ -300,6 +300,16 @@ export class JarvisRuntime {
             detail: { test },
           }));
         },
+        onGuidedTestResume: (test) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-resume', {
+            detail: { test },
+          }));
+        },
+        onGuidedTestEnd: (test) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-end', {
+            detail: { test },
+          }));
+        },
         onModePending: (_mode, name) => {
           this.root.classList.add('jericho-persona--pending');
           this.setStatus(`persona pending · ${name}`);

@@ -76,4 +76,37 @@ describe('IsabellaGuidedTest', () => {
     })))
     expect(screen.getByRole('alert').textContent).toContain('NO ISABELLA NOTE')
   })
+
+  it('fails closed when vault results contain only unrelated people', () => {
+    const actions = { openMemory: vi.fn(), proposeNoteReorganization: vi.fn(), decideProposal: vi.fn() }
+    render(<IsabellaGuidedTest session={1} actions={actions} />)
+
+    act(() => document.dispatchEvent(new CustomEvent('jericho:voice-tool-result', { detail: {
+      name: 'search_vault', result: { results: [{
+        path: 'People/Francisco-Salvaje.md', title: 'Francisco Salvaje',
+        excerpt: 'His wife works at another company.', score: 0.99,
+      }] },
+    } })))
+
+    expect(screen.getByRole('alert').textContent).toContain('NO ISABELLA NOTE')
+    expect(screen.queryByText('WIFE')).toBeNull()
+    expect(screen.queryByText('MASTERBLOX')).toBeNull()
+    expect(screen.queryByText('SOURCE-BACKED')).toBeNull()
+    expect(screen.queryByText('Francisco Salvaje')).toBeNull()
+  })
+
+  it('does not advance from vault results after the guided test ends', () => {
+    const actions = { openMemory: vi.fn(), proposeNoteReorganization: vi.fn(), decideProposal: vi.fn() }
+    const view = render(<IsabellaGuidedTest session={1} active actions={actions} />)
+    view.rerender(<IsabellaGuidedTest session={1} active={false} actions={actions} />)
+
+    act(() => document.dispatchEvent(new CustomEvent('jericho:voice-tool-result', { detail: {
+      name: 'search_vault', result: { results: [{
+        path: 'People/Isabella.md', title: 'Isabella', excerpt: 'Late result.', score: 1,
+      }] },
+    } })))
+
+    expect(screen.getByText('Say: Who is Isabella?')).toBeTruthy()
+    expect(screen.queryByText('Late result.')).toBeNull()
+  })
 })

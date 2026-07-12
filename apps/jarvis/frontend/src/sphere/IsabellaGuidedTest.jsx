@@ -3,13 +3,14 @@ import { Chip, JerichoCard } from './components/JerichoCard'
 
 const EMPTY = { phase: 'ask', result: null, proposal: null, outcome: null, error: '' }
 
-export function IsabellaGuidedTest({ session, actions }) {
+export function IsabellaGuidedTest({ session, active = true, actions }) {
   const [state, setState] = React.useState(EMPTY)
   const personCard = React.useRef(null)
 
   React.useEffect(() => setState(EMPTY), [session])
   React.useEffect(() => {
     const receive = event => {
+      if (!active) return
       if (event.detail?.name !== 'search_vault') return
       const result = bestIsabellaResult(event.detail.result?.results)
       if (!result) {
@@ -20,7 +21,7 @@ export function IsabellaGuidedTest({ session, actions }) {
     }
     document.addEventListener('jericho:voice-tool-result', receive)
     return () => document.removeEventListener('jericho:voice-tool-result', receive)
-  }, [])
+  }, [active])
 
   const open = async () => {
     if (!state.result) return
@@ -150,7 +151,7 @@ export function IsabellaGuidedTest({ session, actions }) {
 
 function bestIsabellaResult(results) {
   if (!Array.isArray(results)) return null
-  return results.find(result => /isabella/iu.test(`${result.title} ${result.path}`)) ?? results[0] ?? null
+  return results.find(result => /(?:^|[^\p{L}])isabella(?:[^\p{L}]|$)/iu.test(`${result?.title ?? ''} ${result?.path ?? ''}`)) ?? null
 }
 
 function TestStep({ number, label, status }) {
