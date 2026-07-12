@@ -85,6 +85,19 @@ export interface NoteReorganizationProposalInput {
   title: string;
 }
 
+export interface CoreHealth {
+  ok: boolean;
+  startup: {
+    storage: 'persistent';
+    database: '~/.jericho/jericho.db';
+    initializedNewCore: boolean;
+    recovery?: { outcome: 'archived_not_migrated'; archive: string };
+  };
+  connectors: Array<{ connectorId: string; status: string }>;
+  vault: { ready: boolean };
+  voice: { status: 'available' | 'unavailable' };
+}
+
 export class CoreClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #createEventSource: (url: string) => EventSourcePort;
@@ -130,6 +143,14 @@ export class CoreClient {
       this.store.gap();
       void this.#refresh(this.#generation);
     });
+  }
+
+  async health(): Promise<CoreHealth> {
+    const response = await this.#fetch('/api/v1/health', {
+      credentials: 'same-origin', headers: { accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Core health unavailable'));
+    return response.json() as Promise<CoreHealth>;
   }
 
   stop(): void {

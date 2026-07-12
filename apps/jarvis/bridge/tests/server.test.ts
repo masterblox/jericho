@@ -291,9 +291,39 @@ describe('local API credential', () => {
     expect(() => loadApiToken({ environment: {}, platform: 'linux' }))
       .toThrow('Set JERICHO_API_TOKEN');
   });
+
+  it.each(['', 'space token', 'line\nbreak', '\0control'])(
+    'rejects malformed API tokens read from Keychain: %j', (value) => {
+      expect(() => loadApiToken({
+        environment: {}, platform: 'darwin', readSecret: () => value,
+      })).toThrow(/Keychain|token/i);
+    },
+  );
 });
 
 describe('authenticated local Core HTTP/SSE server', () => {
+  it('returns only home-redacted archive recovery status', async () => {
+    const runtime = await startServer({ startupStatus: {
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '~/.jericho/recovery/2026-07-12T00-00-00Z' },
+    }, vaultReady: true });
+    const body = await (await api(runtime.url, '/api/v1/health')).json() as Record<string, unknown>;
+    expect(body).toMatchObject({ startup: {
+      initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '~/.jericho/recovery/2026-07-12T00-00-00Z' },
+    }, vault: { ready: true } });
+    expect(JSON.stringify(body)).not.toContain('/Users/');
+  });
+
+  it('redacts an unexpected archive location at the HTTP boundary', async () => {
+    const runtime = await startServer({ startupStatus: {
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '/Users/carlos/private/core' },
+    } as unknown as import('../src/core/recovery.js').CoreStartupStatus });
+    const text = await (await api(runtime.url, '/api/v1/health')).text();
+    expect(text).toContain('~/.jericho/recovery/REDACTED');
+    expect(text).not.toContain('/Users/carlos');
+  });
   it('enforces bearer, Host, Origin, security headers, and reports optional voice unavailable', async () => {
     const runtime = await startServer();
     expect((await fetch(`${runtime.url}/api/v1/health`)).status).toBe(401);
@@ -728,6 +758,8 @@ interface StartOverrides {
   clock?: () => string;
   retention?: { retainMission: ReturnType<typeof vi.fn> };
   reflection?: { runOnce: ReturnType<typeof vi.fn> };
+  startupStatus?: import('../src/core/recovery.js').CoreStartupStatus;
+  vaultReady?: boolean;
 }
 
 function localEvent(index: number): EventEnvelope {

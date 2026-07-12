@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { tmpdir } from 'node:os';
+import { execFileSync } from 'node:child_process';
+import { electronKeychainHelperPath } from '../../electron/helper-path.js';
 
 import { writeKeychainSecret } from '../src/platform/keychain.js';
 
@@ -36,5 +39,16 @@ describe('Electron packaging contract', () => {
     expect(helper).toContain('SecItemAdd');
     expect(helper).toContain('readDataToEndOfFile');
     expect(helper).not.toContain('kSecValueData: service');
+    const output = resolve(mkdtempSync(resolve(tmpdir(), 'jericho-helper-')), 'jericho-keychain-helper');
+    execFileSync('/usr/bin/clang', [
+      '-fobjc-arc', '-framework', 'Foundation', '-framework', 'Security',
+      resolve(root, 'electron/keychain-helper.m'), '-o', output,
+    ]);
+    expect(statSync(output).isFile()).toBe(true);
+    expect(statSync(output).mode & 0o111).not.toBe(0);
+    expect(electronKeychainHelperPath({
+      appPath: '/Applications/Jericho.app/Contents/Resources/app.asar',
+      resourcesPath: '/Applications/Jericho.app/Contents/Resources', packaged: true,
+    })).toBe('/Applications/Jericho.app/Contents/Resources/app.asar.unpacked/electron/dist/jericho-keychain-helper');
   });
 });

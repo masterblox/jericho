@@ -5,6 +5,8 @@ import { randomBytes } from 'node:crypto';
 import { chmodSync, readFileSync, writeFileSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import path from 'node:path';
+import { validateApiToken, validateBridgeSecrets, validateMasterKey } from './credential-validation.js';
+import { electronKeychainHelperPath } from './helper-path.js';
 
 const HOST = '127.0.0.1';
 const STARTUP_TIMEOUT_MS = 30_000;
@@ -41,15 +43,29 @@ function keychainSecret(service: string): string | undefined {
   }
 }
 
+function validKeychainSecret(service: 'jericho-core-api' | 'jericho-core'): string | undefined {
+  const value = keychainSecret(service);
+  if (value === undefined) return undefined;
+  try {
+    return service === 'jericho-core-api'
+      ? validateApiToken(value, 'macOS Keychain API token')
+      : validateMasterKey(value, 'macOS Keychain master key');
+  } catch (cause) {
+    throw new Error(`Jericho found a malformed ${service} credential. Run the explicit Core recovery flow.`, { cause });
+  }
+}
+
 function addKeychainSecret(service: string, secret: string): void {
-  execFileSync(bridgeResourcePath('electron', 'dist', 'jericho-keychain-helper'), [
+  execFileSync(electronKeychainHelperPath({
+    appPath: app.getAppPath(), resourcesPath: process.resourcesPath, packaged: app.isPackaged,
+  }), [
     'add', service, userInfo().username,
   ], { input: secret, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 function bridgeSecrets(): BridgeSecrets {
-  const keychainApiToken = keychainSecret('jericho-core-api');
-  const keychainMasterKey = keychainSecret('jericho-core');
+  const keychainApiToken = validKeychainSecret('jericho-core-api');
+  const keychainMasterKey = validKeychainSecret('jericho-core');
   if (keychainApiToken && keychainMasterKey) {
     return { apiToken: keychainApiToken, masterKey: keychainMasterKey };
   }
@@ -61,12 +77,12 @@ function bridgeSecrets(): BridgeSecrets {
     if (!keychainApiToken) addKeychainSecret('jericho-core-api', generated.apiToken);
     if (!keychainMasterKey) addKeychainSecret('jericho-core', generated.masterKey);
     return {
-      apiToken: keychainSecret('jericho-core-api') ?? generated.apiToken,
-      masterKey: keychainSecret('jericho-core') ?? generated.masterKey,
+      apiToken: validKeychainSecret('jericho-core-api') ?? generated.apiToken,
+      masterKey: validKeychainSecret('jericho-core') ?? generated.masterKey,
     };
   } catch {
-    const winnerApiToken = keychainSecret('jericho-core-api');
-    const winnerMasterKey = keychainSecret('jericho-core');
+    const winnerApiToken = validKeychainSecret('jericho-core-api');
+    const winnerMasterKey = validKeychainSecret('jericho-core');
     if (winnerApiToken && winnerMasterKey) {
       return { apiToken: winnerApiToken, masterKey: winnerMasterKey };
     }
@@ -77,8 +93,10 @@ function bridgeSecrets(): BridgeSecrets {
   }
   const secretsPath = path.join(app.getPath('userData'), 'bridge-secrets.bin');
   try {
-    const existing = JSON.parse(safeStorage.decryptString(readFileSync(secretsPath))) as BridgeSecrets;
-    if (existing.apiToken && existing.masterKey) return existing;
+    return validateBridgeSecrets(
+      JSON.parse(safeStorage.decryptString(readFileSync(secretsPath))),
+      'Electron secure storage',
+    );
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
       throw new Error('Jericho could not decrypt its local credentials.', { cause: error });

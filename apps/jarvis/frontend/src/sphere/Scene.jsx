@@ -2,8 +2,9 @@ import React from 'react'
 import { CoreAssembly } from './components/CoreAssembly'
 import { ParticleField } from './components/ParticleField'
 import { AgentsProjection, BrainProjection, FleetLifecycle, IdCluster, TasksProjection } from './components/peripherals'
+import { StartupHealthCard } from './StartupHealthCard'
 
-export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, onVaultSearch, onOpenCommand }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
   const gestureOffset = React.useRef({ x: 0, y: 0 })
@@ -64,6 +65,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
         <CoreAssembly onOpenCommand={onOpenCommand} />
       </div>
       <div className="layer layer-near">
+        <StartupHealthCard health={health} />
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
         {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
         {activeView === 'BRAIN' && <BrainProjection nucleus={liveData?.nucleus} onSearch={onVaultSearch} />}

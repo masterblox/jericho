@@ -7,7 +7,7 @@ import {
   type CommandCenterSnapshot,
 } from '@jericho/shared';
 
-import { CoreClient } from './core-client';
+import { CoreClient, type CoreHealth } from './core-client';
 import { CommandCenterStore } from './command-center-store';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
@@ -35,6 +35,7 @@ export interface FleetSnapshot {
 export function SphereShell({ store, client }: { store: CommandCenterStore; client: CoreClient }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [fleet, setFleet] = useState<FleetSnapshot>(FLEET_OFFLINE);
+  const [health, setHealth] = useState<CoreHealth | undefined>();
   const liveData = useMemo(
     () => projectLiveData(state.snapshot, state.status === 'ready', fleet),
     [state, fleet],
@@ -42,6 +43,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
 
   useEffect(() => {
     void client.start();
+    void client.health().then(setHealth).catch(() => setHealth(undefined));
     return () => client.stop();
   }, [client]);
 
@@ -125,7 +127,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
     };
   }, []);
 
-  return <SphereApp liveData={liveData} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
+  return <SphereApp liveData={liveData} health={health} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
     searchMemory: (query: string) => client.searchVault(query, 8),
     openMemory: (relativePath: string) => client.openVaultNote(relativePath),
     proposeNoteReorganization: (input: { relativePath: string; title: string }) =>

@@ -329,7 +329,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         ok: true,
         voice: { status: options.geminiApiKey ? 'available' : 'unavailable' },
         connectors: options.store.listConnectorHealth(),
-        startup: options.startupStatus ?? normalStartupStatus(),
+        startup: publicStartupStatus(options.startupStatus ?? normalStartupStatus()),
         vault: { ready: options.vaultReady ?? false },
       });
       return;
@@ -2022,6 +2022,18 @@ function safeVaultRelativePath(value: string): string {
     normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')
   ) throw new HttpError(400, 'invalid_note_path');
   return normalized;
+}
+
+function publicStartupStatus(status: CoreStartupStatus): CoreStartupStatus {
+  const archive = status.recovery?.archive;
+  return {
+    storage: 'persistent', database: '~/.jericho/jericho.db',
+    initializedNewCore: status.initializedNewCore,
+    ...(status.recovery ? { recovery: {
+      outcome: 'archived_not_migrated',
+      archive: archive?.startsWith('~/.jericho/recovery/') ? archive : '~/.jericho/recovery/REDACTED',
+    } } : {}),
+  };
 }
 
 function stringList(value: unknown, error: string): string[] {
