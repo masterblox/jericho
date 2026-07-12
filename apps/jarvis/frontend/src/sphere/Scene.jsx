@@ -1,9 +1,9 @@
 import React from 'react'
 import { CoreAssembly } from './components/CoreAssembly'
 import { ParticleField } from './components/ParticleField'
-import { IdCluster, MissionsProjection, SignalsProjection } from './components/peripherals'
+import { AgentsProjection, BrainProjection, IdCluster, TasksProjection } from './components/peripherals'
 
-export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, onVaultSearch }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
   const gestureOffset = React.useRef({ x: 0, y: 0 })
@@ -54,7 +54,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       onPointerMove={onPointerMove}
     >
       <div className="layer layer-particles" aria-hidden="true">
-        <ParticleField />
+        <ParticleField agents={liveData?.agents ?? []} />
       </div>
       <div className="layer layer-far">
         <IdCluster activeView={activeView} onView={setActiveView} coreState={coreState} connected={liveData?.connected} />
@@ -63,8 +63,9 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
         <CoreAssembly />
       </div>
       <div className="layer layer-near">
-        {activeView === 'MISSIONS' && <MissionsProjection tasks={liveData?.tasks ?? []} />}
-        {activeView === 'SIGNALS' && <SignalsProjection signals={liveData?.signals ?? []} />}
+        {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
+        {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
+        {activeView === 'BRAIN' && <BrainProjection nucleus={liveData?.nucleus} onSearch={onVaultSearch} />}
       </div>
     </div>
   )

@@ -3,17 +3,23 @@ import Scene from './Scene'
 import { DispatchModal, Toast } from './components'
 import { store, api, installJerichoApi, setDirectiveHandler } from './jericho-api'
 
-const VIEW_KEYS = { '1': 'CORE', '2': 'MISSIONS', '3': 'SIGNALS' }
+const VIEW_KEYS = { '1': 'CORE', '2': 'AGENTS', '3': 'TASKS', '4': 'BRAIN' }
 
-export default function App({ liveData, onDirective }) {
+export default function App({ liveData, onDirective, onVaultSearch }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
 
   React.useEffect(() => installJerichoApi(), [])
   React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
+  // live roster only: agent selection follows persisted Core missions
+  React.useEffect(() => {
+    api.setAgents((liveData?.agents ?? []).map(agent => agent.id))
+  }, [liveData])
 
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
   React.useEffect(() => {
     const onKey = event => {
+      const target = event.target
+      if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) return
       const modalOpen = Boolean(state.directive)
       if (event.key === 'Escape') {
         if (modalOpen) api.cancelDispatch()
@@ -42,6 +48,7 @@ export default function App({ liveData, onDirective }) {
         activeView={state.activeView}
         setActiveView={api.summon}
         liveData={liveData}
+        onVaultSearch={onVaultSearch}
       />
       <DispatchModal directive={state.directive} onClose={api.cancelDispatch} onDispatch={api.confirmDispatch} />
       <Toast message={state.toast} />

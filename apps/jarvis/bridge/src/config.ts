@@ -49,6 +49,9 @@ export interface JerichoConfig {
   hermesBranch?: string;
   hermesPollIntervalMs: number;
   hermesMaxWaitMs: number;
+  paperclipApiUrl?: string;
+  paperclipApiKey?: string;
+  paperclipCompanyId?: string;
   missionRepositoryGrants: RepositoryGrant[];
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
@@ -151,6 +154,16 @@ export function loadConfig(
     throw new Error('JERICHO_HERMES_MAX_WAIT_MS must be at least JERICHO_HERMES_POLL_INTERVAL_MS');
   }
   const defaultPersonaMode = parsePersonaMode(environment.DEFAULT_MODE);
+  const paperclipApiUrl = optionalString(environment.PAPERCLIP_API_URL);
+  const paperclipApiKey = optionalString(environment.PAPERCLIP_API_KEY);
+  const paperclipCompanyId = optionalString(environment.PAPERCLIP_COMPANY_ID);
+  const paperclipConfigured = [paperclipApiUrl, paperclipApiKey, paperclipCompanyId]
+    .filter(Boolean).length;
+  if (paperclipConfigured !== 0 && paperclipConfigured !== 3) {
+    throw new Error(
+      'PAPERCLIP_API_URL, PAPERCLIP_API_KEY, and PAPERCLIP_COMPANY_ID must be configured together',
+    );
+  }
   const vaultGatewayUrl = optionalString(environment.JERICHO_VAULT_GATEWAY_URL);
   const vaultGatewayToken = optionalString(environment.JERICHO_VAULT_GATEWAY_TOKEN);
   if (Boolean(vaultGatewayUrl) !== Boolean(vaultGatewayToken)) {
@@ -234,6 +247,9 @@ export function loadConfig(
     ...(hermesBranch ? { hermesBranch } : {}),
     hermesPollIntervalMs,
     hermesMaxWaitMs,
+    ...(paperclipApiUrl ? { paperclipApiUrl } : {}),
+    ...(paperclipApiKey ? { paperclipApiKey } : {}),
+    ...(paperclipCompanyId ? { paperclipCompanyId } : {}),
     missionRepositoryGrants: parseRepositoryGrants(
       environment.JERICHO_MISSION_REPOSITORY_GRANTS,
     ),

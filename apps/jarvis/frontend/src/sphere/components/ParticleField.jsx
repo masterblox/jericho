@@ -1,5 +1,4 @@
 import React from 'react'
-import { agents } from '../data'
 import { store } from '../jericho-api'
 
 // Rasterized particle volume: the reactor as gravitational attractor with
@@ -27,8 +26,12 @@ function mulberry(seed) {
   }
 }
 
-export function ParticleField() {
+// Live-only agent halo: `agents` comes from persisted Core missions
+// ({ id, status }). With no live agents there are no orbital clusters —
+// the field never fakes fleet presence.
+export function ParticleField({ agents = [] }) {
   const canvasRef = React.useRef(null)
+  const agentsKey = agents.map(a => `${a.id}:${a.status}`).join('|')
 
   React.useEffect(() => {
     const canvas = canvasRef.current
@@ -49,11 +52,11 @@ export function ParticleField() {
     const pcl = new Int8Array(count)     // cluster index or -1
     const pbk = new Int8Array(count)     // brightness bucket
 
-    const clusterShare = 0.12
+    const clusterShare = agents.length ? 0.12 : 0
     for (let i = 0; i < count; i++) {
       const u = rnd()
       if (i < count * clusterShare) {
-        const c = i % 6
+        const c = i % agents.length
         pcl[i] = c
         pr[i] = 4.5 * rnd() * rnd() + 0.4          // tight local orbit radius
         pth[i] = rnd() * TAU
@@ -78,7 +81,8 @@ export function ParticleField() {
 
     // geometry: track the core-wrap box
     let cx = 0, cy = 0, scale = 1
-    const nodes = agents.map((a, i) => ({ status: a.status, id: a.id, ang: ((-90 + i * 60) * Math.PI) / 180, x: 0, y: 0 }))
+    const step = 360 / Math.max(1, agents.length)
+    const nodes = agents.map((a, i) => ({ status: a.status, id: a.id, ang: ((-90 + i * step) * Math.PI) / 180, x: 0, y: 0 }))
     const dprCap = 1 // particles are 1-2px points; retina buys nothing here
 
     function measure() {
@@ -222,7 +226,7 @@ export function ParticleField() {
       window.removeEventListener('resize', measure)
       delete window.__jerichoParticles
     }
-  }, [])
+  }, [agentsKey])
 
   return <canvas ref={canvasRef} className="particle-field" aria-hidden="true" />
 }

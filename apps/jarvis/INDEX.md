@@ -14,7 +14,7 @@
 | Orchestration | `bridge/src/orchestration/` | Classify, route, plan, policy-check, lease, execute, verify, and retain bounded missions. |
 | Contracts | `shared/src/index.ts` | Shared envelopes and command-center projections. |
 | Command center | `frontend/src/main.tsx` | React application bootstrap and local hardware engagement boundary. |
-| Sphere interface | `frontend/src/sphere-shell.tsx` | Authenticated Core projection into the HADAL visual surface and exact-plan gesture actions. |
+| Sphere interface | `frontend/src/sphere-shell.tsx` | Authenticated Core projection into the sphere surface and exact-plan gesture actions. |
 | Gesture runtime | `frontend/src/jarvis-runtime.ts` | Disposable camera/MediaPipe integration and semantic gesture dispatch. |
 | Frontend gesture handoff | `frontend/FRONTEND_HANDOFF.md` | Contracts the visual pass must preserve and the final wiring checklist. |
 | Local gesture assets | `frontend/public/mediapipe/` | Same-origin model, SIMD/non-SIMD WASM, and third-party notices. |
@@ -27,9 +27,9 @@
   acknowledgement alone is not a completed receipt.
 - `bridge/src/orchestration/hermes-filesystem-executor.ts` is the v1 execution boundary. It requires the contract in `../../docs/HERMES-EXECUTION-PROTOCOL-V1.md`; legacy results are review checkpoints, never successes.
 - `bridge/src/command-center.ts` projects persisted truth; it must never fabricate activity for visual effect.
-- `frontend/src/command-center-app.tsx` presents Core projections and records exact-version decisions; it is not a second database.
+- `frontend/src/sphere-shell.tsx` presents Core projections and records exact-version decisions; it is not a second database.
 - `frontend/src/*controller*.ts`, `tracking.ts`, `calibration.ts`, and `hit-testing.ts` are deterministic gesture primitives.
-- `frontend/src/sphere/` is the production-owned port of the approved interface-v2 visual source. The root `interface/` app remains a design/Playwright source and is not served by Core.
+- `frontend/src/sphere/` is the production-owned sphere surface. It renders only persisted Core truth — no fixture roster, tasks, signals, or gauges.
 
 ## Run and verify
 
@@ -51,4 +51,6 @@ corepack pnpm build
 
 ## Archive rule
 
-Do not add new runtime behavior to the deleted legacy HUD or the root `interface/` fixture app. Preserve old plans only as historical context and mark superseded assumptions in `docs/INDEX.md`.
+The legacy HUD, the root `interface/` prototype, and the `?view=command` flat
+operator view are deleted; do not resurrect them. Preserve old plans only as
+historical context and mark superseded assumptions in `docs/INDEX.md`.

@@ -38,6 +38,7 @@ import {
 
 import { buildCommandCenterSnapshot } from './command-center.js';
 import { loadConfig } from './config.js';
+import { PaperclipFleetClient, type FleetPort } from './fleet/paperclip-client.js';
 import {
   EventConflictError,
   CheckpointDecisionConflictError,
@@ -135,6 +136,7 @@ export interface JerichoServerOptions {
   connectorDescriptors?: readonly unknown[];
   obsidianSearch?: ObsidianSearchPort;
   vaultSearch?: VaultToolSearchPort;
+  fleet?: FleetPort;
   intake?: IntakePort;
   retention?: MissionRetentionPort;
   reflection?: ReflectionReviewPort;
@@ -818,6 +820,15 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       sendJson(response, 200, { events: options.store.listEvents({ limit }) });
       return;
     }
+    if (request.method === 'GET' && url.pathname === '/api/v1/fleet') {
+      if (!options.fleet) {
+        sendJson(response, 503, { available: false, agents: [], issues: [] });
+        return;
+      }
+      const snapshot = await options.fleet.snapshot();
+      sendJson(response, snapshot.available ? 200 : 503, snapshot);
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/api/v1/obsidian/search') {
       if (!options.vaultSearch) {
         sendJson(response, 503, {
@@ -1207,8 +1218,13 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       }
       session = connected;
       if (greetingPending && active) requestWakeGreeting();
-    }).catch(() => {
+    }).catch((cause: unknown) => {
       if (connectionGeneration === generation) {
+        // Message only: the failure text must stay diagnosable without the key.
+        console.error(
+          '[jericho] voice connect failed:',
+          cause instanceof Error ? cause.message : 'unknown error',
+        );
         send({ type: 'error', message: 'voice unavailable' });
         if (greetingActive || greetingPending) deactivate();
       }
@@ -1808,6 +1824,15 @@ async function main(): Promise<void> {
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,
     vaultSearch: connectors.vaultGateway,
+    ...(config.paperclipApiUrl && config.paperclipApiKey && config.paperclipCompanyId
+      ? {
+        fleet: new PaperclipFleetClient({
+          apiUrl: config.paperclipApiUrl,
+          apiKey: config.paperclipApiKey,
+          companyId: config.paperclipCompanyId,
+        }),
+      }
+      : {}),
     intake,
     ...(knowledge.retention ? { retention: knowledge.retention } : {}),
     reflection: knowledge.reflection,

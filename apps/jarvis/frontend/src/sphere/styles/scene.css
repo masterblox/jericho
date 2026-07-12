@@ -288,3 +288,59 @@
   .projection-radial { grid-template-columns: 1fr; }
   .core-wrap { width: min(92vw, 430px); }
 }
+
+/* =========================================================
+   AGENTS / TASKS / BRAIN PROJECTIONS (live-only surfaces)
+   ========================================================= */
+.radial-card--compact { width: 176px; }
+
+.projection-kanban {
+  position: absolute; inset: auto 24px 84px 24px; top: 104px;
+  display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+  align-content: start; pointer-events: auto;
+}
+.kanban-column { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.kanban-column > header {
+  display: flex; justify-content: space-between; align-items: baseline;
+  border-bottom: 1px solid var(--stroke); padding-bottom: 6px; letter-spacing: .14em;
+}
+.kanban-column > ol { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.kanban-card {
+  display: grid; gap: 4px; padding: 8px 10px;
+  background: rgba(3, 6, 8, .72); border: 1px solid var(--stroke-dim);
+  animation: card-pop-rise 260ms ease-out both;
+}
+@keyframes card-pop-rise { from { opacity: 0; transform: translateY(6px); } }
+.kanban-card.fault { border-color: var(--fault, #ff5c78); }
+.kanban-card > p { margin: 0; font-size: 12px; line-height: 1.35; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.kanban-more { opacity: .6; padding: 2px 10px; }
+.kanban-offline { position: absolute; bottom: -26px; left: 0; color: var(--fault, #ff5c78); }
+
+.projection-brain {
+  position: absolute; left: 50%; top: 108px; transform: translateX(-50%);
+  width: min(560px, calc(100vw - 48px));
+  display: grid; gap: 10px; pointer-events: auto;
+}
+.brain-search { display: grid; grid-template-columns: auto 1fr auto; gap: 10px; align-items: center; }
+.brain-search input {
+  background: rgba(3, 6, 8, .72); border: 1px solid var(--stroke-dim);
+  color: inherit; font: inherit; padding: 8px 12px; min-width: 0;
+}
+.brain-search input:focus { outline: 1px solid var(--stroke); }
+.brain-search button {
+  background: none; border: 1px solid var(--stroke); color: inherit;
+  font-size: 11px; letter-spacing: .14em; padding: 8px 14px; cursor: pointer;
+}
+.brain-search button[disabled] { opacity: .5; cursor: default; }
+.brain-nucleus { opacity: .75; }
+.brain-offline { color: var(--fault, #ff5c78); }
+.brain-results { display: grid; gap: 10px; margin: 0; padding: 0; list-style: none; max-height: 52vh; overflow-y: auto; }
+.brain-results > li {
+  display: grid; gap: 4px; padding: 10px 12px;
+  background: rgba(3, 6, 8, .72); border: 1px solid var(--stroke-dim);
+}
+.brain-results > li > p { margin: 0; font-size: 12px; line-height: 1.4; }
+
+@media (max-width: 980px) {
+  .projection-kanban { grid-template-columns: repeat(2, 1fr); overflow-y: auto; bottom: 90px; }
+}

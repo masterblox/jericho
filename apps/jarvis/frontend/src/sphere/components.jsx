@@ -1,36 +1,16 @@
 import React from 'react'
-import { agents } from './data'
 import { useTypeOn, Chip } from './components/JerichoCard'
 
 export function StatusDot({ status }) {
   return <span className={`status-dot ${status}`} aria-label={status} />
 }
 
-// real decomposition: route agents + risk from the directive text, not a fixed plate
-const ROUTE_HINTS = [
-  [/recover|fix|deploy|build|patch|close|debug|ship/i, 'DEV'],
-  [/research|synthes|investigat|compare|explore/i, 'RESEARCH'],
-  [/verify|audit|analy|review|check/i, 'ANALYST'],
-  [/auth|session|schedule|calendar|telethon|ops/i, 'PA'],
-  [/signal|monitor|watch|scan|intel/i, 'INTEL'],
-  [/design|visual|ui|interface|brand/i, 'IRIS'],
-]
+// Local text heuristic only. Real classification, routing, and assignment
+// happen in Jericho Core after capture — the modal must not fake them.
 const RISK_RE = /delete|drop|purge|deploy|prod|external|payment|send|wipe/i
 
 export function decompose(text) {
-  const ids = new Set()
-  for (const agent of agents) {
-    if (new RegExp(`\\b${agent.id}\\b`, 'i').test(text)) ids.add(agent.id)
-  }
-  for (const [re, id] of ROUTE_HINTS) if (re.test(text)) ids.add(id)
-  if (ids.size === 0) { ids.add('DEV'); ids.add('ANALYST') }
-  const assigned = [...ids].slice(0, 3)
-  return {
-    assigned: assigned.join(' + '),
-    degradedRoute: assigned.some(id => agents.find(a => a.id === id)?.status === 'degraded'),
-    risky: RISK_RE.test(text),
-    secs: Math.max(2, Math.min(9, Math.round(text.length / 12))),
-  }
+  return { risky: RISK_RE.test(text) }
 }
 
 function TypedDirective({ text }) {
@@ -55,16 +35,15 @@ export function DispatchModal({ directive, onClose, onDispatch }) {
         <p className="micro cy">DIRECTIVE</p>
         <TypedDirective text={directive} />
         <ol className="dispatch-route">
-          <li className="step"><span className="step-num">01</span><strong>ANALYZE</strong><small>JERICHO / {route.secs} SEC</small></li>
+          <li className="step"><span className="step-num">01</span><strong>CAPTURE</strong><small>ENCRYPTED LOCAL INTAKE</small></li>
           <li aria-hidden="true" className="route-line" />
-          <li className="step"><span className="step-num">02</span><strong>ASSIGN</strong><small>{route.assigned}</small></li>
+          <li className="step"><span className="step-num">02</span><strong>ROUTE</strong><small>JERICHO CORE</small></li>
           <li aria-hidden="true" className="route-line" />
-          <li className="step"><span className="step-num">03</span><strong>VERIFY</strong><small>HUMAN GATE</small></li>
+          <li className="step"><span className="step-num">03</span><strong>APPROVE</strong><small>HUMAN GATE</small></li>
         </ol>
         {route.risky
-          ? <p className="risk-note high"><span>HIGH RISK</span> DESTRUCTIVE / EXTERNAL PATH · HUMAN GATE MANDATORY</p>
-          : <p className="risk-note"><span>LOW RISK</span> NO EXTERNAL MESSAGES · NO DESTRUCTIVE ACTIONS</p>}
-        {route.degradedRoute && <p className="risk-note high"><span>DEGRADED</span> AN ASSIGNED NODE IS DEGRADED · EXPECT RETRIES</p>}
+          ? <p className="risk-note high"><span>HIGH RISK</span> DESTRUCTIVE / EXTERNAL LANGUAGE DETECTED · HUMAN GATE MANDATORY</p>
+          : <p className="risk-note"><span>LOW RISK</span> NOTHING EXECUTES WITHOUT EXPLICIT APPROVAL</p>}
       </div>
       <footer><button className="ghost" onClick={onClose}>CANCEL</button><button className="confirm" onClick={onDispatch}>CONFIRM DISPATCH</button></footer>
     </section>
