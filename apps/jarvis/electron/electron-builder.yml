@@ -1,0 +1,53 @@
+appId: com.jericho.core
+productName: Jericho
+copyright: Copyright 2026
+
+directories:
+  output: dist-electron
+  buildResources: electron
+
+afterSign: electron/notarize.mjs
+
+files:
+  - electron/dist/**/*
+  - bridge/src/**/*
+  - bridge/package.json
+  - bridge/tsconfig.json
+  - shared/src/**/*
+  - shared/package.json
+  - frontend/dist/**/*
+  - package.json
+
+asar: true
+asarUnpack:
+  - bridge/**/*
+  - shared/**/*
+  - frontend/dist/**/*
+  - node_modules/**/*
+
+mac:
+  category: public.app-category.productivity
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  entitlements: electron/entitlements.mac.plist
+  entitlementsInherit: electron/entitlements.mac.plist
+  icon: electron/icon.icns
+  target:
+    - dmg
+    - zip
+
+dmg:
+  title: Jericho ${version}
+  contents:
+    - x: 130
+      y: 220
+    - x: 410
+      y: 220
+      type: link
+      path: /Applications
+
+publish:
+  provider: github
+  owner: masterblox
+  repo: jericho
+  releaseType: draft
