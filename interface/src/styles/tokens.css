@@ -1,0 +1,69 @@
+:root {
+  /* surfaces — near-black, layered by elevation */
+  --bg: #05080a;
+  --surface: #0b1013;
+  --elev: #10171a;
+  --elev-2: #161f23;
+
+  /* text — grey hierarchy */
+  --text: #e3eef0;
+  --muted: #9db0b1;
+  --faint: #859a9b;
+
+  /* MONOTONE: one movie-blue hue; contrast comes from the brightness ladder.
+     Red is reserved for fault/alert only. */
+  --cyan: #79cdff;
+  --cyan-dim: #3f8fc4;
+  --amber: #a8dbff;      /* retired warm accent — now a bright ladder step */
+  --fault: #ff5c78;
+  --ok: #b4e3ff;
+
+  /* borders — hairlines only, no shadows */
+  --line: rgba(121, 205, 255, 0.12);
+  --line-strong: rgba(121, 205, 255, 0.24);
+  --focus: var(--cyan);
+
+  /* brightness ladder — the ONLY contrast axis (same hue, rising intensity) */
+  --b1: rgba(121, 205, 255, 0.14);
+  --b2: rgba(121, 205, 255, 0.30);
+  --b3: rgba(121, 205, 255, 0.55);
+  --b4: rgba(190, 230, 255, 0.85);
+  --b5: #eaf7ff;
+
+  /* type */
+  --sans: 'Manrope', system-ui, sans-serif;
+  --mono: 'DM Mono', ui-monospace, monospace;
+  --cond: 'Barlow Condensed', 'Manrope', sans-serif;
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-15: 15px;
+  --fs-20: 20px;
+  --fs-32: 32px;
+
+  /* spacing — 4px base grid */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+
+  --radius: 3px;
+
+  /* hologram grammar (third pass) */
+  --space: #030608;
+  --stroke: rgba(121, 205, 255, 0.34);
+  --stroke-dim: rgba(121, 205, 255, 0.16);
+  --stroke-bright: rgba(190, 230, 255, 0.85);
+  --glow: 0 0 6px rgba(121, 205, 255, 0.45);
+  --amber-stroke: rgba(121, 205, 255, 0.5);
+  --fault-stroke: rgba(255, 92, 120, 0.6);
+  --micro: 10px;
+  --track: 0.18em;
+
+  /* procedural reactor materials — monotone blue */
+  --copper-hi: rgba(190, 230, 255, 0.85);
+  --copper-dim: rgba(121, 205, 255, 0.20);
+  --plasma: 190, 230, 255;
+}

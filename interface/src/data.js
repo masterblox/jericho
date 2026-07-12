@@ -1,10 +1,10 @@
 export const agents = [
-  { id: 'DEV', role: 'Engineering', status: 'online', load: 72, pulse: '00:42', version: '0.18.2', x: 49, y: 21 },
-  { id: 'PA', role: 'Operations', status: 'online', load: 48, pulse: '01:18', version: 'memory', x: 75, y: 35 },
-  { id: 'IRIS', role: 'Design', status: 'paused', load: 8, pulse: '3d', version: 'memory', x: 77, y: 70 },
-  { id: 'ANALYST', role: 'Business intel', status: 'degraded', load: 91, pulse: '05:12', version: 'external', x: 49, y: 82 },
-  { id: 'RESEARCH', role: 'Research', status: 'online', load: 64, pulse: '00:20', version: '0.18.2', x: 23, y: 69 },
-  { id: 'INTEL', role: 'Signals', status: 'degraded', load: 38, pulse: '07:44', version: 'external', x: 21, y: 35 },
+  { id: 'DEV', role: 'Engineering', status: 'online', load: 72, pulse: '00:42', version: '0.18.2', x: 49, y: 21, loadHistory: [44, 52, 61, 58, 70, 66, 74, 72] },
+  { id: 'PA', role: 'Operations', status: 'online', load: 48, pulse: '01:18', version: 'memory', x: 75, y: 35, loadHistory: [30, 35, 42, 55, 51, 46, 44, 48] },
+  { id: 'IRIS', role: 'Design', status: 'paused', load: 8, pulse: '3d', version: 'memory', x: 77, y: 70, loadHistory: [64, 58, 41, 22, 10, 8, 8, 8] },
+  { id: 'ANALYST', role: 'Business intel', status: 'degraded', load: 91, pulse: '05:12', version: 'external', x: 49, y: 82, loadHistory: [60, 66, 72, 78, 85, 88, 93, 91] },
+  { id: 'RESEARCH', role: 'Research', status: 'online', load: 64, pulse: '00:20', version: '0.18.2', x: 23, y: 69, loadHistory: [50, 48, 55, 62, 58, 66, 61, 64] },
+  { id: 'INTEL', role: 'Signals', status: 'degraded', load: 38, pulse: '07:44', version: 'external', x: 21, y: 35, loadHistory: [70, 64, 52, 45, 40, 36, 41, 38] },
 ]
 
 export const tasks = [
@@ -24,3 +24,10 @@ export const signals = [
 ]
 
 export const navItems = ['COMMAND', 'MISSIONS', 'SIGNALS']
+
+export const system = {
+  uptimeHours: 54,
+  uptimeMax: 72,
+  deferred: 71,
+  queueTrend: [22, 31, 38, 44, 52, 58, 63, 71, 68, 71, 74, 71],
+}
