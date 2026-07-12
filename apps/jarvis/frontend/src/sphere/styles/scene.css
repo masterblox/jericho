@@ -121,6 +121,7 @@
   animation: core-sphere-in 900ms 400ms ease-out both;
 }
 .core-sphere canvas { width: 100% !important; height: 100% !important; display: block; }
+.core-sphere[data-webgl="unavailable"] { background: radial-gradient(circle, rgba(var(--hud), .5) 0 3%, rgba(var(--hud), .2) 16%, rgba(var(--hud), .06) 38%, transparent 66%); filter: drop-shadow(0 0 18px rgba(var(--hud), .35)); }
 @keyframes core-sphere-in { from { opacity: 0; transform: scale(.85); } }
 .core-command-target {
   position: absolute;
@@ -265,6 +266,8 @@
 .sphere-command > nav button[aria-pressed="true"] { background: rgba(var(--hud), .07); color: var(--cyan); }
 .sphere-command__body { min-width: 0; overflow: auto; padding: 18px; }
 .sphere-command__status { grid-column: 1 / -1; min-height: 31px; padding: 8px 16px; border-top: 1px solid var(--stroke); color: var(--cyan); font: 9px var(--mono); letter-spacing: .12em; }
+
+.startup-health { position: absolute; right: 24px; bottom: 24px; width: min(330px, calc(100vw - 48px)); z-index: 8; }
 .sphere-command__intro { max-width: 660px; }
 .sphere-command__intro > p { color: var(--muted); font: 13px/1.6 var(--sans); }
 .sphere-command__intro dl, .sphere-mission-detail dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }
@@ -301,6 +304,89 @@
 .sphere-outcomes article { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; }
 .sphere-outcomes code { color: var(--faint); }
 
+.isabella-test { display: grid; gap: 14px; }
+.isabella-test__progress { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--stroke-dim); }
+.isabella-test__progress > span { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; padding: 7px 9px; border-right: 1px solid var(--stroke-dim); color: var(--faint); font: 8px var(--mono); letter-spacing: .12em; }
+.isabella-test__progress > span:last-child { border-right: 0; }
+.isabella-test__progress b { color: var(--cyan); font-weight: 500; }
+.isabella-test__progress i { font-style: normal; }
+.isabella-test__progress [data-status="LIVE"] { color: var(--cyan); background: rgba(var(--hud), .05); }
+.isabella-test__progress [data-status="PASS"] i { color: var(--ok); }
+.isabella-test > .jcard, .isabella-test__workspace > .jcard { position: relative; width: auto; padding: 15px; }
+.isabella-test .jcard p { color: var(--muted); line-height: 1.55; }
+.isabella-test__workspace { display: grid; grid-template-columns: minmax(300px, 1.15fr) minmax(240px, .85fr); gap: 14px; }
+.isabella-test__chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+.isabella-test__chips .chip { margin-left: 0; }
+.isabella-test button { border: 1px solid var(--stroke); padding: 10px 13px; color: var(--cyan); font: 600 9px var(--cond); letter-spacing: .1em; }
+.isabella-test__person[data-gesture-draggable="true"] { cursor: grab; border-color: var(--stroke); }
+.isabella-test__person[data-gesture-draggable="true"]:active { cursor: grabbing; }
+.isabella-test__drop { border-style: dashed; min-height: 220px; }
+.isabella-test__drop::after { content: 'DROP ZONE'; position: absolute; right: 12px; bottom: 10px; color: var(--cyan); font: 8px var(--mono); letter-spacing: .15em; }
+.isabella-test__changes { display: grid; gap: 5px; margin: 12px 0; padding: 0; list-style: none; }
+.isabella-test__changes li { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--stroke-dim); }
+.isabella-test__changes strong { color: var(--text); font: 9px var(--cond); letter-spacing: .08em; text-transform: uppercase; }
+.isabella-test__changes span { color: var(--cyan); font: 9px var(--mono); }
+.isabella-test__actions { display: flex; gap: 7px; }
+.isabella-test__actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
+.isabella-test__verdict { color: var(--ok) !important; font: 9px var(--mono); letter-spacing: .1em; }
+.isabella-test__ambiguous { color: var(--faint) !important; font: 9px var(--mono) !important; letter-spacing: .06em; }
+
+.voice-calibration {
+  position: absolute;
+  left: 3.5%;
+  bottom: 4%;
+  width: min(360px, 34vw);
+  z-index: 4;
+}
+.voice-calibration__sentence {
+  margin: 10px 0 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  font: 12px/1.5 var(--serif, Georgia, serif);
+}
+.voice-calibration__voices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+.voice-calibration__voices button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--stroke-dim);
+  padding: 8px 10px;
+  color: var(--text);
+  background: transparent;
+  font: 600 9px var(--cond);
+  letter-spacing: .08em;
+  cursor: pointer;
+}
+.voice-calibration__voices button.is-selected,
+.voice-calibration__voices button[aria-selected="true"] {
+  border-color: rgba(var(--hud), .55);
+  color: var(--cyan);
+}
+.voice-calibration__actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+.voice-calibration__actions button {
+  border: 1px solid var(--stroke);
+  padding: 9px 12px;
+  color: var(--cyan);
+  background: transparent;
+  font: 600 9px var(--cond);
+  letter-spacing: .1em;
+  cursor: pointer;
+}
+.voice-calibration__actions button:disabled { opacity: .35; cursor: default; }
+.voice-calibration__actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
+
 /* =========================================================
    GESTURE CALIBRATION CARD
    ========================================================= */
@@ -329,6 +415,7 @@
   .sphere-command > nav button span { display: none; }
   .sphere-command__body { padding: 10px; }
   .sphere-memory, .sphere-missions { grid-template-columns: 1fr; }
+  .isabella-test__workspace { grid-template-columns: 1fr; }
   .sphere-mission-detail dl, .sphere-command__intro dl { grid-template-columns: repeat(2, 1fr); }
 }
 @keyframes card-pop {

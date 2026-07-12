@@ -121,6 +121,27 @@ describe('JarvisRuntime lifecycle', () => {
     expect(harness.root.classList.contains('jericho-persona--megatron')).toBe(false);
   });
 
+  it('projects the complete guided-test lifecycle onto the Sphere document', async () => {
+    const harness = createHarness();
+    const start = vi.fn();
+    const resume = vi.fn();
+    const end = vi.fn();
+    document.addEventListener('jericho:guided-test-start', start);
+    document.addEventListener('jericho:guided-test-resume', resume);
+    document.addEventListener('jericho:guided-test-end', end);
+    await harness.runtime.engage();
+    const events = harness.createBridge.mock.calls[0][0];
+
+    events.onGuidedTestStart?.('isabella');
+    events.onGuidedTestResume?.('isabella');
+    events.onGuidedTestEnd?.('isabella');
+
+    expect(start).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledOnce();
+    expect(end).toHaveBeenCalledOnce();
+    expect(end.mock.calls[0][0]).toMatchObject({ detail: { test: 'isabella' } });
+  });
+
   it('cleans partial state and leaves the React keyboard surface usable when camera permission fails', async () => {
     const root = appRoot();
     const renderer = fakeRenderer();

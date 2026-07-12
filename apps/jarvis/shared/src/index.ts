@@ -315,6 +315,68 @@ export enum PreferenceScope {
   Global = 'global',
 }
 
+/** Deterministic Isabella guided-test phases owned by the Sphere/Core controller. */
+export type GuidedTestPhase =
+  | 'ready'
+  | 'retrieving'
+  | 'presenting'
+  | 'opening'
+  | 'correcting_organizing'
+  | 'reviewing'
+  | 'complete';
+
+export const GUIDED_TEST_PHASES: readonly GuidedTestPhase[] = [
+  'ready',
+  'retrieving',
+  'presenting',
+  'opening',
+  'correcting_organizing',
+  'reviewing',
+  'complete',
+] as const;
+
+/** User-local presentation voice preset. Stores only the preset name + timestamp. */
+export interface VoicePresetPreference {
+  voice: string;
+  confirmedAt: IsoTimestamp;
+}
+
+export interface VoicePreviewRequest {
+  voice: string;
+  previewId: string;
+}
+
+export interface VoicePreviewState {
+  previewId: string;
+  voice: string;
+  status: 'playing' | 'cancelled' | 'complete' | 'unavailable';
+}
+
+export interface IdentityEvidenceProvenance {
+  relativePath: string;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+export interface IdentityEvidenceGroup {
+  fullName: string;
+  canonical: boolean;
+  ambiguous: boolean;
+  relationshipToCarlos?: string;
+  employment?: string[];
+  provenance: IdentityEvidenceProvenance[];
+}
+
+/** Identity-aware vault retrieval result for guided narration. */
+export interface IdentityAwareRetrievalResult {
+  query: string;
+  groups: IdentityEvidenceGroup[];
+  excluded: IdentityEvidenceGroup[];
+  resolved?: IdentityEvidenceGroup;
+  retrievalCount: number;
+}
+
 export interface Freshness {
   observedAt: IsoTimestamp;
   validAt?: IsoTimestamp;

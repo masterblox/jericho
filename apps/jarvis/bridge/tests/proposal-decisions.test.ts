@@ -374,6 +374,57 @@ describe('generic proposal decision API', () => {
     expect(store.listAssignments()).toEqual([]);
     expect(store.listReceipts()).toEqual([]);
   });
+
+  it('creates an exact Isabella note preview and approval never writes or queues work', async () => {
+    const store = openStore();
+    const server = createJerichoServer({
+      store, apiToken: TOKEN, host: '127.0.0.1', clock: () => T1,
+      decisionIdFactory: () => 'decision-isabella-preview',
+    });
+    servers.push(server);
+    const address = await server.listen(0);
+    const origin = `http://127.0.0.1:${address.port}`;
+
+    const createdResponse = await api(origin, '/api/v1/obsidian/reorganization-proposals', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ relativePath: 'People/Isabella.md', title: 'Isabella' }),
+    });
+    expect(createdResponse.status).toBe(201);
+    const created = await createdResponse.json() as { proposal: VersionedProposal };
+    expect(created.proposal).toMatchObject({
+      status: LifecycleStatus.PendingApproval,
+      proposedByAgentId: 'jericho-guided-test',
+      body: {
+        effect: 'reorganize_obsidian_note',
+        relativePath: 'People/Isabella.md',
+        writesApplied: false,
+        changes: [
+          { operation: 'add_context', value: 'family' },
+          { operation: 'add_context', value: 'masterblox' },
+          { operation: 'preserve_existing_content', value: true },
+        ],
+      },
+    });
+
+    const decided = await api(origin, `/api/v1/proposals/${created.proposal.id}/decisions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        outcome: DecisionOutcome.Approved,
+        proposalHash: created.proposal.integrityHash,
+        version: created.proposal.version,
+      }),
+    });
+    expect(decided.status).toBe(200);
+    expect(await decided.json()).toMatchObject({
+      proposal: { status: LifecycleStatus.Approved },
+      decision: { outcome: DecisionOutcome.Approved },
+    });
+    expect(store.listAssignments()).toEqual([]);
+    expect(store.listReceipts()).toEqual([]);
+    expect(store.listRelations()).toEqual([]);
+  });
 });
 
 function openStore(): JerichoStore {

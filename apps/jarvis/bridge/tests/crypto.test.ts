@@ -120,27 +120,25 @@ describe('loadMasterKey', () => {
 
   it('loads the current user key from the macOS Keychain', () => {
     const expected = Buffer.alloc(32, 29);
-    const calls: Array<readonly string[]> = [];
+    const calls: string[] = [];
 
     const loaded = loadMasterKey({
       environment: {},
       platform: 'darwin',
       username: 'test-user',
-      runSecurityCommand: (args) => {
-        calls.push(args);
+      readSecret: (service) => {
+        calls.push(service);
         return `${expected.toString('base64')}\n`;
       },
     });
 
     expect(loaded).toEqual(expected);
-    expect(calls).toEqual([
-      ['find-generic-password', '-s', 'jericho-core', '-a', 'test-user', '-w'],
-    ]);
+    expect(calls).toEqual(['jericho-core']);
   });
 
   it('generates and persists a missing macOS Keychain key without putting it in argv', () => {
     const generated = Buffer.alloc(32, 31);
-    const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    const writes: Array<{ service: string; secret: string }> = [];
     let persisted: string | undefined;
     let findCalls = 0;
 
@@ -149,40 +147,25 @@ describe('loadMasterKey', () => {
       platform: 'darwin',
       username: 'test-user',
       generateKey: () => Buffer.from(generated),
-      runSecurityCommand: (args, input) => {
-        calls.push({ args, input });
-        if (args[0] === 'find-generic-password') {
-          findCalls += 1;
-          if (!persisted) {
-            throw Object.assign(new Error('item not found'), { status: 44 });
-          }
-          return `${persisted}\n`;
-        }
-        persisted = input?.trim();
-        return '';
+      readSecret: () => {
+        findCalls += 1;
+        if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
+        return `${persisted}\n`;
+      },
+      writeSecret: (service, secret) => {
+        writes.push({ service, secret });
+        persisted = secret;
       },
     });
 
     expect(loaded).toEqual(generated);
-    expect(calls[1]).toEqual({
-      args: [
-        'add-generic-password',
-        '-s',
-        'jericho-core',
-        '-a',
-        'test-user',
-        '-w',
-      ],
-      input: `${generated.toString('base64')}\n`,
-    });
-    expect(calls[1].args).not.toContain(generated.toString('base64'));
+    expect(writes).toEqual([{ service: 'jericho-core', secret: generated.toString('base64') }]);
     expect(findCalls).toBe(2);
   });
 
   it('returns the persisted winner when another process wins key initialization', () => {
     const generated = Buffer.alloc(32, 37);
     const winner = Buffer.alloc(32, 43);
-    const calls: Array<{ args: readonly string[]; input?: string }> = [];
     let findCalls = 0;
 
     const loaded = loadMasterKey({
@@ -190,27 +173,18 @@ describe('loadMasterKey', () => {
       platform: 'darwin',
       username: 'test-user',
       generateKey: () => Buffer.from(generated),
-      runSecurityCommand: (args, input) => {
-        calls.push({ args, input });
-        if (args[0] === 'find-generic-password') {
-          findCalls += 1;
-          if (findCalls === 1) {
-            throw Object.assign(new Error('item not found'), { status: 44 });
-          }
-          return `${winner.toString('base64')}\n`;
-        }
-        if (args.includes('-U')) {
-          return '';
-        }
+      readSecret: () => {
+        findCalls += 1;
+        if (findCalls === 1) throw Object.assign(new Error('item not found'), { status: 44 });
+        return `${winner.toString('base64')}\n`;
+      },
+      writeSecret: () => {
         throw Object.assign(new Error('duplicate item'), { status: 45 });
       },
     });
 
     expect(loaded).toEqual(winner);
     expect(findCalls).toBe(2);
-    expect(calls[1].args).not.toContain('-U');
-    expect(calls[1].args).not.toContain(generated.toString('base64'));
-    expect(calls[1].input).toBe(`${generated.toString('base64')}\n`);
   });
 
   it('fails closed with an actionable error off macOS when no key is configured', () => {

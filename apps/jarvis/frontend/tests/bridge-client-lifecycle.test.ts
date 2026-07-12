@@ -3,7 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SpeakerPlayback } from '../src/audio';
-import { BridgeClient, type BridgeClientDependencies } from '../src/bridge-client';
+import { BridgeClient, type BridgeClientDependencies, type BridgeEvents } from '../src/bridge-client';
 
 beforeEach(() => {
   vi.useFakeTimers();
@@ -190,6 +190,49 @@ describe('BridgeClient lifecycle', () => {
     expect(sentMessages(harness.socket)).toEqual([]);
   });
 
+  it('forwards only recognized guided test start signals', async () => {
+    const onGuidedTestStart = vi.fn();
+    const harness = createBridgeHarness({}, { onGuidedTestStart });
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'guided_test_start', test: 'unknown' });
+    harness.socket.message({ type: 'guided_test_start', test: 'isabella' });
+
+    expect(onGuidedTestStart).toHaveBeenCalledOnce();
+    expect(onGuidedTestStart).toHaveBeenCalledWith('isabella', undefined);
+  });
+
+  it('enters listening directly when the server resumes a guided test', async () => {
+    const onStatus = vi.fn();
+    const onGuidedTestResume = vi.fn();
+    const harness = createBridgeHarness({}, { onStatus, onGuidedTestResume });
+    await harness.client.start();
+    await harness.socket.open();
+    harness.client.wake();
+
+    harness.socket.message({ type: 'guided_test_resume', test: 'isabella' });
+    harness.socket.message({ type: 'greeting_complete' });
+
+    expect(onStatus).toHaveBeenCalledWith('guided-test-listening');
+    expect(onStatus).toHaveBeenCalledWith('listening');
+    expect(onGuidedTestResume).toHaveBeenCalledWith('isabella', undefined);
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it('forwards only recognized guided test end signals', async () => {
+    const onGuidedTestEnd = vi.fn();
+    const harness = createBridgeHarness({}, { onGuidedTestEnd });
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'guided_test_end', test: 'unknown' });
+    harness.socket.message({ type: 'guided_test_end', test: 'isabella' });
+
+    expect(onGuidedTestEnd).toHaveBeenCalledOnce();
+    expect(onGuidedTestEnd).toHaveBeenCalledWith('isabella');
+  });
+
   it('bounds an active turn and tells the server when the client times out', async () => {
     const harness = createBridgeHarness({ activeTurnMs: 1_000 });
     await harness.client.start();
@@ -295,7 +338,7 @@ interface BridgeHarnessOptions {
   clapDuringStart?: boolean;
 }
 
-function createBridgeHarness(options: BridgeHarnessOptions = {}) {
+function createBridgeHarness(options: BridgeHarnessOptions = {}, events: BridgeEvents = {}) {
   let onChunk: ((data: string) => void) | undefined;
   let onClap: (() => void) | undefined;
   const mic = {
@@ -330,7 +373,7 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}) {
     },
     activeTurnMs: options.activeTurnMs,
   };
-  const client = new BridgeClient({}, dependencies);
+  const client = new BridgeClient(events, dependencies);
 
   return {
     client,

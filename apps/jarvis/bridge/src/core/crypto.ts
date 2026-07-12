@@ -5,8 +5,8 @@ import {
   hkdfSync,
   randomBytes,
 } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { userInfo } from 'node:os';
+import { readKeychainSecret, writeKeychainSecret } from '../platform/keychain.js';
 
 const FORMAT_VERSION = 2;
 const IV_BYTES = 12;
@@ -16,7 +16,8 @@ export interface MasterKeyOptions {
   environment?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   username?: string;
-  runSecurityCommand?: (args: readonly string[], input?: string) => string;
+  readSecret?: (service: string) => string;
+  writeSecret?: (service: string, secret: string) => void;
   generateKey?: () => Buffer;
 }
 
@@ -33,16 +34,10 @@ export function loadMasterKey(options: MasterKeyOptions = {}): Buffer {
     );
   }
   const username = options.username ?? userInfo().username;
-  const runSecurityCommand = options.runSecurityCommand ?? defaultSecurityCommand;
+  const readSecret = options.readSecret ?? ((service) => readKeychainSecret(service, { username }));
+  const writeSecret = options.writeSecret ?? ((service, secret) => writeKeychainSecret(service, secret, { username }));
   const readPersistedKey = () => {
-    const encoded = runSecurityCommand([
-      'find-generic-password',
-      '-s',
-      'jericho-core',
-      '-a',
-      username,
-      '-w',
-    ]);
+    const encoded = readSecret('jericho-core');
     return decodeMasterKey(encoded, 'macOS Keychain item jericho-core');
   };
   try {
@@ -61,17 +56,7 @@ export function loadMasterKey(options: MasterKeyOptions = {}): Buffer {
   }
   const encoded = key.toString('base64');
   try {
-    runSecurityCommand(
-      [
-        'add-generic-password',
-        '-s',
-        'jericho-core',
-        '-a',
-        username,
-        '-w',
-      ],
-      `${encoded}\n`,
-    );
+    writeSecret('jericho-core', encoded);
   } catch (cause) {
     if (!isDuplicateKeychainItem(cause)) {
       throw new Error('Unable to persist Jericho master key in macOS Keychain', {
@@ -122,14 +107,6 @@ function decodeMasterKey(value: string, source: string): Buffer {
     throw new Error(`${source} must be valid base64 encoding exactly 32 bytes`);
   }
   return decoded;
-}
-
-function defaultSecurityCommand(args: readonly string[], input?: string): string {
-  return execFileSync('security', [...args], {
-    encoding: 'utf8',
-    input,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
 }
 
 export class CoreCrypto {

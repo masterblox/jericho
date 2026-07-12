@@ -125,6 +125,7 @@ describe('runtime config', () => {
     expect(defaults.systemInstruction).not.toMatch(
       /stay completely silent unless|unless Carlos says|say(?:s)? “?JARVIS/i,
     );
+    expect(defaults.systemInstruction).not.toMatch(/Isabella|Who is Isabella|Test Isabella/i);
     expect(() => loadConfig({
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',
@@ -228,8 +229,17 @@ describe('production Core composition', () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(health.status).toBe(200);
-    const healthBody = await health.json() as { ok: boolean; connectors: unknown[] };
+    const healthBody = await health.json() as {
+      ok: boolean; connectors: unknown[];
+      startup: { database: string; initializedNewCore: boolean };
+      vault: { ready: boolean };
+    };
     expect(healthBody.ok).toBe(true);
+    expect(healthBody.startup).toEqual({
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false,
+    });
+    expect(JSON.stringify(healthBody.startup)).not.toContain('/Users/');
+    expect(healthBody.vault).toEqual({ ready: true });
     expect(healthBody.connectors).toEqual(expect.arrayContaining([expect.objectContaining({
         connectorId: 'hermes-execution',
         status: ConnectorHealthStatus.Unavailable,
@@ -244,19 +254,19 @@ describe('production Core composition', () => {
 
 describe('local API credential', () => {
   it('prefers an explicit environment token without consulting Keychain', () => {
-    const runSecurityCommand = vi.fn();
+    const readSecret = vi.fn();
 
     expect(loadApiToken({
       environment: { JERICHO_API_TOKEN: TOKEN },
       platform: 'darwin',
-      runSecurityCommand,
+      readSecret,
     })).toBe(TOKEN);
-    expect(runSecurityCommand).not.toHaveBeenCalled();
+    expect(readSecret).not.toHaveBeenCalled();
   });
 
   it('generates a missing macOS Keychain token and passes it only over stdin', () => {
     const generated = Buffer.alloc(32, 89).toString('base64url');
-    const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    const writes: Array<{ service: string; secret: string }> = [];
     let persisted: string | undefined;
 
     const token = loadApiToken({
@@ -264,39 +274,57 @@ describe('local API credential', () => {
       platform: 'darwin',
       username: 'test-user',
       generateToken: () => generated,
-      runSecurityCommand: (args, input) => {
-        calls.push({ args, input });
-        if (args[0] === 'find-generic-password') {
-          if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
-          return `${persisted}\n`;
-        }
-        persisted = input?.trim();
-        return '';
+      readSecret: () => {
+        if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
+        return `${persisted}\n`;
+      },
+      writeSecret: (service, secret) => {
+        writes.push({ service, secret });
+        persisted = secret;
       },
     });
 
     expect(token).toBe(generated);
-    expect(calls[1]).toEqual({
-      args: [
-        'add-generic-password',
-        '-s',
-        'jericho-core-api',
-        '-a',
-        'test-user',
-        '-w',
-      ],
-      input: `${generated}\n`,
-    });
-    expect(calls[1].args).not.toContain(generated);
+    expect(writes).toEqual([{ service: 'jericho-core-api', secret: generated }]);
   });
 
   it('fails closed off macOS when no token is configured', () => {
     expect(() => loadApiToken({ environment: {}, platform: 'linux' }))
       .toThrow('Set JERICHO_API_TOKEN');
   });
+
+  it.each(['', 'space token', 'line\nbreak', '\0control'])(
+    'rejects malformed API tokens read from Keychain: %j', (value) => {
+      expect(() => loadApiToken({
+        environment: {}, platform: 'darwin', readSecret: () => value,
+      })).toThrow(/Keychain|token/i);
+    },
+  );
 });
 
 describe('authenticated local Core HTTP/SSE server', () => {
+  it('returns only home-redacted archive recovery status', async () => {
+    const runtime = await startServer({ startupStatus: {
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '~/.jericho/recovery/2026-07-12T00-00-00Z' },
+    }, vaultReady: true });
+    const body = await (await api(runtime.url, '/api/v1/health')).json() as Record<string, unknown>;
+    expect(body).toMatchObject({ startup: {
+      initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '~/.jericho/recovery/2026-07-12T00-00-00Z' },
+    }, vault: { ready: true } });
+    expect(JSON.stringify(body)).not.toContain('/Users/');
+  });
+
+  it('redacts an unexpected archive location at the HTTP boundary', async () => {
+    const runtime = await startServer({ startupStatus: {
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: true,
+      recovery: { outcome: 'archived_not_migrated', archive: '/Users/carlos/private/core' },
+    } as unknown as import('../src/core/recovery.js').CoreStartupStatus });
+    const text = await (await api(runtime.url, '/api/v1/health')).text();
+    expect(text).toContain('~/.jericho/recovery/REDACTED');
+    expect(text).not.toContain('/Users/carlos');
+  });
   it('enforces bearer, Host, Origin, security headers, and reports optional voice unavailable', async () => {
     const runtime = await startServer();
     expect((await fetch(`${runtime.url}/api/v1/health`)).status).toBe(401);
@@ -731,6 +759,8 @@ interface StartOverrides {
   clock?: () => string;
   retention?: { retainMission: ReturnType<typeof vi.fn> };
   reflection?: { runOnce: ReturnType<typeof vi.fn> };
+  startupStatus?: import('../src/core/recovery.js').CoreStartupStatus;
+  vaultReady?: boolean;
 }
 
 function localEvent(index: number): EventEnvelope {
