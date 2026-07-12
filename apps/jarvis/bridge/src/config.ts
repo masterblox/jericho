@@ -5,9 +5,13 @@ import { userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MutationClass, type RepositoryGrant } from '@jericho/shared';
+import { AgentLane, MutationClass, type RepositoryGrant } from '@jericho/shared';
 
 import type { PersonaMode } from './personas.js';
+import {
+  parseFleetDispatchMode,
+  parseFleetTelegramRecipients,
+} from './fleet/lane-registry.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(directory, '../../.env') });
@@ -55,6 +59,9 @@ export interface JerichoConfig {
   hermesBranch?: string;
   hermesPollIntervalMs: number;
   hermesMaxWaitMs: number;
+  fleetTelegramRecipients: Partial<Record<AgentLane, string>>;
+  fleetBridgeRoot?: string;
+  fleetDispatchMode: 'hybrid' | 'telegram_only' | 'durable_only';
   missionRepositoryGrants: RepositoryGrant[];
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
@@ -258,6 +265,13 @@ export function loadConfig(
     ...(hermesBranch ? { hermesBranch } : {}),
     hermesPollIntervalMs,
     hermesMaxWaitMs,
+    fleetTelegramRecipients: parseFleetTelegramRecipients(
+      environment.JERICHO_FLEET_TELEGRAM_RECIPIENTS,
+    ),
+    ...(optionalString(environment.JERICHO_FLEET_BRIDGE_ROOT)
+      ? { fleetBridgeRoot: optionalString(environment.JERICHO_FLEET_BRIDGE_ROOT) }
+      : {}),
+    fleetDispatchMode: parseFleetDispatchMode(environment.JERICHO_FLEET_DISPATCH_MODE),
     missionRepositoryGrants: parseRepositoryGrants(
       environment.JERICHO_MISSION_REPOSITORY_GRANTS,
     ),

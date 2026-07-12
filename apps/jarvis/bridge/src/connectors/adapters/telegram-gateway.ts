@@ -198,6 +198,7 @@ export class TelegramGatewayAdapter implements CaptureConnector {
 
 const TELEGRAM_BINDING = {
   connectorId: 'telegram',
+  action: 'send_message',
   system: 'telegram',
   channel: 'telegram',
   tool: 'telegram.send',

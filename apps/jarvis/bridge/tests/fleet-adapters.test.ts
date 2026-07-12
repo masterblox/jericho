@@ -30,6 +30,18 @@ describe('Paperclip execution projection', () => {
     expect(createIssue).not.toHaveBeenCalled();
   });
 
+  it('creates issues with [lane] Paperclip title tags', async () => {
+    const createIssue = vi.fn().mockResolvedValue({ id: 'issue-2', status: 'open', metadata: {} });
+    await new PaperclipExecutor({
+      findByIdempotencyKey: vi.fn().mockResolvedValue(undefined),
+      createIssue,
+    }, () => NOW).reconcile(mission(), task(), assignment());
+    expect(createIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ title: '[DevOps] Bounded task' }),
+      expect.any(AbortSignal),
+    );
+  });
+
   it('pauses safely when Paperclip is unavailable', async () => {
     const result = await new PaperclipExecutor({
       findByIdempotencyKey: vi.fn().mockRejectedValue(new Error('timeout')),
@@ -83,7 +95,7 @@ function mission(): MissionPlan {
 }
 
 function task(): MissionTask {
-  return { id: 'task-1', missionId: 'mission-1', title: 'Bounded task' } as MissionTask;
+  return { id: 'task-1', missionId: 'mission-1', title: 'Bounded task', lane: 'dev' } as MissionTask;
 }
 
 function assignment(): Assignment {

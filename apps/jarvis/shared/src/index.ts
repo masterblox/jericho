@@ -1260,6 +1260,20 @@ export interface PaperclipReconciliation {
   error?: string;
 }
 
+/** Projection of an approved fleet wake / bridge handoff for the sphere. */
+export interface FleetDispatchProjection {
+  missionId: string;
+  missionTaskId: string;
+  assignmentId: string;
+  lane: AgentLane;
+  dispatchMode: string;
+  recipient?: string;
+  receiptId?: string;
+  receiptStatus?: ReceiptStatus;
+  paperclipIssueId?: string;
+  externalId?: string;
+}
+
 export interface CommandCenterKnowledge {
   packages: KnowledgePackage[];
   projections: KnowledgeProjection[];
@@ -1267,6 +1281,7 @@ export interface CommandCenterKnowledge {
   indexes: IndexVersion[];
   evaluations: EvaluationRun[];
   paperclip: PaperclipReconciliation[];
+  fleetDispatches: FleetDispatchProjection[];
 }
 
 export interface CommandCenterSnapshot {

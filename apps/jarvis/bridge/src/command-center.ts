@@ -28,6 +28,7 @@ import {
   type CaptureFailure,
   type Entity,
   type EventEnvelope,
+  type FleetDispatchProjection,
   type IntentEnvelope,
   type MissionPlan,
   type MissionTask,
@@ -91,6 +92,7 @@ export function buildCommandCenterSnapshot(
     indexes: fleetKnowledge.listIndexes(),
     evaluations: fleetKnowledge.listEvaluations(),
     paperclip: fleetKnowledge.listPaperclip(),
+    fleetDispatches: projectFleetDispatches(missions, missionTasks, assignments, receipts),
   };
 
   const tasks = rankCards(
@@ -1079,6 +1081,62 @@ function isTerminal(status: LifecycleStatus | undefined): boolean {
     status === LifecycleStatus.Cancelled ||
     status === LifecycleStatus.Rejected ||
     status === LifecycleStatus.Archived;
+}
+
+function projectFleetDispatches(
+  missions: MissionPlan[],
+  missionTasks: Map<string, MissionTask[]>,
+  assignments: Assignment[],
+  receipts: ActionReceipt[],
+): FleetDispatchProjection[] {
+  const receiptByAssignment = new Map(
+    receipts
+      .filter((receipt) => receipt.assignmentId)
+      .map((receipt) => [receipt.assignmentId!, receipt]),
+  );
+  const projections: FleetDispatchProjection[] = [];
+  for (const mission of missions) {
+    const tasks = missionTasks.get(mission.id) ?? [];
+    const graphFallback = tasks.length ? tasks : mission.taskGraph.map((task) => ({
+      ...task,
+      missionId: mission.id,
+      input: task.input,
+      externalAction: task.externalAction,
+      lane: task.lane,
+    }));
+    for (const task of graphFallback) {
+      const action = task.externalAction;
+      if (!action) continue;
+      if (action.connectorId !== 'telegram' && action.connectorId !== 'fleet-bridge') continue;
+      const assignment = assignments.find(
+        (candidate) => candidate.missionId === mission.id && candidate.missionTaskId === task.id,
+      );
+      const receipt = assignment ? receiptByAssignment.get(assignment.id) : undefined;
+      const input = 'input' in task && task.input && typeof task.input === 'object'
+        ? task.input as Record<string, unknown>
+        : {};
+      const dispatchMode = typeof input.dispatchMode === 'string'
+        ? input.dispatchMode
+        : action.connectorId === 'telegram' ? 'telegram_wake' : 'hybrid_durable';
+      const result = receipt?.result && typeof receipt.result === 'object' && !Array.isArray(receipt.result)
+        ? receipt.result as Record<string, unknown>
+        : undefined;
+      projections.push({
+        missionId: mission.id,
+        missionTaskId: task.id,
+        assignmentId: assignment?.id ?? task.id,
+        lane: task.lane,
+        dispatchMode,
+        ...(action.recipient ? { recipient: action.recipient } : {}),
+        ...(receipt ? { receiptId: receipt.id, receiptStatus: receipt.status } : {}),
+        ...(typeof result?.paperclipIssueId === 'string'
+          ? { paperclipIssueId: result.paperclipIssueId }
+          : {}),
+        ...(receipt?.externalId ? { externalId: receipt.externalId } : {}),
+      });
+    }
+  }
+  return projections;
 }
 
 function unique(values: string[]): string[] {

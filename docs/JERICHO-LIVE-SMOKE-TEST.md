@@ -234,8 +234,9 @@ Do not run this section against a real contact. It requires a test gateway and a
 synthetic recipient controlled by Carlos.
 
 - Construct the mission through a test/integration planner that emits an
-  explicit Telegram or WhatsApp `send_message` task. The current generic capture
-  planner does not infer external sends.
+  explicit Telegram or WhatsApp `send_message` task, or configure fleet
+  recipients (`JERICHO_FLEET_TELEGRAM_RECIPIENTS`) so the default Project planner
+  emits a Telegram wake for interactive lane work.
 - Confirm the approval surface displays the exact connector, system, recipient,
   message, tool, credential reference, data scope, mutation class, idempotency
   key, and receipt requirement.
@@ -252,7 +253,38 @@ The implemented receipt proves a destination-bound gateway acknowledgement. It
 does not prove that a human read the message, and it must not be presented as a
 read receipt.
 
-## 8. Hermes v1 operator prerequisite
+## 8. Fleet command (sphere → Hermes lanes)
+
+Optional. Requires sandbox Telegram gateway credentials and an explicit
+recipient allowlist. Do not point at production bots until Carlos approves the
+exact recipient map.
+
+Prerequisites:
+
+```bash
+JERICHO_TELEGRAM_GATEWAY_URL=...
+JERICHO_TELEGRAM_GATEWAY_TOKEN=...
+JERICHO_FLEET_TELEGRAM_RECIPIENTS={"dev":"<sandbox-chat-id>"}
+JERICHO_FLEET_BRIDGE_ROOT=/tmp/jericho-fleet-bridge-smoke
+JERICHO_FLEET_DISPATCH_MODE=hybrid
+```
+
+Verify:
+
+1. A capture that asks DEV for a quick status plans a mission whose lane task
+   has `externalAction.connectorId: "telegram"` and wake text containing
+   `[Jericho Core → DEV]`.
+2. Approving that exact plan sends one gateway message; command-center
+   `knowledge.fleetDispatches` shows `dispatchMode: telegram_wake` plus a receipt.
+3. A durable ask with `JERICHO_FLEET_BRIDGE_ROOT` writes
+   `outbox/jericho-handoffs/*.md` and, when Paperclip is configured, creates an
+   issue titled with the `[DevOps]` (or lane) tag.
+4. A file under `outbox/jericho-replies/` is ingested as `fleet.bridge_reply`.
+
+This path is workspace-agnostic: skills remain on the Hermes VPS; Core only
+routes and receipts.
+
+## 9. Hermes v1 operator prerequisite
 
 The installed Hermes operator on 2026-07-11 is legacy. It injects a prompt,
 writes historical state, cannot enforce stop, and supplies neither metered cost

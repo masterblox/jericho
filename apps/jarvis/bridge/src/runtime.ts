@@ -56,15 +56,16 @@ import {
   HttpVaultGatewayClient,
   type VaultGatewayPort,
 } from './vault/vault-gateway-client.js';
+import { createFleetLaneRegistry } from './fleet/lane-registry.js';
+import { BridgeHandoffExecutor, captureBridgeReplies } from './fleet/bridge-handoff-executor.js';
+import type { PaperclipPort } from './connectors/paperclip-executor.js';
 
 export interface ConnectorRuntime {
   registry: CaptureConnectorRegistry;
   supervisor: ConnectorSupervisor;
   descriptors: ConnectorDescriptor[];
-  actionAdapters: Readonly<{
-    telegram: TelegramGatewayAdapter;
-    whatsapp: WhatsAppGatewayAdapter;
-  }>;
+  actionAdapters: ConnectorActionAdapters;
+  fleetRegistry?: import('./fleet/lane-registry.js').FleetLaneRegistry;
   obsidianSearch?: ObsidianConnector;
   vaultGateway?: VaultGatewayPort;
   start(): Promise<void>;
@@ -75,6 +76,7 @@ export interface ConnectorRuntimeOptions {
   workerId?: string;
   fetch?: typeof globalThis.fetch;
   intake?: ConnectorIntakePort;
+  paperclipPort?: PaperclipPort;
 }
 
 export function createConnectorRuntime(
@@ -93,6 +95,17 @@ export function createConnectorRuntime(
     gatewayToken: config.whatsappGatewayToken,
     transport: new HttpWhatsAppGatewayTransport(fetchImplementation),
   });
+  const fleetRegistry = createFleetLaneRegistry({
+    telegramRecipients: config.fleetTelegramRecipients,
+    ...(config.fleetBridgeRoot ? { bridgeRoot: config.fleetBridgeRoot } : {}),
+    dispatchMode: config.fleetDispatchMode,
+  });
+  const fleetBridge = fleetRegistry.hasBridge()
+    ? new BridgeHandoffExecutor({
+      registry: fleetRegistry,
+      ...(options.paperclipPort ? { paperclip: options.paperclipPort } : {}),
+    })
+    : undefined;
   const connectors: CaptureConnector[] = [
     telegram,
     whatsapp,
@@ -143,19 +156,45 @@ export function createConnectorRuntime(
     maxPages: config.connectorMaxPages,
   });
   const descriptors = registry.list().map(({ descriptor }) => structuredClone(descriptor));
+  const actionAdapters: ConnectorActionAdapters = Object.freeze({
+    telegram,
+    whatsapp,
+    ...(fleetBridge ? { 'fleet-bridge': fleetBridge } : {}),
+  });
+  const bridgeRoot = fleetRegistry.bridgeRoot;
   const scheduler = new ConnectorPollingScheduler(supervisor, descriptors, {
     pollIntervalMs: config.connectorPollIntervalMs,
     maxBackoffMs: Math.max(config.connectorPollIntervalMs, config.connectorPollIntervalMs * 8),
   });
+  let bridgeReplyTimer: ReturnType<typeof setInterval> | undefined;
   return {
     registry,
     supervisor,
     descriptors,
-    actionAdapters: Object.freeze({ telegram, whatsapp }),
+    actionAdapters,
+    fleetRegistry,
     ...(obsidian ? { obsidianSearch: obsidian } : {}),
     ...(vaultGateway ? { vaultGateway } : {}),
-    start: () => scheduler.start(),
-    stop: () => scheduler.stop(),
+    start: async () => {
+      if (bridgeRoot) {
+        bridgeReplyTimer = setInterval(() => {
+          try {
+            captureBridgeReplies({ bridgeRoot, store });
+          } catch {
+            // Fail closed on individual poll; next tick retries.
+          }
+        }, config.connectorPollIntervalMs);
+        bridgeReplyTimer.unref?.();
+      }
+      await scheduler.start();
+    },
+    stop: async () => {
+      if (bridgeReplyTimer) {
+        clearInterval(bridgeReplyTimer);
+        bridgeReplyTimer = undefined;
+      }
+      await scheduler.stop();
+    },
   };
 }
 

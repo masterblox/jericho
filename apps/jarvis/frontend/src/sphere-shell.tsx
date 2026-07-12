@@ -217,6 +217,7 @@ function projectLiveData(
       receiptCount: outcome.receiptIds.length,
     })),
     paperclip: snapshot?.knowledge?.paperclip ?? [],
+    fleetDispatches: snapshot?.knowledge?.fleetDispatches ?? [],
     fleetStages: snapshot ? projectFleetStages(snapshot) : emptyFleetStages(),
   };
 }

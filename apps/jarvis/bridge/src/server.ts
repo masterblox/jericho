@@ -42,6 +42,7 @@ import {
 import { buildCommandCenterSnapshot } from './command-center.js';
 import { loadConfig } from './config.js';
 import { PaperclipFleetClient, type FleetPort } from './fleet/paperclip-client.js';
+import { createFleetLaneRegistry } from './fleet/lane-registry.js';
 import {
   EventConflictError,
   CheckpointDecisionConflictError,
@@ -1953,12 +1954,28 @@ function contentType(path: string): string {
 async function main(): Promise<void> {
   const config = loadConfig();
   const store = new JerichoStore();
+  const paperclipPort = config.paperclipUrl && config.paperclipApiKey && config.paperclipCompanyId
+    ? new HttpPaperclipPort({
+      url: config.paperclipUrl,
+      apiKey: config.paperclipApiKey,
+      companyId: config.paperclipCompanyId,
+    })
+    : undefined;
+  const fleetRegistry = createFleetLaneRegistry({
+    telegramRecipients: config.fleetTelegramRecipients,
+    ...(config.fleetBridgeRoot ? { bridgeRoot: config.fleetBridgeRoot } : {}),
+    dispatchMode: config.fleetDispatchMode,
+  });
   const intake = new IntakeProcessor({
     store,
     repositoryGrants: config.missionRepositoryGrants,
+    fleetRegistry,
   });
   intake.recover();
-  const connectors = createConnectorRuntime(config, store, { intake });
+  const connectors = createConnectorRuntime(config, store, {
+    intake,
+    ...(paperclipPort ? { paperclipPort } : {}),
+  });
   const knowledge = new KnowledgeRuntime({
     store,
     reflectionIntervalMs: config.reflectionIntervalMs,
@@ -1972,12 +1989,8 @@ async function main(): Promise<void> {
     connectorActions: connectors.actionAdapters,
   });
   const retrieval = new FederatedRetrievalService(store, connectors.vaultGateway);
-  const paperclip = config.paperclipUrl && config.paperclipApiKey && config.paperclipCompanyId
-    ? new PaperclipExecutor(new HttpPaperclipPort({
-      url: config.paperclipUrl,
-      apiKey: config.paperclipApiKey,
-      companyId: config.paperclipCompanyId,
-    }))
+  const paperclip = paperclipPort
+    ? new PaperclipExecutor(paperclipPort)
     : undefined;
   const obsidianOpen = config.obsidianVaultPath
     ? new ObsidianNoteOpener({ vaultPath: config.obsidianVaultPath })

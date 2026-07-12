@@ -1,12 +1,8 @@
 import { createHash } from 'node:crypto';
 
-import {
-  LifecycleStatus,
-  type Assignment,
-  type MissionPlan,
-  type MissionTask,
-  type PaperclipReconciliation,
-} from '@jericho/shared';
+import { LifecycleStatus, type Assignment, type MissionPlan, type MissionTask, type PaperclipReconciliation } from '@jericho/shared';
+
+import { paperclipTitleForLane } from '../fleet/lane-registry.js';
 
 export interface PaperclipIssue {
   id: string;
@@ -94,7 +90,7 @@ export class PaperclipExecutor {
     try {
       const existing = await this.port.findByIdempotencyKey(idempotencyKey, signal);
       const issue = existing ?? await this.port.createIssue({
-        title: task.title,
+        title: paperclipTitleForLane(task.lane, task.title),
         description: `Bounded Jericho assignment ${assignment.id}`,
         idempotencyKey,
         metadata: {
@@ -103,6 +99,7 @@ export class PaperclipExecutor {
           assignmentId: assignment.id,
           planHash: mission.planHash,
           planVersion: mission.version,
+          lane: task.lane,
         },
       }, signal);
       return {

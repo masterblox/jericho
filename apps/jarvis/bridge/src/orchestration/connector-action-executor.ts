@@ -57,6 +57,8 @@ export type ConnectorActionAdapters = Readonly<Record<string, ConnectorActionAda
 
 export interface ApprovedConnectorBinding {
   connectorId: string;
+  /** Exact approved action verb (e.g. send_message, write_handoff). */
+  action?: string;
   system: string;
   channel: string;
   tool: string;
@@ -96,7 +98,7 @@ export function validateApprovedConnectorSend(
     assignment.missionTaskId !== task.id ||
     canonicalJson(action) !== canonicalJson(approvedAction) ||
     action.connectorId !== expected.connectorId ||
-    action.action !== 'send_message' ||
+    action.action !== (expected.action ?? 'send_message') ||
     action.system !== expected.system ||
     action.channel !== expected.channel ||
     action.tool !== expected.tool ||
@@ -160,7 +162,7 @@ export function appendConnectorDeliveryEvent(
       assignmentId: input.assignment.id,
       receiptId: input.receipt.id,
       connectorId: input.connectorId,
-      action: 'send_message',
+      action: input.receipt.action,
       destination: input.recipient,
       idempotencyKeyHash: sha256(input.receipt.idempotencyKey),
       textHash: sha256(input.text),

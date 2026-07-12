@@ -274,6 +274,7 @@ export class WhatsAppGatewayAdapter implements CaptureConnector {
 
 const WHATSAPP_BINDING = {
   connectorId: 'whatsapp',
+  action: 'send_message',
   system: 'whatsapp',
   channel: 'whatsapp',
   tool: 'whatsapp.send',

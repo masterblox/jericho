@@ -28,6 +28,14 @@ import {
 } from '@jericho/shared';
 
 import type { JerichoStore } from '../core/store.js';
+import type { FleetLaneRegistry } from '../fleet/lane-registry.js';
+import { decideFleetDispatch } from '../fleet/dispatch-router.js';
+import {
+  fleetBridgeExternalAction,
+  telegramWakeExternalAction,
+} from '../fleet/bridge-handoff-executor.js';
+import { composeFleetWakeText } from '../fleet/wake-composer.js';
+import { fleetMissionPermissions, mergeMissionPermissions } from '../fleet/fleet-permissions.js';
 import { CapabilityRegistry } from './capability-registry.js';
 import { classifyEvent } from './classifier.js';
 import { createMissionPlan } from './planner.js';
@@ -64,6 +72,7 @@ export interface IntakeProcessorOptions {
   router?: typeof routeIntent;
   missionPermissions?: MissionPermissions;
   repositoryGrants?: RepositoryGrant[];
+  fleetRegistry?: FleetLaneRegistry;
 }
 
 export interface IntakeProcessingResult {
@@ -96,31 +105,44 @@ export class IntakeProcessor {
   readonly #missionPermissions: MissionPermissions;
   readonly #baseMissionPermissions: MissionPermissions;
   readonly #repositoryGrants: ReadonlyMap<string, RepositoryGrant>;
+  readonly #fleetRegistry?: FleetLaneRegistry;
 
   constructor(options: IntakeProcessorOptions) {
     this.#store = options.store;
     this.#classifier = options.classifier ?? classifyEvent;
     this.#router = options.router ?? routeIntent;
+    this.#fleetRegistry = options.fleetRegistry;
     const configuredPermissions = structuredClone(options.missionPermissions ?? safePermissions());
+    const withFleet = options.fleetRegistry
+      ? mergeMissionPermissions(configuredPermissions, fleetMissionPermissions(options.fleetRegistry))
+      : configuredPermissions;
     const grants = mergeRepositoryGrants(
-      configuredPermissions.allowedRepositories,
+      withFleet.allowedRepositories,
       options.repositoryGrants ?? [],
     );
     this.#repositoryGrants = new Map(grants.map((grant) => [grant.repository, grant]));
     this.#missionPermissions = {
-      ...configuredPermissions,
+      ...withFleet,
       allowedRepositories: structuredClone(grants),
       allowedMutationClasses: uniqueMutationClasses([
-        ...configuredPermissions.allowedMutationClasses,
+        ...withFleet.allowedMutationClasses,
         ...grants.flatMap((grant) => grant.mutationClasses),
       ]),
     };
+    const baseMutations: MutationClass[] = withFleet.allowedMutationClasses.includes(MutationClass.ReadOnly)
+      ? [MutationClass.ReadOnly]
+      : [];
+    if (
+      (withFleet.allowedTools.includes('telegram.send') ||
+        withFleet.allowedTools.includes('fleet.bridge.write')) &&
+      withFleet.allowedMutationClasses.includes(MutationClass.Reversible)
+    ) {
+      baseMutations.push(MutationClass.Reversible);
+    }
     this.#baseMissionPermissions = {
-      ...structuredClone(configuredPermissions),
+      ...structuredClone(withFleet),
       allowedRepositories: [],
-      allowedMutationClasses: configuredPermissions.allowedMutationClasses.includes(MutationClass.ReadOnly)
-        ? [MutationClass.ReadOnly]
-        : [],
+      allowedMutationClasses: uniqueMutationClasses(baseMutations),
     };
     this.#seedBuiltInCapabilities();
   }
@@ -316,6 +338,8 @@ export class IntakeProcessor {
       intent,
       missionId,
       permissions,
+      this.#fleetRegistry,
+      (lane) => this.#capabilityId(lane),
     );
     return createMissionPlan(
       plan,
@@ -326,7 +350,7 @@ export class IntakeProcessor {
 
   #seedBuiltInCapabilities(): void {
     for (const lane of Object.values(AgentLane)) {
-      const id = BUILT_IN_CAPABILITY_IDS[lane];
+      const id = this.#capabilityId(lane);
       const existing = this.#store.getAgentCapability(id);
       if (existing) {
         assertBuiltInCompatible(existing, lane, this.#missionPermissions);
@@ -336,6 +360,12 @@ export class IntakeProcessor {
         builtInCapability(id, lane, this.#missionPermissions),
       );
     }
+  }
+
+  #capabilityId(lane: AgentLane): string {
+    return this.#fleetRegistry
+      ? `builtin.${lane}.fleet.v2`
+      : BUILT_IN_CAPABILITY_IDS[lane];
   }
 
   #eventForMission(mission: MissionPlan): EventEnvelope | undefined {
@@ -448,6 +478,8 @@ function defaultMissionPlan(
   intent: IntentEnvelope,
   missionId: string,
   missionPermissions: MissionPermissions,
+  fleetRegistry?: FleetLaneRegistry,
+  capabilityId: (lane: AgentLane) => string = (lane) => BUILT_IN_CAPABILITY_IDS[lane],
 ): Parameters<typeof createMissionPlan>[0] {
   const researchTaskId = deterministicId('mission-task', `${missionId}\0research`);
   const lane = routeIntent({
@@ -480,13 +512,60 @@ function defaultMissionPlan(
       mutationClasses: [],
     })),
   };
+  const objective = intent.expectedOutcome ?? intent.summary;
+  const fleetTask = fleetRegistry
+    ? buildFleetLaneTask({
+      lane,
+      laneTaskId,
+      researchTaskId,
+      missionId,
+      objective,
+      summary: intent.summary,
+      eventId: event.id,
+      eventEvidence,
+      permissions,
+      risk: intent.risk,
+      registry: fleetRegistry,
+      capabilityId: capabilityId(lane),
+    })
+    : undefined;
+  const laneTask: MissionTaskDefinition = fleetTask ?? {
+    id: laneTaskId,
+    kind: MissionTaskKind.Analyze,
+    title: `Prepare the bounded ${lane} result`,
+    sequence: 1,
+    lane,
+    selectedAgentId: builtInAgentId(lane),
+    capabilityIds: [capabilityId(lane)],
+    requiredActions: [laneAction(lane)],
+    requiredTools: [...permissions.allowedTools],
+    model: DEFAULT_MODEL,
+    maxTokens: 8_000,
+    writableScope: structuredClone(permissions),
+    dependsOn: [researchTaskId],
+    evidenceEventIds: eventEvidence,
+    expectedArtifact: {
+      type: `${lane}.bounded-result`,
+      description: 'A proposal or artifact constrained to the approved mission scope',
+      verification: ['Matches the approved objective and permissions'],
+      requiredEvidence: eventEvidence,
+    },
+    input: {
+      objective,
+      eventId: event.id,
+      researchTaskId,
+    },
+    estimatedCostMicroUsd: 1_000,
+    route: RouteType.Agent,
+    risk: intent.risk,
+  };
   return {
     id: missionId,
     seriesId: deterministicId('mission-series', intent.id),
     version: 1,
     intentId: intent.id,
     title: intent.summary,
-    objective: intent.expectedOutcome ?? intent.summary,
+    objective,
     route: RouteType.HumanApproval,
     risk: intent.risk,
     confidence: intent.confidence,
@@ -517,7 +596,7 @@ function defaultMissionPlan(
         sequence: 0,
         lane: AgentLane.Researcher,
         selectedAgentId: builtInAgentId(AgentLane.Researcher),
-        capabilityIds: [BUILT_IN_CAPABILITY_IDS[AgentLane.Researcher]],
+        capabilityIds: [capabilityId(AgentLane.Researcher)],
         requiredActions: [laneAction(AgentLane.Researcher)],
         requiredTools: [],
         model: DEFAULT_MODEL,
@@ -536,36 +615,7 @@ function defaultMissionPlan(
         route: RouteType.Agent,
         risk: intent.risk,
       },
-      {
-        id: laneTaskId,
-        kind: MissionTaskKind.Analyze,
-        title: `Prepare the bounded ${lane} result`,
-        sequence: 1,
-        lane,
-        selectedAgentId: builtInAgentId(lane),
-        capabilityIds: [BUILT_IN_CAPABILITY_IDS[lane]],
-        requiredActions: [laneAction(lane)],
-        requiredTools: [...permissions.allowedTools],
-        model: DEFAULT_MODEL,
-        maxTokens: 8_000,
-        writableScope: structuredClone(permissions),
-        dependsOn: [researchTaskId],
-        evidenceEventIds: eventEvidence,
-        expectedArtifact: {
-          type: `${lane}.bounded-result`,
-          description: 'A proposal or artifact constrained to the approved mission scope',
-          verification: ['Matches the approved objective and permissions'],
-          requiredEvidence: eventEvidence,
-        },
-        input: {
-          objective: intent.expectedOutcome ?? intent.summary,
-          eventId: event.id,
-          researchTaskId,
-        },
-        estimatedCostMicroUsd: 1_000,
-        route: RouteType.Agent,
-        risk: intent.risk,
-      },
+      laneTask,
     ],
     budget: {
       maxCostMicroUsd: 2_000,
@@ -577,7 +627,9 @@ function defaultMissionPlan(
     rollback: {
       strategy: 'Discard generated internal artifacts before any separately approved execution',
       steps: ['Cancel queued work', 'Retain the immutable capture and decision history'],
-      verification: 'No external action receipt exists for this planning mission',
+      verification: fleetTask
+        ? 'External fleet dispatch receipts must match the approved plan'
+        : 'No external action receipt exists for this planning mission',
     },
     escalationConditions: [
       EscalationReason.CostBudget,
@@ -588,8 +640,129 @@ function defaultMissionPlan(
       EscalationReason.ToolExpansion,
       EscalationReason.DestructiveMutation,
       EscalationReason.ProductionMutation,
+      EscalationReason.NewRecipient,
+      EscalationReason.ChannelExpansion,
     ],
     provenance,
+  };
+}
+
+function buildFleetLaneTask(input: {
+  lane: AgentLane;
+  laneTaskId: string;
+  researchTaskId: string;
+  missionId: string;
+  objective: string;
+  summary: string;
+  eventId: string;
+  eventEvidence: string[];
+  permissions: MissionPermissions;
+  risk: RiskLevel;
+  registry: FleetLaneRegistry;
+  capabilityId: string;
+}): MissionTaskDefinition | undefined {
+  const target = input.registry.target(input.lane);
+  if (!target) return undefined;
+  const decision = decideFleetDispatch(input.registry, {
+    lane: input.lane,
+    summary: input.summary,
+  });
+  const useTelegram =
+    decision.mode === 'telegram_wake' && Boolean(target.telegramRecipient);
+  const useBridge =
+    !useTelegram &&
+    (decision.mode === 'hybrid_durable' || decision.mode === 'bridge_handoff' || decision.mode === 'paperclip') &&
+    input.registry.hasBridge();
+
+  if (!useTelegram && !useBridge) return undefined;
+
+  const wakeText = composeFleetWakeText({
+    lane: input.lane,
+    laneLabel: target.label,
+    missionId: input.missionId,
+    assignmentId: input.laneTaskId,
+    planHash: digest({ missionId: input.missionId, lane: input.lane, objective: input.objective }),
+    objective: input.objective,
+  });
+
+  if (useTelegram && target.telegramRecipient) {
+    const recipient = target.telegramRecipient;
+    const idempotencyKey = deterministicId('fleet-wake', `${input.missionId}\0${input.lane}\0${recipient}`);
+    return {
+      id: input.laneTaskId,
+      kind: MissionTaskKind.Communicate,
+      title: `Wake ${target.label} via Telegram`,
+      sequence: 1,
+      lane: input.lane,
+      selectedAgentId: builtInAgentId(input.lane),
+      capabilityIds: [input.capabilityId],
+      requiredActions: ['send_message', laneAction(input.lane)],
+      requiredTools: ['telegram.send'],
+      model: DEFAULT_MODEL,
+      maxTokens: 8_000,
+      writableScope: structuredClone(input.permissions),
+      dependsOn: [input.researchTaskId],
+      evidenceEventIds: input.eventEvidence,
+      expectedArtifact: {
+        type: 'receipt',
+        description: `Telegram wake delivery to ${target.label}`,
+        verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+        requiredEvidence: ['destination-receipt'],
+      },
+      externalAction: telegramWakeExternalAction({ recipient, idempotencyKey }),
+      input: {
+        text: wakeText,
+        objective: input.objective,
+        eventId: input.eventId,
+        researchTaskId: input.researchTaskId,
+        dispatchMode: 'telegram_wake',
+        fleetLane: target.label,
+      },
+      estimatedCostMicroUsd: 1_000,
+      route: RouteType.Agent,
+      risk: input.risk,
+    };
+  }
+
+  const idempotencyKey = deterministicId('fleet-handoff', `${input.missionId}\0${input.lane}`);
+  return {
+    id: input.laneTaskId,
+    kind: MissionTaskKind.Communicate,
+    title: `Dispatch ${target.label} via bridge`,
+    sequence: 1,
+    lane: input.lane,
+    selectedAgentId: builtInAgentId(input.lane),
+    capabilityIds: [input.capabilityId],
+    requiredActions: ['write_handoff', laneAction(input.lane)],
+    requiredTools: ['fleet.bridge.write'],
+    model: DEFAULT_MODEL,
+    maxTokens: 8_000,
+    writableScope: structuredClone(input.permissions),
+    dependsOn: [input.researchTaskId],
+    evidenceEventIds: input.eventEvidence,
+    expectedArtifact: {
+      type: 'receipt',
+      description: `Bridge handoff for ${target.label}`,
+      verification: ['gateway-acknowledged', 'destination-matched', 'idempotency-bound'],
+      requiredEvidence: ['destination-receipt'],
+    },
+    externalAction: fleetBridgeExternalAction({
+      destination: 'fleet-bridge',
+      recipient: 'fleet-bridge',
+      idempotencyKey,
+    }),
+    input: {
+      text: wakeText,
+      objective: input.objective,
+      eventId: input.eventId,
+      researchTaskId: input.researchTaskId,
+      dispatchMode: decision.mode,
+      fleetLane: target.label,
+      paperclipTag: target.paperclipTag,
+    },
+    estimatedCostMicroUsd: 1_000,
+    route: RouteType.Agent,
+    risk: input.risk,
   };
 }
 
@@ -598,6 +771,13 @@ function builtInCapability(
   lane: AgentLane,
   permissions: MissionPermissions,
 ): AgentCapability {
+  const supportedActions = [laneAction(lane)];
+  if (permissions.allowedTools.includes('telegram.send')) {
+    supportedActions.push('send_message');
+  }
+  if (permissions.allowedTools.includes('fleet.bridge.write')) {
+    supportedActions.push('write_handoff');
+  }
   return {
     id,
     agentId: builtInAgentId(lane),
@@ -606,7 +786,7 @@ function builtInCapability(
     description: `Built-in bounded ${BUILT_IN_AGENT_IDS[lane]} planning capability`,
     status: LifecycleStatus.Active,
     routes: [RouteType.Agent],
-    supportedActions: [laneAction(lane)],
+    supportedActions,
     tools: [...permissions.allowedTools],
     modelPolicy: {
       allowedModels: [DEFAULT_MODEL],
@@ -638,12 +818,12 @@ function assertBuiltInCompatible(
   lane: AgentLane,
   permissions: MissionPermissions,
 ): void {
+  const expected = builtInCapability(capability.id, lane, permissions);
   const compatible =
-    capability.agentId === builtInAgentId(lane) &&
-    capability.lane === lane &&
+    capability.agentId === expected.agentId &&
+    capability.lane === expected.lane &&
     capability.status === LifecycleStatus.Active &&
-    capability.routes.includes(RouteType.Agent) &&
-    capability.supportedActions.includes(laneAction(lane)) &&
+    expected.supportedActions.every((action) => capability.supportedActions.includes(action)) &&
     permissions.allowedTools.every((tool) => capability.tools.includes(tool)) &&
     capability.modelPolicy.allowedModels.includes(DEFAULT_MODEL) &&
     capability.modelPolicy.maxTokensPerAssignment >= 8_000 &&
