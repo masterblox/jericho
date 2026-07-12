@@ -200,7 +200,7 @@ describe('BridgeClient lifecycle', () => {
     harness.socket.message({ type: 'guided_test_start', test: 'isabella' });
 
     expect(onGuidedTestStart).toHaveBeenCalledOnce();
-    expect(onGuidedTestStart).toHaveBeenCalledWith('isabella');
+    expect(onGuidedTestStart).toHaveBeenCalledWith('isabella', undefined);
   });
 
   it('enters listening directly when the server resumes a guided test', async () => {
@@ -216,7 +216,7 @@ describe('BridgeClient lifecycle', () => {
 
     expect(onStatus).toHaveBeenCalledWith('guided-test-listening');
     expect(onStatus).toHaveBeenCalledWith('listening');
-    expect(onGuidedTestResume).toHaveBeenCalledWith('isabella');
+    expect(onGuidedTestResume).toHaveBeenCalledWith('isabella', undefined);
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
 

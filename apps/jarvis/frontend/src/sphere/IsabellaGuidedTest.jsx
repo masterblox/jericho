@@ -1,7 +1,23 @@
 import React from 'react'
 import { Chip, JerichoCard } from './components/JerichoCard'
 
-const EMPTY = { phase: 'ask', result: null, proposal: null, outcome: null, error: '' }
+const EMPTY = {
+  phase: 'ready',
+  evidence: null,
+  proposal: null,
+  outcome: null,
+  error: '',
+}
+
+const PHASES = [
+  ['ready', 'READY'],
+  ['retrieving', 'RETRIEVE'],
+  ['presenting', 'PRESENT'],
+  ['opening', 'OPEN'],
+  ['correcting_organizing', 'ORGANIZE'],
+  ['reviewing', 'REVIEW'],
+  ['complete', 'DONE'],
+]
 
 export function IsabellaGuidedTest({ session, active = true, actions }) {
   const [state, setState] = React.useState(EMPTY)
@@ -11,41 +27,69 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
 
   React.useEffect(() => setState(EMPTY), [session])
   React.useEffect(() => {
-    const receive = event => {
+    const onPhase = event => {
       if (!activeRef.current) return
-      if (event.detail?.name !== 'search_vault') return
-      const result = bestIsabellaResult(event.detail.result?.results)
-      if (!result) {
-        setState(current => ({ ...current, error: 'NO ISABELLA NOTE RETURNED BY THE VAULT' }))
-        return
-      }
-      setState({ phase: 'inspect', result, proposal: null, outcome: null, error: '' })
+      if (event.detail?.test !== 'isabella') return
+      const phase = event.detail.phase
+      const evidence = event.detail.evidence ?? null
+      setState(current => ({
+        ...current,
+        phase: phase || current.phase,
+        evidence: evidence || current.evidence,
+        error: event.detail.error ? String(event.detail.error) : '',
+      }))
     }
-    document.addEventListener('jericho:voice-tool-result', receive)
-    return () => document.removeEventListener('jericho:voice-tool-result', receive)
+    const onTool = event => {
+      if (!activeRef.current) return
+      if (event.detail?.name !== 'identity_aware_retrieval') return
+      setState(current => ({
+        ...current,
+        phase: current.phase === 'ready' || current.phase === 'retrieving' ? 'presenting' : current.phase,
+        evidence: event.detail.result,
+        error: event.detail.result?.resolved ? '' : 'NO CANONICAL ISABELLA HANDEL EVIDENCE',
+      }))
+    }
+    document.addEventListener('jericho:guided-test-phase', onPhase)
+    document.addEventListener('jericho:voice-tool-result', onTool)
+    return () => {
+      document.removeEventListener('jericho:guided-test-phase', onPhase)
+      document.removeEventListener('jericho:voice-tool-result', onTool)
+    }
   }, [])
 
+  const resolved = state.evidence?.resolved
+  const excluded = state.evidence?.excluded ?? []
+
   const open = async () => {
-    if (!state.result) return
+    if (!resolved?.provenance?.[0]?.relativePath) return
     try {
-      await actions.openMemory(state.result.path)
-      setState(current => ({ ...current, phase: 'drag', error: '' }))
+      const path = resolved.provenance[0].relativePath
+      await actions.openMemory(path)
+      document.dispatchEvent(new CustomEvent('jericho:guided-phase-complete', { detail: { phase: 'opening' } }))
+      setState(current => ({ ...current, phase: 'opening', error: '' }))
+      document.dispatchEvent(new CustomEvent('jericho:guided-phase-complete', { detail: { phase: 'correcting_organizing' } }))
+      setState(current => ({ ...current, phase: 'correcting_organizing', error: '' }))
     } catch (error) {
       setState(current => ({ ...current, error: error instanceof Error ? error.message : 'OPEN FAILED' }))
     }
   }
 
   const propose = async () => {
-    if (!state.result || state.phase !== 'drag') return
-    setState(current => ({ ...current, phase: 'proposing', error: '' }))
+    if (!resolved || (state.phase !== 'correcting_organizing' && state.phase !== 'opening')) return
+    setState(current => ({ ...current, error: '' }))
     try {
       const response = await actions.proposeNoteReorganization({
-        relativePath: state.result.path,
-        title: state.result.title,
+        relativePath: resolved.provenance[0].relativePath,
+        title: resolved.fullName,
       })
-      setState(current => ({ ...current, phase: 'review', proposal: response.proposal, error: '' }))
+      document.dispatchEvent(new CustomEvent('jericho:guided-phase-complete', { detail: { phase: 'reviewing' } }))
+      setState(current => ({ ...current, phase: 'reviewing', proposal: response.proposal, error: '' }))
     } catch (error) {
-      setState(current => ({ ...current, phase: 'drag', error: error instanceof Error ? error.message : 'PROPOSAL FAILED' }))
+      setState(current => ({
+        ...current,
+        phase: 'correcting_organizing',
+        error: error instanceof Error ? error.message : 'PROPOSAL FAILED',
+      }))
     }
   }
 
@@ -60,6 +104,7 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
         outcome,
         reason: `${outcome === 'approved' ? 'Approved' : 'Rejected'} Isabella guided-test preview`,
       })
+      document.dispatchEvent(new CustomEvent('jericho:guided-phase-complete', { detail: { phase: 'complete' } }))
       setState(current => ({ ...current, phase: 'complete', outcome, error: '' }))
     } catch (error) {
       setState(current => ({ ...current, error: error instanceof Error ? error.message : 'DECISION FAILED' }))
@@ -76,50 +121,69 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
 
   React.useEffect(() => {
     const card = personCard.current
-    if (!card || state.phase !== 'drag') return
+    if (!card || state.phase !== 'correcting_organizing') return
     card.addEventListener('jericho:drag-end', onGestureDrop)
     return () => card.removeEventListener('jericho:drag-end', onGestureDrop)
-  }, [state.phase, state.result])
+  }, [state.phase, resolved])
+
+  const organizing = state.phase === 'correcting_organizing' || state.phase === 'opening'
 
   return <div className="isabella-test" aria-label="Isabella guided test">
     <div className="isabella-test__progress" aria-label="Test progress">
-      <TestStep number="01" label="ASK" status={stepStatus(state.phase, 'ask')} />
-      <TestStep number="02" label="OPEN" status={stepStatus(state.phase, 'inspect')} />
-      <TestStep number="03" label="DRAG" status={stepStatus(state.phase, 'drag')} />
-      <TestStep number="04" label="REVIEW" status={stepStatus(state.phase, 'review')} />
+      {PHASES.map(([id, label], index) => (
+        <TestStep key={id} number={String(index + 1).padStart(2, '0')} label={label} status={stepStatus(state.phase, id)} />
+      ))}
     </div>
 
-    {state.phase === 'ask' && <JerichoCard eyebrow="TEST 01 · ASK" source="VOICE" chip="LIVE" big="ISABELLA" label="Say: Who is Isabella?" provenance="WAITING FOR BOUNDED search_vault EVIDENCE">
-      <p className="isabella-test__instruction">Jarvis will search your private Obsidian evidence and materialize the matching person card.</p>
+    {(state.phase === 'ready' || state.phase === 'retrieving') && <JerichoCard
+      eyebrow={state.phase === 'retrieving' ? 'PHASE · RETRIEVING' : 'PHASE · READY'}
+      source="VOICE"
+      chip={state.phase === 'retrieving' ? 'WORKING' : 'LIVE'}
+      big="ISABELLA"
+      label={state.phase === 'retrieving' ? 'Identity-aware vault retrieval in progress' : 'Say: Who is Isabella?'}
+      provenance="ONE QUERY · NO SPECULATIVE NARRATION"
+    >
+      <p className="isabella-test__instruction">
+        {state.phase === 'retrieving'
+          ? 'Jarvis stays silent until resolved evidence returns.'
+          : 'Jarvis will run exactly one identity-aware vault retrieval and materialize Isabella Handel when supported.'}
+      </p>
     </JerichoCard>}
 
-    {state.result && <div className="isabella-test__workspace">
+    {resolved && <div className="isabella-test__workspace">
       <JerichoCard
-        eyebrow={state.phase === 'inspect' ? 'TEST 02 · OPEN' : 'TEST 03 · DRAG'}
+        eyebrow={organizing ? 'PHASE · ORGANIZE' : 'PHASE · PRESENT'}
         source="OBSIDIAN"
-        chip={state.phase === 'inspect' ? 'LIVE' : 'PASS'}
-        chipTone={state.phase === 'inspect' ? '' : 'ok'}
-        big={state.result.title}
+        chip={organizing ? 'PASS' : 'LIVE'}
+        chipTone={organizing ? 'ok' : ''}
+        big={resolved.fullName}
         label="PERSON · FAMILY + MASTERBLOX CONTEXT"
-        provenance={`SOURCE · ${state.result.path}`}
+        provenance={`SOURCE · ${resolved.provenance[0]?.relativePath ?? 'unknown'}`}
         className="isabella-test__person"
         ref={personCard}
         tabIndex={0}
         role="button"
         data-gesture-target="guided:isabella-card"
-        data-gesture-draggable={state.phase === 'drag' ? 'true' : undefined}
-        draggable={state.phase === 'drag'}
+        data-gesture-draggable={state.phase === 'correcting_organizing' ? 'true' : undefined}
+        draggable={state.phase === 'correcting_organizing'}
         onDragStart={event => event.dataTransfer?.setData('text/plain', 'isabella')}
       >
-        <div className="isabella-test__chips"><Chip>WIFE</Chip><Chip>MASTERBLOX</Chip><Chip tone="ok">SOURCE-BACKED</Chip></div>
-        <p>{state.result.excerpt}</p>
-        {state.phase === 'inspect' && <button type="button" data-gesture-target="guided:isabella-open" onClick={() => void open()}>OPEN IN OBSIDIAN</button>}
+        <div className="isabella-test__chips">
+          {resolved.relationshipToCarlos && <Chip>WIFE</Chip>}
+          {resolved.employment?.map(item => <Chip key={item}>{item.toUpperCase()}</Chip>)}
+          <Chip tone="ok">SOURCE-BACKED</Chip>
+        </div>
+        <p>{resolved.provenance[0]?.excerpt}</p>
+        {excluded.length > 0 && <p className="isabella-test__ambiguous">Ambiguous first-name evidence kept separate ({excluded.length}).</p>}
+        {(state.phase === 'presenting' || state.phase === 'opening') && (
+          <button type="button" data-gesture-target="guided:isabella-open" onClick={() => void open()}>OPEN IN OBSIDIAN</button>
+        )}
       </JerichoCard>
 
-      {(state.phase === 'drag' || state.phase === 'proposing') && <JerichoCard
-        eyebrow="TEST 03 · DROP TARGET"
+      {organizing && <JerichoCard
+        eyebrow="PHASE · DROP TARGET"
         source="LOCAL PREVIEW"
-        chip={state.phase === 'proposing' ? 'WORKING' : 'LIVE'}
+        chip="LIVE"
         big="REORGANIZE"
         label="NOTES · NO WRITE ON DROP"
         provenance="CREATES A REVIEW-GATED CORE PROPOSAL"
@@ -127,11 +191,11 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
         data-isabella-drop="reorganize"
         onDragOver={event => event.preventDefault()}
         onDrop={event => { event.preventDefault(); void propose() }}
-      ><p>Drag Isabella here to preview family and Masterblox organization changes.</p></JerichoCard>}
+      ><p>Drag Isabella Handel here to preview family and MasterBlox organization changes.</p></JerichoCard>}
     </div>}
 
-    {(state.phase === 'review' || state.phase === 'complete') && state.proposal && <JerichoCard
-      eyebrow="TEST 04 · REVIEW"
+    {(state.phase === 'reviewing' || state.phase === 'complete') && state.proposal && <JerichoCard
+      eyebrow="PHASE · REVIEW"
       source="JERICHO CORE"
       chip={state.phase === 'complete' ? 'PASS' : 'LIVE'}
       chipTone={state.phase === 'complete' ? 'ok' : ''}
@@ -141,7 +205,7 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
     >
       <p>{state.proposal.summary}</p>
       <ol className="isabella-test__changes">{(state.proposal.body?.changes ?? []).map((change, index) => <li key={`${change.operation}:${index}`}><strong>{String(change.operation).replaceAll('_', ' ')}</strong><span>{String(change.value)}</span></li>)}</ol>
-      {state.phase === 'review' ? <div className="isabella-test__actions">
+      {state.phase === 'reviewing' ? <div className="isabella-test__actions">
         <button type="button" className="ok" data-gesture-target="guided:isabella-approve" onClick={() => void decide('approved')}>APPROVE PREVIEW</button>
         <button type="button" data-gesture-target="guided:isabella-reject" onClick={() => void decide('rejected')}>REJECT</button>
       </div> : <p className="isabella-test__verdict">CORE RECORDED · {state.outcome.toUpperCase()} · OBSIDIAN UNCHANGED</p>}
@@ -151,18 +215,13 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
   </div>
 }
 
-function bestIsabellaResult(results) {
-  if (!Array.isArray(results)) return null
-  return results.find(result => /(?:^|[^\p{L}])isabella(?:[^\p{L}]|$)/iu.test(`${result?.title ?? ''} ${result?.path ?? ''}`)) ?? null
-}
-
 function TestStep({ number, label, status }) {
   return <span data-status={status}><b>{number}</b>{label}<i>{status}</i></span>
 }
 
 function stepStatus(phase, step) {
-  const order = ['ask', 'inspect', 'drag', 'review', 'complete']
-  const current = order.indexOf(phase === 'proposing' ? 'drag' : phase)
+  const order = PHASES.map(([id]) => id)
+  const current = order.indexOf(phase)
   const target = order.indexOf(step)
   return current > target ? 'PASS' : current === target ? 'LIVE' : 'WAIT'
 }

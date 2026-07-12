@@ -40,18 +40,21 @@ export type PersonaMode = 'jarvis' | 'megatron';
 
 export interface BridgeEvents {
   onReady?: () => void;
-  onVoices?: (voices: string[], active: string) => void;
+  onVoices?: (voices: string[], active: string, meta?: { confirmed?: string; auditionSentence?: string }) => void;
   onVoiceSwitching?: (voice: string) => void;
   onVoiceFailed?: (voice: string) => void;
+  onVoicePreview?: (state: { previewId: string; voice: string; status: string }) => void;
+  onVoiceConfirmed?: (voice: string, confirmedAt: string) => void;
   onModeChange?: (mode: PersonaMode, name: string) => void;
   onModePending?: (mode: PersonaMode, name: string) => void;
   onArmed?: (armed: boolean) => void;
   onText?: (text: string) => void;
   onToolStart?: (name: string, args: Record<string, unknown>) => void;
   onToolResult?: (name: string, result: Record<string, unknown>) => void;
-  onGuidedTestStart?: (test: 'isabella') => void;
-  onGuidedTestResume?: (test: 'isabella') => void;
+  onGuidedTestStart?: (test: 'isabella', phase?: string) => void;
+  onGuidedTestResume?: (test: 'isabella', phase?: string) => void;
   onGuidedTestEnd?: (test: 'isabella') => void;
+  onGuidedTestPhase?: (detail: { test: 'isabella'; phase: string; evidence?: Record<string, unknown> }) => void;
   onStatus?: (status: string) => void;
   onError?: (msg: string) => void;
   onWake?: (source: 'clap' | 'manual') => void;
@@ -72,6 +75,7 @@ export class BridgeClient {
   private retry: ReturnType<typeof setTimeout> | null = null;
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnState: VoiceTurnState = 'standby';
+  private previewPlaying = false;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
@@ -158,6 +162,31 @@ export class BridgeClient {
   setVoice(voice: string) {
     if (this.ws?.readyState === 1) {
       this.ws.send(JSON.stringify({ type: 'set_voice', voice }));
+    }
+  }
+
+  previewVoice(voice: string, previewId = crypto.randomUUID()) {
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'preview_voice', voice, previewId }));
+    }
+    return previewId;
+  }
+
+  cancelVoicePreview() {
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'cancel_preview' }));
+    }
+  }
+
+  confirmVoice(voice: string) {
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'confirm_voice', voice }));
+    }
+  }
+
+  completeGuidedPhase(phase: string) {
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'guided_phase_complete', phase }));
     }
   }
 
@@ -283,7 +312,10 @@ export class BridgeClient {
         this.events.onReady?.();
         break;
       case 'voices':
-        this.events.onVoices?.(msg.voices, msg.active);
+        this.events.onVoices?.(msg.voices, msg.active, {
+          confirmed: msg.confirmed,
+          auditionSentence: msg.auditionSentence,
+        });
         break;
       case 'voice_switching':
         this.enterStandby({ interrupt: true });
@@ -292,6 +324,19 @@ export class BridgeClient {
         break;
       case 'voice_failed':
         this.events.onVoiceFailed?.(msg.voice);
+        break;
+      case 'voice_preview':
+        this.previewPlaying = msg.status === 'playing';
+        if (msg.status !== 'playing') this.spk.interrupt();
+        this.events.onVoicePreview?.({
+          previewId: msg.previewId,
+          voice: msg.voice,
+          status: msg.status,
+        });
+        break;
+      case 'voice_confirmed':
+        this.previewPlaying = false;
+        this.events.onVoiceConfirmed?.(msg.voice, msg.confirmedAt);
         break;
       case 'mode_change':
         this.events.onModeChange?.(msg.mode, msg.name);
@@ -304,7 +349,9 @@ export class BridgeClient {
         this.events.onArmed?.(!!msg.armed);
         break;
       case 'audio':
-        if (this.turnState === 'greeting' || this.turnState === 'active') this.spk.enqueue(msg.data);
+        if (this.turnState === 'greeting' || this.turnState === 'active' || this.previewPlaying) {
+          this.spk.enqueue(msg.data);
+        }
         break;
       case 'greeting_started':
         if (this.turnState === 'greeting') this.events.onStatus?.('greeting');
@@ -328,16 +375,25 @@ export class BridgeClient {
         this.events.onToolResult?.(msg.name, msg.result);
         break;
       case 'guided_test_start':
-        if (msg.test === 'isabella') this.events.onGuidedTestStart?.('isabella');
+        if (msg.test === 'isabella') this.events.onGuidedTestStart?.('isabella', msg.phase);
         break;
       case 'guided_test_resume':
         if (msg.test === 'isabella') {
-          this.events.onGuidedTestResume?.('isabella');
+          this.events.onGuidedTestResume?.('isabella', msg.phase);
           if (this.turnState === 'greeting') this.events.onStatus?.('guided-test-listening');
         }
         break;
       case 'guided_test_end':
         if (msg.test === 'isabella') this.events.onGuidedTestEnd?.('isabella');
+        break;
+      case 'guided_test_phase':
+        if (msg.test === 'isabella') {
+          this.events.onGuidedTestPhase?.({
+            test: 'isabella',
+            phase: msg.phase,
+            evidence: msg.evidence,
+          });
+        }
         break;
       case 'error':
         if (this.turnState === 'greeting' || this.turnState === 'waiting') {
