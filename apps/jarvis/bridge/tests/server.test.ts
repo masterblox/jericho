@@ -17,7 +17,7 @@ import {
   type NormalizedCapture,
 } from '@jericho/shared';
 
-import { loadApiToken, loadConfig } from '../src/config.js';
+import { loadApiToken, loadConfig, loadGeminiApiKey } from '../src/config.js';
 import { JerichoStore } from '../src/core/store.js';
 import { IntakeProcessor } from '../src/orchestration/intake.js';
 import { createJerichoServer } from '../src/server.js';
@@ -293,6 +293,30 @@ describe('local API credential', () => {
   it('fails closed off macOS when no token is configured', () => {
     expect(() => loadApiToken({ environment: {}, platform: 'linux' }))
       .toThrow('Set JERICHO_API_TOKEN');
+  });
+});
+
+describe('Gemini credential', () => {
+  it('prefers the environment and otherwise reads the per-user macOS Keychain item', () => {
+    const runSecurityCommand = vi.fn(() => 'keychain-gemini-key\n');
+    expect(loadGeminiApiKey({
+      environment: { GEMINI_API_KEY: 'environment-gemini-key' }, platform: 'darwin', runSecurityCommand,
+    })).toBe('environment-gemini-key');
+    expect(runSecurityCommand).not.toHaveBeenCalled();
+    expect(loadGeminiApiKey({
+      environment: {}, platform: 'darwin', username: 'test-user', runSecurityCommand,
+    })).toBe('keychain-gemini-key');
+    expect(runSecurityCommand).toHaveBeenCalledWith([
+      'find-generic-password', '-s', 'jericho-gemini-api', '-a', 'test-user', '-w',
+    ]);
+  });
+
+  it('keeps voice optional when the Keychain item is absent', () => {
+    expect(loadGeminiApiKey({
+      environment: {}, platform: 'darwin',
+      runSecurityCommand: () => { throw Object.assign(new Error('not found'), { status: 44 }); },
+    })).toBeUndefined();
+    expect(loadGeminiApiKey({ environment: {}, platform: 'linux' })).toBeUndefined();
   });
 });
 

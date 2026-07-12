@@ -73,6 +73,13 @@ export interface ApiTokenOptions {
   generateToken?: () => string;
 }
 
+export interface GeminiApiKeyOptions {
+  environment?: Record<string, string | undefined>;
+  platform?: NodeJS.Platform;
+  username?: string;
+  runSecurityCommand?: (args: readonly string[], input?: string) => string;
+}
+
 /**
  * Resolve the loopback Core bearer token without ever putting a generated
  * credential in argv. On macOS the first boot creates one Keychain item and
@@ -132,11 +139,37 @@ export function loadApiToken(options: ApiTokenOptions = {}): string {
   }
 }
 
+/** Resolve optional Gemini voice credentials from env or this Mac's Keychain. */
+export function loadGeminiApiKey(options: GeminiApiKeyOptions = {}): string | undefined {
+  const environment = options.environment ?? process.env;
+  const configured = optionalString(environment.GEMINI_API_KEY);
+  if (configured) return configured;
+  if ((options.platform ?? process.platform) !== 'darwin') return undefined;
+  const username = options.username ?? userInfo().username;
+  try {
+    return optionalString((options.runSecurityCommand ?? defaultSecurityCommand)([
+      'find-generic-password',
+      '-s', 'jericho-gemini-api',
+      '-a', username,
+      '-w',
+    ]));
+  } catch (cause) {
+    if (isSecurityStatus(cause, 44)) return undefined;
+    throw new Error('Unable to read Gemini API key from macOS Keychain', { cause });
+  }
+}
+
 export function loadConfig(
   environment: Record<string, string | undefined> = process.env,
   argv: string[] = process.argv.slice(2),
 ): JerichoConfig {
   const apiToken = loadApiToken({ environment });
+  // Explicit environment objects are used for deterministic configuration
+  // and tests; only the real process environment may inherit this Mac's key.
+  const geminiApiKey = loadGeminiApiKey({
+    environment,
+    platform: environment === process.env ? process.platform : 'linux',
+  });
   const cliPort = commandLinePort(argv);
   const port = parsePort(
     cliPort ?? environment.CONDUCTOR_PORT ?? environment.PORT ?? '8787',
@@ -189,7 +222,7 @@ export function loadConfig(
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
     apiToken,
-    geminiApiKey: environment.GEMINI_API_KEY,
+    geminiApiKey,
     model: environment.LIVE_MODEL ?? 'gemini-2.5-flash-native-audio-latest',
     voice: environment.LIVE_VOICE ?? 'Algieba',
     megatronVoice: environment.MEGATRON_VOICE ?? 'Fenrir',
