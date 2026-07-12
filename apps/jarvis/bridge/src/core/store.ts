@@ -882,7 +882,6 @@ export interface CorrectionConfirmResult {
   status: CorrectionConfirmStatus;
   correctionId: string;
   coreReceipt: CoreReceipt;
-  obsidianReceipt: ObsidianReceipt;
   partialCompletion?: CorrectionPartialCompletion;
   decision?: CorrectionDecision;
 }
@@ -1505,27 +1504,25 @@ export class JerichoStore {
 
     const existingReceipt = this.#findCorrectionReceipt(correctionId);
     if (existingReceipt) {
-      if (existingReceipt.status === 'succeeded') {
+      const obsidianReceipt = this.getCorrectionObsidianReceipt(correctionId);
+      if (existingReceipt.status === 'succeeded' && (!obsidianReceipt || obsidianReceipt.status === 'succeeded' || obsidianReceipt.status === 'skipped')) {
         return {
           status: CorrectionConfirmStatus.Idempotent,
           correctionId,
           coreReceipt: existingReceipt,
-          obsidianReceipt: { status: 'skipped', notePath: input.canonicalNotePath, fieldsWritten: [] },
         };
       }
-      if (existingReceipt.status === 'partial') {
-        const partial: CorrectionPartialCompletion = {
-          coreReceipt: existingReceipt,
-          obsidianReceipt: { status: 'failed', notePath: input.canonicalNotePath, fieldsWritten: [] },
-          allowsRetry: true,
-          retryOnlyNote: true,
-        };
+      if (existingReceipt.status === 'succeeded' && obsidianReceipt?.status === 'failed') {
         return {
           status: CorrectionConfirmStatus.Partial,
           correctionId,
           coreReceipt: existingReceipt,
-          obsidianReceipt: partial.obsidianReceipt,
-          partialCompletion: partial,
+          partialCompletion: {
+            coreReceipt: existingReceipt,
+            obsidianReceipt,
+            allowsRetry: true,
+            retryOnlyNote: true,
+          },
         };
       }
     }
@@ -1576,34 +1573,27 @@ export class JerichoStore {
       const fromEntity = this.getEntity(input.fromEntityId);
       const toEntity = this.getEntity(input.toEntityId);
       if (fromEntity && toEntity) {
-        const spouseId = `relation-spouse-${correctionId.slice(0, 48)}`;
-        const existingSpouse = this.listRelations({
-          fromEntityId: fromEntity.id,
-          toEntityId: toEntity.id,
-          type: RelationType.SpouseOf,
-        })[0] ?? this.listRelations({
-          fromEntityId: toEntity.id,
-          toEntityId: fromEntity.id,
-          type: RelationType.SpouseOf,
-        })[0];
-
-        if (!existingSpouse) {
-          const spouseRelation: Relation = {
-            id: spouseId,
-            fromEntityId: fromEntity.id,
-            toEntityId: toEntity.id,
-            type: RelationType.SpouseOf,
-            attributes: { verified: true, correctionId },
-            status: LifecycleStatus.Active,
-            risk: RiskLevel.Low,
-            confidence: 1,
-            freshness: { observedAt: completedAt },
-            provenance: correction.provenance,
-            createdAt: completedAt,
-            updatedAt: completedAt,
-          };
-          this.#writeRelationRecord(spouseRelation, false);
-          relationsCreated.push(spouseId);
+        for (const [from, to] of [[fromEntity.id, toEntity.id], [toEntity.id, fromEntity.id]] as const) {
+          const existing = this.listRelations({ fromEntityId: from, toEntityId: to, type: RelationType.SpouseOf })[0];
+          if (!existing) {
+            const spouseId = `relation-spouse-${correctionId.slice(0, 40)}-${from.slice(0, 8)}-${to.slice(0, 8)}`;
+            const spouseRelation: Relation = {
+              id: spouseId,
+              fromEntityId: from,
+              toEntityId: to,
+              type: RelationType.SpouseOf,
+              attributes: { verified: true, correctionId },
+              status: LifecycleStatus.Active,
+              risk: RiskLevel.Low,
+              confidence: 1,
+              freshness: { observedAt: completedAt },
+              provenance: correction.provenance,
+              createdAt: completedAt,
+              updatedAt: completedAt,
+            };
+            this.#writeRelationRecord(spouseRelation, false);
+            relationsCreated.push(spouseId);
+          }
         }
       }
 
@@ -1656,24 +1646,16 @@ export class JerichoStore {
         },
       });
 
-      const obsidianReceipt: ObsidianReceipt = {
-        status: 'succeeded',
-        notePath: input.canonicalNotePath,
-        fieldsWritten: Object.keys(input.obsidianFieldsToAdd),
-        completedAt,
-      };
-
       return {
         status: CorrectionConfirmStatus.Confirmed,
         correctionId,
         coreReceipt,
-        obsidianReceipt,
         decision: correction,
       };
     });
   }
 
-  retryCorrectionNote(input: CorrectionRetryInput): CorrectionConfirmResult {
+  retryCorrectionNote(input: CorrectionRetryInput): { correctionId: string; coreReceipt: CoreReceipt } {
     validateRelativePath(input.canonicalNotePath);
     if (!input.canonicalNoteHash || !/^[a-f0-9]{64}$/.test(input.canonicalNoteHash)) {
       throw new TypeError('Canonical note hash must be a lowercase SHA-256 digest');
@@ -1683,20 +1665,9 @@ export class JerichoStore {
     if (!receipt) throw new Error(`Correction ${input.correctionId} receipt not found`);
     if (receipt.status !== 'partial') throw new Error('Correction is not in a retryable state');
 
-    const completedAt = input.retriedAt;
-    const coreReceipt: CoreReceipt = { ...receipt };
-    const obsidianReceipt: ObsidianReceipt = {
-      status: 'succeeded',
-      notePath: input.canonicalNotePath,
-      fieldsWritten: ['spouse'],
-      completedAt,
-    };
-
     return {
-      status: CorrectionConfirmStatus.Confirmed,
       correctionId: input.correctionId,
-      coreReceipt,
-      obsidianReceipt,
+      coreReceipt: receipt,
     };
   }
 
@@ -4105,6 +4076,27 @@ export class JerichoStore {
       const text = decodeDbValue(raw);
       const stored = JSON.parse(text);
       return { preview: stored.preview, input: stored.input };
+    } catch {
+      return undefined;
+    }
+  }
+
+  finalizeCorrectionObsidian(correctionId: string, receipt: ObsidianReceipt): void {
+    const data = JSON.stringify(receipt);
+    this.#database.prepare(`
+      INSERT INTO store_metadata (name, value) VALUES (?, ?)
+      ON CONFLICT (name) DO UPDATE SET value = excluded.value
+    `).run(`correction_obsidian:${correctionId}`, Buffer.from(data, 'utf8'));
+  }
+
+  getCorrectionObsidianReceipt(correctionId: string): ObsidianReceipt | undefined {
+    const row = this.#database.prepare(`
+      SELECT value FROM store_metadata WHERE name = ?
+    `).get(`correction_obsidian:${correctionId}`);
+    if (!row) return undefined;
+    try {
+      const text = decodeDbValue(row.value);
+      return JSON.parse(text) as ObsidianReceipt;
     } catch {
       return undefined;
     }

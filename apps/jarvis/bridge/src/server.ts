@@ -9,6 +9,7 @@ import { GoogleGenAI, Modality, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import {
+  CorrectionConfirmStatus,
   DecisionOutcome,
   IdentityReviewDisposition,
   IntentRoute,
@@ -36,6 +37,7 @@ import {
   type MissionDecisionRequest,
   type MissionDecisionResponse,
   type MissionPlan,
+  type ObsidianReceipt,
   type Proposal,
   type ProposalDecisionRequest,
   type ProposalDecisionResponse,
@@ -70,6 +72,7 @@ import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
 import type { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
 import { FederatedRetrievalService } from './retrieval/federated-retrieval.js';
 import { HttpPaperclipPort, PaperclipExecutor } from './connectors/paperclip-executor.js';
+import { CanonicalNoteWriter } from './correction/note-writer.js';
 import { ObsidianNoteOpener } from './connectors/obsidian-open.js';
 import { createPersonas, isPersonaMode, type PersonaMode } from './personas.js';
 import {
@@ -166,6 +169,7 @@ export interface JerichoServerOptions {
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  correctionNoteWriter?: CanonicalNoteWriter;
 }
 
 export interface JerichoServerAddress {
@@ -1021,7 +1025,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const input = correctionConfirmRequest(await readJsonBody(request, 64 * 1024));
       const decidedAt = now();
       try {
-        const result = options.store.confirmCorrection({
+        const storeResult = options.store.confirmCorrection({
           previewId: input.previewId,
           previewHash: input.previewHash,
           previewVersion: input.previewVersion,
@@ -1036,8 +1040,50 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
           decidedBy: 'carlos',
           decidedAt,
         });
-        const correctionResult: CorrectionConfirmResponse = result;
-        sendJson(response, 200, correctionResult);
+
+        let obsidianReceipt: ObsidianReceipt | undefined;
+        if (storeResult.status === CorrectionConfirmStatus.Confirmed && options.correctionNoteWriter) {
+          try {
+            obsidianReceipt = options.correctionNoteWriter.write({
+              relativePath: input.canonicalNotePath,
+              expectedHash: input.canonicalNoteHash,
+              fieldsToAdd: input.obsidianFieldsToAdd,
+              now: decidedAt,
+            });
+            options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
+          } catch (noteError) {
+            const failedReceipt: ObsidianReceipt = {
+              status: 'failed',
+              notePath: input.canonicalNotePath,
+              fieldsWritten: [],
+              completedAt: decidedAt,
+              error: noteError instanceof Error ? noteError.message : String(noteError),
+            };
+            options.store.finalizeCorrectionObsidian(storeResult.correctionId, failedReceipt);
+            const partialResult: CorrectionConfirmResponse = {
+              status: CorrectionConfirmStatus.Partial,
+              correctionId: storeResult.correctionId,
+              coreReceipt: storeResult.coreReceipt,
+              partialCompletion: {
+                coreReceipt: storeResult.coreReceipt,
+                obsidianReceipt: failedReceipt,
+                allowsRetry: true,
+                retryOnlyNote: true,
+              },
+            };
+            sendJson(response, 200, partialResult);
+            return;
+          }
+        } else if (storeResult.status === CorrectionConfirmStatus.Idempotent) {
+          const currentObsidian = options.store.getCorrectionObsidianReceipt(storeResult.correctionId);
+          obsidianReceipt = currentObsidian;
+        }
+
+        const finalResult: CorrectionConfirmResponse = {
+          ...storeResult,
+          ...(obsidianReceipt ? { obsidianReceipt } : {}),
+        };
+        sendJson(response, 200, finalResult);
       } catch (error) {
         if (error instanceof CorrectionDecisionConflictError) {
           throw new HttpError(409, 'correction_decision_conflict');
@@ -1050,18 +1096,49 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const input = correctionRetryRequest(await readJsonBody(request, 64 * 1024));
       const retriedAt = now();
       try {
-        const result = options.store.retryCorrectionNote({
+        const storeResult = options.store.retryCorrectionNote({
           correctionId: input.correctionId,
           canonicalNoteHash: input.canonicalNoteHash,
           canonicalNotePath: input.canonicalNotePath,
           retriedAt,
         });
-        const retryResult: CorrectionConfirmResponse = result;
+
+        if (!options.correctionNoteWriter) {
+          throw new HttpError(503, 'correction_note_writer_unavailable');
+        }
+
+        let obsidianReceipt: ObsidianReceipt;
+        try {
+          obsidianReceipt = options.correctionNoteWriter.write({
+            relativePath: input.canonicalNotePath,
+            expectedHash: input.canonicalNoteHash,
+            fieldsToAdd: { spouse: 'Carlos Prada' },
+            now: retriedAt,
+          });
+          options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
+        } catch (noteError) {
+          const failedReceipt: ObsidianReceipt = {
+            status: 'failed',
+            notePath: input.canonicalNotePath,
+            fieldsWritten: [],
+            completedAt: retriedAt,
+            error: noteError instanceof Error ? noteError.message : String(noteError),
+          };
+          throw new HttpError(502, 'correction_note_retry_failed');
+        }
+
+        const retryResult: CorrectionConfirmResponse = {
+          status: CorrectionConfirmStatus.Confirmed,
+          correctionId: storeResult.correctionId,
+          coreReceipt: storeResult.coreReceipt,
+          obsidianReceipt,
+        };
         sendJson(response, 200, retryResult);
       } catch (error) {
         if (error instanceof CorrectionDecisionConflictError) {
           throw new HttpError(409, 'correction_retry_conflict');
         }
+        if (error instanceof HttpError) throw error;
         throw error;
       }
       return;
@@ -2058,6 +2135,9 @@ async function main(): Promise<void> {
   const obsidianOpen = config.obsidianVaultPath
     ? new ObsidianNoteOpener({ vaultPath: config.obsidianVaultPath })
     : undefined;
+  const correctionNoteWriter = config.obsidianVaultPath
+    ? new CanonicalNoteWriter({ vaultPath: config.obsidianVaultPath })
+    : undefined;
   const runtime = new ProductionRuntimeLifecycle({
     knowledge,
     connectors,
@@ -2097,6 +2177,7 @@ async function main(): Promise<void> {
     retrieval,
     ...(paperclip ? { paperclip } : {}),
     ...(obsidianOpen ? { obsidianOpen } : {}),
+    ...(correctionNoteWriter ? { correctionNoteWriter } : {}),
   });
   const address = await server.listen(config.port, config.host);
   let shuttingDown = false;

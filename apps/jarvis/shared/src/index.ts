@@ -592,7 +592,7 @@ export interface CorrectionConfirmResponse {
   status: CorrectionConfirmStatus;
   correctionId: string;
   coreReceipt: CoreReceipt;
-  obsidianReceipt: ObsidianReceipt;
+  obsidianReceipt?: ObsidianReceipt;
   partialCompletion?: CorrectionPartialCompletion;
 }
 

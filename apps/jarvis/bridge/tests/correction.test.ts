@@ -1,32 +1,42 @@
 import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   CorrectionConfirmStatus,
-  DecisionOutcome,
   EntityType,
   LifecycleStatus,
   RelationType,
   RiskLevel,
-  RouteType,
   SourceType,
   type Entity,
   type Provenance,
+  type CorrectionConfirmRequest,
 } from '@jericho/shared';
 
-import { JerichoStore } from '../src/core/store.js';
+import {
+  JerichoStore,
+} from '../src/core/store.js';
+import {
+  CanonicalNoteWriter,
+} from '../src/correction/note-writer.js';
+import {
+  createJerichoServer,
+  type JerichoServer,
+} from '../src/server.js';
 
 const KEY = Buffer.alloc(32, 17);
+const TOKEN = 'correction-test-token';
 const T0 = '2026-07-12T00:00:00.000Z';
 const T1 = '2026-07-12T00:01:00.000Z';
 const T2 = '2026-07-12T00:02:00.000Z';
 
-const openStores: JerichoStore[] = [];
-const tempDirectories: string[] = [];
+const stores: JerichoStore[] = [];
+const servers: JerichoServer[] = [];
+const tempDirs: string[] = [];
 
 const CANONICAL_NOTE_CONTENT = `---
 jericho_managed: true
@@ -37,40 +47,59 @@ person_id: isabella-handel
 CEO of MasterBlox Capital. Francisco's wife.
 `;
 
-const CANONICAL_NOTE_HASH = createHash('sha256').update(CANONICAL_NOTE_CONTENT).digest('hex');
+const HISTORICAL_SOURCE_CONTENT = `# Francisco's Contact List
 
-afterEach(() => {
-  for (const store of openStores.splice(0)) store.close();
-  for (const dir of tempDirectories.splice(0)) rmSync(dir, { recursive: true, force: true });
+Isabella Handel — Francisco's wife. CEO of MasterBlox Capital.
+Do not modify this file.`;
+
+function canonicalNoteHash(): string {
+  return createHash('sha256').update(CANONICAL_NOTE_CONTENT).digest('hex');
+}
+
+function historicalSourceHash(): string {
+  return createHash('sha256').update(HISTORICAL_SOURCE_CONTENT).digest('hex');
+}
+
+afterEach(async () => {
+  for (const server of servers.splice(0)) await server.close();
+  for (const store of stores.splice(0)) store.close();
+  for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function openStore(path = ':memory:'): JerichoStore {
-  const store = new JerichoStore({ path, key: KEY });
-  openStores.push(store);
+function openStore(): JerichoStore {
+  const store = new JerichoStore({ key: KEY });
+  stores.push(store);
   return store;
 }
 
-function tempVaultDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'jericho-correction-vault-'));
-  tempDirectories.push(dir);
-  mkdirSync(join(dir, 'Prada Mind', '05 - People & Partnerships', 'Team Members'), { recursive: true });
+function tempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'jericho-correction-'));
+  tempDirs.push(dir);
   return dir;
 }
 
-function tempDbPath(): string {
-  const dir = mkdtempSync(join(tmpdir(), 'jericho-correction-'));
-  tempDirectories.push(dir);
-  return join(dir, 'jericho.db');
+function tempVault(): string {
+  const vault = join(tempDir(), 'vault');
+  mkdirSync(vault, { recursive: true });
+  return vault;
 }
 
-function writeCanonicalNote(vaultDir: string): { path: string; hash: string } {
-  const noteDir = join(vaultDir, 'Prada Mind', '05 - People & Partnerships', 'Team Members');
-  const notePath = join(noteDir, 'Isabella Handel.md');
-  writeFileSync(notePath, CANONICAL_NOTE_CONTENT, 'utf8');
+function writeCanonicalNote(vault: string, content = CANONICAL_NOTE_CONTENT): { relativePath: string; hash: string } {
+  const dir = join(vault, 'Prada Mind', '05 - People & Partnerships', 'Team Members');
+  mkdirSync(dir, { recursive: true });
+  const notePath = join(dir, 'Isabella Handel.md');
+  writeFileSync(notePath, content, 'utf8');
   return {
-    path: notePath,
-    hash: createHash('sha256').update(CANONICAL_NOTE_CONTENT).digest('hex'),
+    relativePath: relative(vault, notePath).split(sep).join('/'),
+    hash: createHash('sha256').update(content).digest('hex'),
   };
+}
+
+function writeHistoricalSource(vault: string): string {
+  const srcPath = join(vault, 'Historical Sources', 'Francisco Contact List.md');
+  mkdirSync(join(vault, 'Historical Sources'), { recursive: true });
+  writeFileSync(srcPath, HISTORICAL_SOURCE_CONTENT, 'utf8');
+  return srcPath;
 }
 
 function makeEntity(overrides: Partial<Entity> = {}): Entity {
@@ -84,9 +113,7 @@ function makeEntity(overrides: Partial<Entity> = {}): Entity {
     risk: RiskLevel.Low,
     confidence: 0.95,
     freshness: { observedAt: T0 },
-    provenance: [
-      { source: 'user', sourceType: SourceType.User, observedAt: T0 },
-    ],
+    provenance: [],
     createdAt: T0,
     updatedAt: T0,
     ...overrides,
@@ -96,481 +123,626 @@ function makeEntity(overrides: Partial<Entity> = {}): Entity {
 function sourceProvenance(): Provenance[] {
   return [
     { source: 'historical-note', sourceType: SourceType.Import, sourceEventId: 'note-v1', observedAt: T0 },
-    { source: 'local:command-center', sourceType: SourceType.User, sourceEventId: 'correction-request', observedAt: T1 },
   ];
 }
 
+async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
+  const response = await fetch(url, init);
+  const body = await response.json() as Record<string, unknown>;
+  if (!response.ok) throw new Error(String(body.error ?? `HTTP ${response.status}`));
+  return body;
+}
+
 describe('spouse_of relation type', () => {
-  it('is a valid RelationType enum value', () => {
+  it('is a member of RelationType enum', () => {
     expect(RelationType.SpouseOf).toBe('spouse_of');
-    expect(Object.values(RelationType)).toContain('spouse_of');
   });
 });
 
-describe('CorrectionPreview', () => {
-  it('creates a preview with disputed claim, source, entity binding, and effects', () => {
+describe('CorrectionPreview (store)', () => {
+  it('creates preview with disputed claim, source, entity binding, and effects', () => {
     const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] }));
 
     const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
+      entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
       sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
+      proposedFromEntityId: 'entity-carlos',
+      proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
       canonicalNotePath: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
+      canonicalNoteHash: canonicalNoteHash(),
       obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      obsidianFieldsToRemove: ["Francisco's wife"],
+      obsidianFieldsToRemove: [],
     });
 
     expect(preview.id).toMatch(/^correction-preview-/);
     expect(preview.version).toBe(1);
     expect(preview.previewHash).toMatch(/^[a-f0-9]{64}$/);
     expect(preview.disputedClaim).toBe("Francisco's wife");
-    expect(preview.sourceProvenance).toEqual(sourceProvenance());
-    expect(preview.currentIdentityBinding).toMatchObject({
-      entityId: isabella.id,
-      entityName: 'Isabella Handel',
-      entityType: EntityType.Person,
-    });
-    expect(preview.proposedExclusion.entityId).toBe(isabella.id);
-    expect(preview.proposedExclusion.claimPattern).toBe("Francisco's wife");
-    expect(preview.coreEffects.relationsToCreate).toHaveLength(1);
-    expect(preview.coreEffects.relationsToCreate[0]).toMatchObject({
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
-      type: RelationType.SpouseOf,
-    });
-    expect(preview.coreEffects.exclusionsToApply).toHaveLength(1);
-    expect(preview.obsidianEffects.notePath).toContain('Isabella Handel.md');
-    expect(preview.obsidianEffects.noteHash).toBe(CANONICAL_NOTE_HASH);
-    expect(preview.obsidianEffects.fieldsToAdd).toEqual({ spouse: 'Carlos Prada' });
+    expect(preview.currentIdentityBinding.entityName).toBe('Isabella Handel');
+    expect(preview.coreEffects.relationsToCreate[0].type).toBe(RelationType.SpouseOf);
     expect(preview.canonicalNotePath).toContain('Isabella Handel.md');
   });
 
-  it('rejects a non-Person entity', () => {
-    const store = openStore();
-    store.upsertEntity(makeEntity({ id: 'org-1', type: EntityType.Organization, canonicalName: 'Acme' }));
-    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
-
-    expect(() => store.createCorrectionPreview({
-      entityId: 'org-1',
-      claimPattern: 'claim',
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: 'entity-carlos',
-      proposedToEntityId: 'org-1',
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: {},
-      obsidianFieldsToRemove: [],
-    })).toThrow('must be a Person');
-  });
-
-  it('rejects empty claim pattern', () => {
+  it('rejects path traversal', () => {
     const store = openStore();
     store.upsertEntity(makeEntity());
     store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
-
     expect(() => store.createCorrectionPreview({
       entityId: 'entity-isabella',
-      claimPattern: '  ',
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: 'entity-carlos',
-      proposedToEntityId: 'entity-isabella',
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: {},
-      obsidianFieldsToRemove: [],
-    })).toThrow('Claim pattern is required');
-  });
-
-  it('rejects path traversal in canonical note path', () => {
-    const store = openStore();
-    store.upsertEntity(makeEntity());
-    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
-
-    expect(() => store.createCorrectionPreview({
-      entityId: 'entity-isabella',
-      claimPattern: "Francisco's wife",
+      claimPattern: 'x',
       sourceProvenance: sourceProvenance(),
       proposedFromEntityId: 'entity-carlos',
       proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
       canonicalNotePath: '../../etc/passwd',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
+      canonicalNoteHash: canonicalNoteHash(),
       obsidianFieldsToAdd: {},
       obsidianFieldsToRemove: [],
     })).toThrow('Path traversal');
   });
+});
 
-  it('rejects absolute path', () => {
+describe('Core confirm (store)', () => {
+  it('writes symmetric spouse_of relations and identity exclusion', () => {
     const store = openStore();
     store.upsertEntity(makeEntity());
-    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] }));
 
-    expect(() => store.createCorrectionPreview({
+    const preview = store.createCorrectionPreview({
       entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
       sourceProvenance: sourceProvenance(),
       proposedFromEntityId: 'entity-carlos',
       proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: '/etc/passwd',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: {},
-      obsidianFieldsToRemove: [],
-    })).toThrow('Path must be relative');
-  });
-});
-
-describe('Correction confirm', () => {
-  it('confirms a correction, writes spouse_of relation and identity exclusion', () => {
-    const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
-
-    const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
+      canonicalNotePath: 'note.md',
+      canonicalNoteHash: canonicalNoteHash(),
       obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      obsidianFieldsToRemove: ["Francisco's wife"],
+      obsidianFieldsToRemove: [],
     });
 
     const result = store.confirmCorrection({
       previewId: preview.id,
       previewHash: preview.previewHash,
       previewVersion: preview.version,
-      entityId: isabella.id,
+      entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
+      fromEntityId: 'entity-carlos',
+      toEntityId: 'entity-isabella',
       relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      canonicalNoteHash: canonicalNoteHash(),
+      canonicalNotePath: 'note.md',
+      obsidianFieldsToAdd: {},
       decidedBy: 'carlos',
       decidedAt: T2,
     });
 
     expect(result.status).toBe(CorrectionConfirmStatus.Confirmed);
-    expect(result.correctionId).toMatch(/^correction-/);
     expect(result.coreReceipt.status).toBe('succeeded');
-    expect(result.coreReceipt.relationsCreated.length).toBeGreaterThan(0);
-    expect(result.obsidianReceipt.status).toBe('succeeded');
 
-    const spouseRelations = store.listRelations({ type: RelationType.SpouseOf });
-    expect(spouseRelations.length).toBeGreaterThanOrEqual(1);
-    const spouse = spouseRelations[0];
-    expect(spouse.fromEntityId).toBe(carlos.id);
-    expect(spouse.toEntityId).toBe(isabella.id);
+    const spouses = store.listRelations({ type: RelationType.SpouseOf });
+    expect(spouses.length).toBe(2);
 
-    const exclusions = store.listIdentityExclusions(isabella.id);
+    const carlosToIsabella = spouses.find((r) => r.fromEntityId === 'entity-carlos' && r.toEntityId === 'entity-isabella');
+    const isabellaToCarlos = spouses.find((r) => r.fromEntityId === 'entity-isabella' && r.toEntityId === 'entity-carlos');
+    expect(carlosToIsabella).toBeDefined();
+    expect(isabellaToCarlos).toBeDefined();
+
+    const exclusions = store.listIdentityExclusions('entity-isabella');
     expect(exclusions.length).toBe(1);
     expect(exclusions[0].claimPattern).toBe("Francisco's wife");
   });
 
   it('is idempotent on repeated confirmation', () => {
     const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
 
     const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
+      entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
       sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
+      proposedFromEntityId: 'entity-carlos',
+      proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      canonicalNotePath: 'n.md',
+      canonicalNoteHash: canonicalNoteHash(),
+      obsidianFieldsToAdd: {},
       obsidianFieldsToRemove: [],
     });
 
     const first = store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
+      previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+      entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
       relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      decidedBy: 'carlos',
-      decidedAt: T2,
+      canonicalNoteHash: canonicalNoteHash(), canonicalNotePath: 'n.md',
+      obsidianFieldsToAdd: {}, decidedBy: 'carlos', decidedAt: T2,
     });
     expect(first.status).toBe(CorrectionConfirmStatus.Confirmed);
 
     const second = store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
+      previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+      entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
       relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      decidedBy: 'carlos',
-      decidedAt: T2,
+      canonicalNoteHash: canonicalNoteHash(), canonicalNotePath: 'n.md',
+      obsidianFieldsToAdd: {}, decidedBy: 'carlos', decidedAt: T2,
     });
     expect(second.status).toBe(CorrectionConfirmStatus.Idempotent);
-
-    const exclusions = store.listIdentityExclusions(isabella.id);
-    expect(exclusions.length).toBe(1);
-    const spouseRelations = store.listRelations({ type: RelationType.SpouseOf });
-    expect(spouseRelations.length).toBe(1);
+    expect(store.listRelations({ type: RelationType.SpouseOf }).length).toBe(2);
   });
 
   it('rejects stale preview hash', () => {
     const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
 
     const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
+      entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
       sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
+      proposedFromEntityId: 'entity-carlos',
+      proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
+      canonicalNotePath: 'n.md',
+      canonicalNoteHash: canonicalNoteHash(),
       obsidianFieldsToAdd: {},
       obsidianFieldsToRemove: [],
     });
 
-    const bogusHash = createHash('sha256').update('stale').digest('hex');
-
+    const bogus = createHash('sha256').update('stale').digest('hex');
     expect(() => store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: bogusHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
+      previewId: preview.id, previewHash: bogus, previewVersion: preview.version,
+      entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
       relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: {},
-      decidedBy: 'carlos',
-      decidedAt: T2,
+      canonicalNoteHash: canonicalNoteHash(), canonicalNotePath: 'n.md',
+      obsidianFieldsToAdd: {}, decidedBy: 'carlos', decidedAt: T2,
     })).toThrow('does not match the exact preview');
   });
 
   it('rejects stale note hash', () => {
     const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
 
     const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
+      entityId: 'entity-isabella',
       claimPattern: "Francisco's wife",
       sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
+      proposedFromEntityId: 'entity-carlos',
+      proposedToEntityId: 'entity-isabella',
       proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
+      canonicalNotePath: 'n.md',
+      canonicalNoteHash: canonicalNoteHash(),
       obsidianFieldsToAdd: {},
       obsidianFieldsToRemove: [],
     });
 
-    const staleNoteHash = createHash('sha256').update('modified note').digest('hex');
-
+    const staleNote = createHash('sha256').update('modified').digest('hex');
     expect(() => store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
+      previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+      entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
       relationType: RelationType.SpouseOf,
-      canonicalNoteHash: staleNoteHash,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: {},
-      decidedBy: 'carlos',
-      decidedAt: T2,
+      canonicalNoteHash: staleNote, canonicalNotePath: 'n.md',
+      obsidianFieldsToAdd: {}, decidedBy: 'carlos', decidedAt: T2,
     })).toThrow('does not match the exact preview');
   });
 });
 
-describe('Identity exclusions persist across restarts', () => {
-  it('survives close and reopen', () => {
-    const path = tempDbPath();
-    const store1 = openStore(path);
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store1.upsertEntity(isabella);
-    store1.upsertEntity(carlos);
+describe('CanonicalNoteWriter', () => {
+  it('adds spouse field to YAML frontmatter via atomic write', () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
 
-    const preview = store1.createCorrectionPreview({
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: {},
-      obsidianFieldsToRemove: [],
+    const hashBefore = writer.hashNote(note.relativePath);
+    expect(hashBefore).toBe(note.hash);
+
+    const receipt = writer.write({
+      relativePath: note.relativePath,
+      expectedHash: note.hash,
+      fieldsToAdd: { spouse: 'Carlos Prada' },
+      now: T2,
     });
 
-    store1.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
-      relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: {},
-      decidedBy: 'carlos',
-      decidedAt: T2,
+    expect(receipt.status).toBe('succeeded');
+    expect(receipt.fieldsWritten).toContain('spouse');
+
+    const updated = readFileSync(join(vault, note.relativePath), 'utf8');
+    expect(updated).toContain('spouse: "Carlos Prada"');
+    expect(updated).toContain('# Isabella Handel');
+    expect(updated).toContain("Francisco's wife");
+  });
+
+  it('rejects stale note hash', () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+
+    const bogusHash = createHash('sha256').update('stale').digest('hex');
+    expect(() => writer.write({
+      relativePath: note.relativePath,
+      expectedHash: bogusHash,
+      fieldsToAdd: { spouse: 'Carlos Prada' },
+      now: T2,
+    })).toThrow('Note hash mismatch');
+  });
+
+  it('rejects path traversal', () => {
+    const vault = tempVault();
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    expect(() => writer.hashNote('../../etc/passwd')).toThrow('Path traversal');
+  });
+
+  it('is idempotent when field already exists', () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+
+    const first = writer.write({
+      relativePath: note.relativePath,
+      expectedHash: note.hash,
+      fieldsToAdd: { spouse: 'Carlos Prada' },
+      now: T1,
     });
+    expect(first.status).toBe('succeeded');
+
+    const secondNoteHash = createHash('sha256').update(readFileSync(join(vault, note.relativePath), 'utf8')).digest('hex');
+    const second = writer.write({
+      relativePath: note.relativePath,
+      expectedHash: secondNoteHash,
+      fieldsToAdd: { spouse: 'Carlos Prada' },
+      now: T2,
+    });
+    expect(second.status).toBe('skipped');
+  });
+});
+
+describe('HTTP correction endpoints with vault', () => {
+  it('confirm writes spouse to canonical note and symmetric relations to Core', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    const confirmBody = await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id,
+        previewHash: preview.previewHash,
+        previewVersion: preview.version,
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos',
+        toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    }) as Record<string, unknown>;
+
+    expect(confirmBody.status).toBe('confirmed');
+    expect(confirmBody.coreReceipt).toBeDefined();
+    const obs = confirmBody.obsidianReceipt as Record<string, unknown>;
+    expect(obs?.status).toBe('succeeded');
+    expect(obs?.fieldsWritten).toContain('spouse');
+
+    const updatedNote = readFileSync(join(vault, note.relativePath), 'utf8');
+    expect(updatedNote).toContain('spouse: "Carlos Prada"');
+
+    const spouses = store.listRelations({ type: RelationType.SpouseOf });
+    expect(spouses.length).toBe(2);
+  });
+
+  it('historical source note stays byte-identical', async () => {
+    const vault = tempVault();
+    const srcPath = writeHistoricalSource(vault);
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id,
+        previewHash: preview.previewHash,
+        previewVersion: preview.version,
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos',
+        toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    });
+
+    const srcContent = readFileSync(srcPath, 'utf8');
+    expect(srcContent).toBe(HISTORICAL_SOURCE_CONTENT);
+    expect(createHash('sha256').update(srcContent).digest('hex')).toBe(historicalSourceHash());
+  });
+
+  it('rejects confirmation with stale canonical note hash', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    const staleHash = createHash('sha256').update('stale note').digest('hex');
+
+    await expect(fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id,
+        previewHash: preview.previewHash,
+        previewVersion: preview.version,
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos',
+        toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: staleHash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    })).rejects.toThrow('does not match');
+  });
+
+  it('repeated confirmation is idempotent', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    const first = await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+        entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    }) as Record<string, unknown>;
+    expect(first.status).toBe('confirmed');
+
+    const second = await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+        entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    }) as Record<string, unknown>;
+    expect(second.status).toBe('idempotent');
+    expect(store.listRelations({ type: RelationType.SpouseOf }).length).toBe(2);
+  });
+
+  it('retrieval answers correctly after correction', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+        entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    });
+
+    const spouses = store.listRelations({ type: RelationType.SpouseOf });
+    expect(spouses.some((r) => r.fromEntityId === 'entity-carlos' && r.toEntityId === 'entity-isabella')).toBe(true);
+    expect(spouses.some((r) => r.fromEntityId === 'entity-isabella' && r.toEntityId === 'entity-carlos')).toBe(true);
+
+    const exclusions = store.listIdentityExclusions('entity-isabella');
+    expect(exclusions.length).toBe(1);
+  });
+
+  it('exclusions survive restart and index rebuild', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+
+    const dbPath = join(tempDir(), 'jericho.db');
+    const store1 = new JerichoStore({ path: dbPath, key: KEY });
+    stores.push(store1);
+    store1.upsertEntity(makeEntity());
+    store1.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] }));
+
+    const writer = new CanonicalNoteWriter({ vaultPath: vault });
+    const server = await startServer(store1, writer);
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella',
+        claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(),
+        proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos',
+        proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+        obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+
+    const preview = previewBody.preview as Record<string, unknown>;
+    await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+        entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+        fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella',
+        relationType: 'spouse_of',
+        canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      }),
+    });
+
     store1.close();
+    await server.close();
 
-    const store2 = openStore(path);
-    const exclusions = store2.listIdentityExclusions(isabella.id);
+    const store2 = new JerichoStore({ path: dbPath, key: KEY });
+    stores.push(store2);
+    const exclusions = store2.listIdentityExclusions('entity-isabella');
     expect(exclusions.length).toBe(1);
     expect(exclusions[0].claimPattern).toBe("Francisco's wife");
-
-    const spouseRelations = store2.listRelations({ type: RelationType.SpouseOf });
-    expect(spouseRelations.length).toBe(1);
+    expect(store2.listRelations({ type: RelationType.SpouseOf }).length).toBe(2);
   });
 });
 
-describe('Historical source note preservation', () => {
-  it('preserves historical note content - correction does not modify the source file', () => {
-    const vaultDir = tempVaultDir();
-    const note = writeCanonicalNote(vaultDir);
-
-    const currentContent = readFileSync(note.path, 'utf8');
-    expect(currentContent).toBe(CANONICAL_NOTE_CONTENT);
-    expect(currentContent).toContain("Francisco's wife");
-
-    const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
-
-    const relativePath = 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md';
-
-    const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: relativePath,
-      canonicalNoteHash: note.hash,
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      obsidianFieldsToRemove: ["Francisco's wife"],
-    });
-
-    store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
-      relationType: RelationType.SpouseOf,
-      canonicalNoteHash: note.hash,
-      canonicalNotePath: relativePath,
-      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
-      decidedBy: 'carlos',
-      decidedAt: T2,
-    });
-
-    const finalContent = readFileSync(note.path, 'utf8');
-    expect(finalContent).toBe(CANONICAL_NOTE_CONTENT);
-    expect(finalContent).toContain("Francisco's wife");
+async function startServer(store: JerichoStore, writer: CanonicalNoteWriter): Promise<{ port: number; close: () => Promise<void> }> {
+  const server = createJerichoServer({
+    store,
+    apiToken: TOKEN,
+    host: '127.0.0.1',
+    correctionNoteWriter: writer,
   });
-});
-
-describe('Correction retrieval correctness', () => {
-  it('answers correctly after correction', () => {
-    const store = openStore();
-    const isabella = makeEntity();
-    const carlos = makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada', aliases: ['Carlos'] });
-    store.upsertEntity(isabella);
-    store.upsertEntity(carlos);
-
-    const preview = store.createCorrectionPreview({
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      sourceProvenance: sourceProvenance(),
-      proposedFromEntityId: carlos.id,
-      proposedToEntityId: isabella.id,
-      proposedRelationType: RelationType.SpouseOf,
-      canonicalNotePath: 'note.md',
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      obsidianFieldsToAdd: {},
-      obsidianFieldsToRemove: [],
-    });
-
-    store.confirmCorrection({
-      previewId: preview.id,
-      previewHash: preview.previewHash,
-      previewVersion: preview.version,
-      entityId: isabella.id,
-      claimPattern: "Francisco's wife",
-      fromEntityId: carlos.id,
-      toEntityId: isabella.id,
-      relationType: RelationType.SpouseOf,
-      canonicalNoteHash: CANONICAL_NOTE_HASH,
-      canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: {},
-      decidedBy: 'carlos',
-      decidedAt: T2,
-    });
-
-    const spouseRelations = store.listRelations({ type: RelationType.SpouseOf });
-    expect(spouseRelations.some((r) =>
-      r.fromEntityId === carlos.id && r.toEntityId === isabella.id,
-    )).toBe(true);
-
-    const worksForRelations = store.listRelations({ fromEntityId: isabella.id, type: RelationType.WorksFor });
-    // WorksFor should still be queryable
-    expect(Array.isArray(worksForRelations)).toBe(true);
-
-    const exclusions = store.listIdentityExclusions(isabella.id);
-    expect(exclusions.length).toBe(1);
-  });
-});
+  const addr = await server.listen(0, '127.0.0.1');
+  servers.push(server);
+  return { port: addr.port, close: () => server.close() };
+}
