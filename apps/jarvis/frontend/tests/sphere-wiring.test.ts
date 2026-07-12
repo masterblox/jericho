@@ -35,6 +35,16 @@ describe('production sphere wiring', () => {
     expect(shell).toContain('client.cancelMission');
   });
 
+  it('projects the five-stage fleet lifecycle and maps real lifecycle enum values', () => {
+    const shell = source('sphere-shell.tsx');
+    const peripherals = source('sphere/components/peripherals.jsx');
+    expect(shell).toContain("label: 'LEARN'");
+    expect(shell).toContain('LifecycleStatus.Active');
+    expect(shell).toContain('LifecycleStatus.Succeeded');
+    expect(shell).not.toMatch(/status === ['"]executing['"]/);
+    expect(peripherals).toContain('Fleet delivery lifecycle');
+  });
+
   it('serves the sphere as the only product surface, with the Gesture Lab as the hardware harness', () => {
     const entry = source('main.tsx');
     expect(entry).not.toContain("get('view')");

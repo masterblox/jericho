@@ -5,6 +5,7 @@ import {
   StableSampleBuffer,
   applyCalibration,
   createCalibrationProfile,
+  derivePinchThresholds,
   loadCalibration,
   resetCalibrations,
   saveCalibration,
@@ -59,6 +60,7 @@ export interface GestureEngineRuntimePort {
   stop(): void;
   dispose(): void | Promise<void>;
   setSwapHands?(swapped: boolean): void;
+  setPinchThresholds?(handedness: Handedness, thresholds: { engageRatio: number; releaseRatio: number }): void;
 }
 
 export interface BridgeRuntimePort {
@@ -105,6 +107,10 @@ export interface GestureLabSnapshot extends SanitizedDiagnosticSnapshot {
     leftId: string | null;
     rightId: string | null;
   };
+  calibrationVersion: number;
+  calibratedThresholds: Partial<Record<Handedness, { engageRatio: number; releaseRatio: number }>>;
+  cameraIdentifierHash: string;
+  suppressionReason?: string;
 }
 
 /**
@@ -145,6 +151,7 @@ export class JarvisRuntime {
   private status = 'gesture runtime standby';
   private lastWakeSource?: 'clap' | 'manual';
   private cameraId = 'default';
+  private cameraIdentifierHash = 'pending';
   private cameraAspectRatio = 16 / 9;
   private readonly profiles = new Map<Handedness, CalibrationProfile>();
   private readonly suppressUntilPalm = new Set<Handedness>();
@@ -155,6 +162,8 @@ export class JarvisRuntime {
   private calibrationSamples: CalibrationSample[] = [];
   private calibrationPreviousPinch = false;
   private readonly calibrationBuffer = new StableSampleBuffer();
+  private calibrationOpenRatios: number[] = [];
+  private calibrationClosedRatios: number[] = [];
 
   constructor(options: JarvisRuntimeOptions) {
     this.root = options.root;
@@ -269,6 +278,12 @@ export class JarvisRuntime {
       this.engine = await this.createGestureEngine(this.video);
       this.assertNotDisposed();
       this.engine.setSwapHands?.(this.swapped);
+      for (const [handedness, profile] of this.profiles) {
+        this.engine.setPinchThresholds?.(handedness, {
+          engageRatio: profile.pinchEngageRatio,
+          releaseRatio: profile.pinchReleaseRatio,
+        });
+      }
       this.bridge = this.createBridge({
         onReady: () => this.setStatus('voice and gestures online'),
         onStatus: (value) => this.setStatus(`voice ${value}`),
@@ -396,8 +411,8 @@ export class JarvisRuntime {
       );
       this.updateDiagnosticsPanel();
       this.renderer.render({
-        right: cursorView(frame.right, rightCursorPoint),
-        left: cursorView(frame.left, leftPoint),
+        right: cursorView(frame.right, rightCursorPoint, rightTarget?.id, nucleusConsumesRight),
+        left: cursorView(frame.left, leftPoint, leftTarget?.id),
         status: this.status,
       });
       return;
@@ -443,8 +458,8 @@ export class JarvisRuntime {
     this.updateDiagnosticsPanel();
 
     const view: GestureSurfaceView = {
-      right: cursorView(frame.right, rightCursorPoint),
-      left: cursorView(frame.left, leftPoint),
+      right: cursorView(frame.right, rightCursorPoint, rightTarget?.id, nucleusConsumesRight),
+      left: cursorView(frame.left, leftPoint, leftTarget?.id),
       status: this.status,
     };
     this.renderer.render(view);
@@ -565,6 +580,7 @@ export class JarvisRuntime {
       settings = {};
     }
     this.cameraId = settings.deviceId?.trim() || 'default';
+    void hashCameraIdentifier(this.cameraId).then((hash) => { this.cameraIdentifierHash = hash; });
     const width = positive(settings.width) ?? positive(this.video?.videoWidth) ?? 1280;
     const height = positive(settings.height) ?? positive(this.video?.videoHeight) ?? 720;
     this.cameraAspectRatio = width / height;
@@ -617,14 +633,23 @@ export class JarvisRuntime {
     this.calibrationSamples = [];
     this.calibrationPreviousPinch = false;
     this.calibrationBuffer.clear();
+    this.calibrationOpenRatios = [];
+    this.calibrationClosedRatios = [];
     this.renderCalibration(`Hold ${handedness.toLowerCase()} palm at center, then pinch`);
   }
 
   private handleCalibration(hand: TrackedHandFrame): void {
     if (hand.handedness !== this.calibrationHand) return;
-    if (hand.state === 'palm') this.calibrationBuffer.push(hand.palmAnchor);
-    const pinchStarted = hand.state === 'pinch' && !this.calibrationPreviousPinch;
+    if (hand.state === 'palm' || hand.recognizedGesture === 'Open_Palm') {
+      this.calibrationBuffer.push(hand.palmAnchor);
+      this.calibrationOpenRatios.push(hand.pinchRatio);
+      if (this.calibrationOpenRatios.length > 80) this.calibrationOpenRatios.shift();
+    }
+    const openMedian = medianNumber(this.calibrationOpenRatios) ?? 0.75;
+    const rawPinched = hand.pinchRatio <= Math.min(0.72, Math.max(0.38, openMedian * 0.68));
+    const pinchStarted = rawPinched && !this.calibrationPreviousPinch;
     if (pinchStarted) {
+      this.calibrationClosedRatios.push(hand.pinchRatio);
       const point = this.calibrationBuffer.median();
       if (!point) {
         this.renderCalibration('Hold the open palm steady longer, then pinch');
@@ -641,7 +666,7 @@ export class JarvisRuntime {
         );
       }
     }
-    this.calibrationPreviousPinch = hand.state === 'pinch';
+    this.calibrationPreviousPinch = rawPinched;
   }
 
   private finishCalibration(): void {
@@ -653,9 +678,15 @@ export class JarvisRuntime {
         this.cameraId,
         this.cameraAspectRatio,
         handedness,
+        new Date().toISOString(),
+        derivePinchThresholds(this.calibrationOpenRatios, this.calibrationClosedRatios),
       );
       saveCalibration(this.storage, profile);
       this.profiles.set(handedness, profile);
+      this.engine?.setPinchThresholds?.(handedness, {
+        engageRatio: profile.pinchEngageRatio,
+        releaseRatio: profile.pinchReleaseRatio,
+      });
       this.suppressUntilPalm.add(handedness);
       this.calibrationHand = null;
       this.renderer.showCalibration(null);
@@ -665,6 +696,8 @@ export class JarvisRuntime {
       this.calibrationIndex = 0;
       this.calibrationSamples = [];
       this.calibrationBuffer.clear();
+      this.calibrationOpenRatios = [];
+      this.calibrationClosedRatios = [];
       this.renderCalibration(`${error instanceof Error ? error.message : 'Calibration failed'}. Repeat from center.`);
     }
   }
@@ -744,6 +777,15 @@ export class JarvisRuntime {
           leftId: leftTarget,
           rightId: rightTarget,
         },
+        calibrationVersion: 2,
+        cameraIdentifierHash: this.cameraIdentifierHash,
+        calibratedThresholds: Object.fromEntries([...this.profiles].map(([handedness, profile]) => [handedness, {
+          engageRatio: profile.pinchEngageRatio,
+          releaseRatio: profile.pinchReleaseRatio,
+        }])),
+        ...(this.calibrationHand ? { suppressionReason: `calibrating_${this.calibrationHand.toLocaleLowerCase()}` }
+          : this.paused ? { suppressionReason: 'runtime_paused' }
+            : undefined),
       });
     }
   }
@@ -794,13 +836,22 @@ function readActiveApprovalScope(ownerDocument: Document): ActiveApprovalScope |
   return { missionId, planHash, version };
 }
 
-function cursorView(hand?: TrackedHandFrame, point?: Point) {
+function cursorView(hand?: TrackedHandFrame, point?: Point, targetId?: string, clutch = false) {
   return {
     visible: Boolean(hand?.fresh && point),
     x: point?.x ?? 0,
     y: point?.y ?? 0,
     mode: hand?.state ?? 'idle',
+    phase: hand?.pinchPhase,
+    ...(targetId ? { targetId } : undefined),
+    clutch,
   };
+}
+
+async function hashCameraIdentifier(value: string): Promise<string> {
+  const bytes = new TextEncoder().encode(value);
+  const digest = await crypto.subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('').slice(0, 20);
 }
 
 const NOOP_STORAGE: RuntimeStorage = {
@@ -835,6 +886,11 @@ function safeSet(storage: RuntimeStorage, key: string, value: string): void {
 
 function positive(value: number | undefined): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function medianNumber(values: number[]): number | undefined {
+  const finite = values.filter(Number.isFinite).sort((left, right) => left - right);
+  return finite.length ? finite[Math.floor(finite.length / 2)] : undefined;
 }
 
 function downloadDiagnostics(ownerDocument: Document, contents: string): void {

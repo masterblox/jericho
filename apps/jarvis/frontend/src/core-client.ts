@@ -65,6 +65,21 @@ export interface RetentionResult {
   status: 'created' | 'updated' | 'unchanged';
 }
 
+export interface VaultSearchResult {
+  path: string;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+export interface VaultSearchResponse {
+  available: boolean;
+  cached?: boolean;
+  count: number;
+  results: VaultSearchResult[];
+  error?: string;
+}
+
 export class CoreClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #createEventSource: (url: string) => EventSourcePort;
@@ -200,6 +215,32 @@ export class CoreClient {
     // Refetch so its replay entry and Nucleus pulse appear immediately.
     await this.#refresh(this.#generation, true);
     return result;
+  }
+
+  async searchVault(query: string, limit = 6): Promise<VaultSearchResponse> {
+    const params = new URLSearchParams({ q: query.trim(), limit: String(limit) });
+    const response = await this.#fetch(`/api/v1/obsidian/search?${params}`, {
+      credentials: 'same-origin',
+      headers: { accept: 'application/json' },
+    });
+    const result = await response.json() as VaultSearchResponse;
+    if (!response.ok || !result.available) {
+      throw new Error(result.error === 'vault_search_unavailable'
+        ? 'Jarvis memory search is unavailable'
+        : 'Jarvis memory search failed');
+    }
+    return result;
+  }
+
+  async openVaultNote(relativePath: string): Promise<{ relativePath: string }> {
+    const response = await this.#fetch('/api/v1/obsidian/open', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify({ relativePath }),
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Opening Obsidian note failed'));
+    return response.json() as Promise<{ relativePath: string }>;
   }
 
   proposeRelationship(input: RelationshipProposalInput): Promise<unknown> {

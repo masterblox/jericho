@@ -12,6 +12,7 @@ import { JarvisRuntime, type GestureLabSnapshot } from './jarvis-runtime';
 
 const STEPS = [
   ['aim', 'Right palm aim', 'Move your right open palm; the cyan cursor should follow.'],
+  ['pinch', 'Pinch engage / release', 'Open your right hand, close a pinch, then fully release it.'],
   ['tap', 'Pinch tap', 'Pinch once over the large TARGET button.'],
   ['drag', 'Pinch drag', 'Pinch the MOVE card, move it, then release.'],
   ['hold', 'Pinch hold', 'Pinch and hold TARGET without moving to open its action ring.'],
@@ -32,6 +33,8 @@ export function GestureLab({ root }: { root: HTMLElement }) {
   const [snapshot, setSnapshot] = useState<GestureLabSnapshot>();
   const [passed, setPassed] = useState<Set<StepId>>(new Set());
   const [activity, setActivity] = useState('waiting for local runtime');
+  const sawRightPinch = useRef(false);
+  const [acceptance, setAcceptance] = useState<string>();
 
   const pass = (id: StepId, message: string) => {
     setPassed((current) => new Set(current).add(id));
@@ -63,7 +66,24 @@ export function GestureLab({ root }: { root: HTMLElement }) {
     if (snapshot.actions.some((action) => action.type === 'left-scroll')) pass('scroll', 'production communications scroll dispatched');
     if (snapshot.hands.some((hand) => hand.recognizedGesture === 'Closed_Fist') && snapshot.actions.length === 0) pass('fist', 'closed fist observed with no dispatched action');
     if (snapshot.wakeSource === 'clap') pass('wake', 'clap wake reached the unified Gemini voice path');
+    const right = snapshot.hands.find((hand) => hand.handedness === 'Right');
+    if (right?.pinchPhase === 'pinched') sawRightPinch.current = true;
+    if (sawRightPinch.current && right?.pinchPhase === 'open') pass('pinch', 'adaptive pinch engaged and released after a fresh open hand');
   }, [snapshot]);
+
+  const allPassed = STEPS.every(([id]) => passed.has(id));
+  const acceptHardware = () => {
+    if (!snapshot || !allPassed) return;
+    const report = {
+      schema: 'jericho.gesture-acceptance.v1', commit: __JERICHO_COMMIT__, browser: navigator.userAgent,
+      cameraIdentifierHash: snapshot.cameraIdentifierHash, calibrationVersion: snapshot.calibrationVersion,
+      thresholds: snapshot.calibratedThresholds, passedChecks: STEPS.map(([id]) => id), failures: [], timestamp: new Date().toISOString(),
+    };
+    const serialized = JSON.stringify(report, null, 2);
+    localStorage.setItem('jericho.gesture.acceptance.v1', serialized);
+    setAcceptance(serialized);
+    setActivity('hardware acceptance recorded locally; no frames or landmarks saved');
+  };
 
   const createRuntime = () => {
     const camera = video.current;
@@ -84,7 +104,7 @@ export function GestureLab({ root }: { root: HTMLElement }) {
         <div><span className="jericho-eyebrow">JERICHO / PRODUCTION RUNTIME</span><h1>Gesture Lab</h1></div>
         <div className="gesture-lab__status"><i />{snapshot?.status ?? 'standby'}</div>
         <button type="button" onClick={() => runtime.current?.wake()}>Manual wake</button>
-        <a href="/">Command center</a>
+        <a href="/?view=command">Command center</a>
       </header>
 
       <section className="gesture-lab__stage">
@@ -106,10 +126,14 @@ export function GestureLab({ root }: { root: HTMLElement }) {
           <div><dt>Inference</dt><dd>{snapshot ? `${snapshot.performance.inferenceMs} ms` : '—'}</dd></div>
           <div><dt>Clap</dt><dd>{snapshot?.wakeSource === 'clap' ? 'DETECTED' : 'armed'}</dd></div>
           <div><dt>Targets</dt><dd>L {snapshot?.targets.leftId ?? '—'} · R {snapshot?.targets.rightId ?? '—'}</dd></div>
+          <div><dt>Calibration</dt><dd>v{snapshot?.calibrationVersion ?? '—'}</dd></div>
+          <div><dt>Suppression</dt><dd>{snapshot?.suppressionReason ?? 'none'}</dd></div>
         </dl>
         {(snapshot?.hands ?? []).map((hand) => <article key={hand.handedness}>
           <strong>{hand.handedness}</strong><span>{hand.recognizedGesture ?? hand.state}</span>
-          <span>pinch {hand.pinchPhase} · {hand.pinchRatio}</span><span>{hand.fresh ? 'fresh' : `lost ${hand.lossAgeMs}ms`}</span>
+          <span>pinch {hand.pinchPhase} · ratio {hand.pinchRatio}</span><span>{hand.fresh ? 'fresh' : `lost ${hand.lossAgeMs}ms`}</span>
+          <span>thresholds {snapshot?.calibratedThresholds[hand.handedness]?.engageRatio ?? '—'} / {snapshot?.calibratedThresholds[hand.handedness]?.releaseRatio ?? '—'}</span>
+          <span>action {snapshot?.actions.at(-1)?.type ?? 'none'}</span>
         </article>)}
         <p>{activity}</p>
       </aside>
@@ -119,6 +143,9 @@ export function GestureLab({ root }: { root: HTMLElement }) {
         <ol>{STEPS.map(([id, title, instruction]) => <li className={passed.has(id) ? 'is-pass' : ''} key={id}>
           <b>{passed.has(id) ? 'PASS' : 'LIVE'}</b><div><strong>{title}</strong><span>{instruction}</span></div>
         </li>)}</ol>
+        <button className="gesture-lab__accept" type="button" disabled={!allPassed} onClick={acceptHardware}>Hardware accepted</button>
+        {!passed.has('wake') && <button className="gesture-lab__voice-unavailable" type="button" onClick={() => pass('wake', 'voice unavailable explicitly recorded for this hardware run')}>Record voice unavailable</button>}
+        {acceptance && <pre className="gesture-lab__report">{acceptance}</pre>}
       </section>
 
       <section className="gesture-lab__comms jericho-bay--left"><h2>Communications scroll</h2>{Array.from({ length: 12 }, (_, index) => <p key={index}>Priority conversation {index + 1}</p>)}</section>

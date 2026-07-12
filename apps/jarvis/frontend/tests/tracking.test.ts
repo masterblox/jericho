@@ -33,6 +33,7 @@ describe('palm-anchored tracking', () => {
 
   it('debounces pinch engage/release and rejects frame-edge pinches', () => {
     const latch = new PinchLatch();
+    expect(latch.update(0.6, false, -10)).toBe(false);
     expect(latch.update(0.2, false, 0)).toBe(false);
     expect(latch.update(0.2, false, 79)).toBe(false);
     expect(latch.update(0.2, false, 80)).toBe(true);
@@ -45,6 +46,7 @@ describe('palm-anchored tracking', () => {
 
   it('does not release an active pinch merely because it reaches a frame edge', () => {
     const latch = new PinchLatch();
+    latch.update(0.6, false, -10);
     latch.update(0.2, false, 0);
     expect(latch.update(0.2, false, 80)).toBe(true);
     expect(latch.update(0.2, true, 100)).toBe(true);

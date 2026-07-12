@@ -130,6 +130,32 @@ describe('CoreClient', () => {
     }));
   });
 
+  it('searches Jarvis memory through the bounded same-origin Obsidian endpoint', async () => {
+    const payload = {
+      available: true, cached: false, count: 1,
+      results: [{ path: 'People/Carlos.md', title: 'Carlos', excerpt: 'Owner context', score: 0.91 }],
+    };
+    const fetchPort = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify(payload), { status: 200 }));
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+
+    await expect(client.searchVault('  Carlos strategy  ', 6)).resolves.toEqual(payload);
+    expect(fetchPort).toHaveBeenCalledWith(
+      '/api/v1/obsidian/search?q=Carlos+strategy&limit=6',
+      { credentials: 'same-origin', headers: { accept: 'application/json' } },
+    );
+  });
+
+  it('opens only a relative Obsidian note through the same-origin Core boundary', async () => {
+    const fetchPort = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({
+      relativePath: 'Projects/Fleet.md',
+    }), { status: 200 }));
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+    await expect(client.openVaultNote('Projects/Fleet.md')).resolves.toEqual({ relativePath: 'Projects/Fleet.md' });
+    expect(fetchPort).toHaveBeenCalledWith('/api/v1/obsidian/open', expect.objectContaining({
+      method: 'POST', credentials: 'same-origin', body: JSON.stringify({ relativePath: 'Projects/Fleet.md' }),
+    }));
+  });
+
   it('posts exact review-intent and checkpoint bindings without authorizing connector work', async () => {
     const next = snapshot({ lastChangeSequence: 11 });
     const fetchPort = vi.fn()

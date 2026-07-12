@@ -169,10 +169,8 @@ lsof -ti tcp:8790 -sTCP:LISTEN | xargs kill        # vault gateway (BRAIN search
 cd apps/jarvis
 ISO="$PWD/../../.context"
 pnpm --filter frontend dev &
-# bridge: isolated store + the WORKING paperclip key (the shell exports a stale one)
-env HOME="$ISO/jericho-home" \
-    PAPERCLIP_API_KEY="$(grep '^PAPERCLIP_API_KEY=' .env | cut -d= -f2)" \
-  pnpm --filter bridge dev &
+# bridge: isolated store (paperclip creds come from .env as JERICHO_PAPERCLIP_*)
+env HOME="$ISO/jericho-home" pnpm --filter bridge dev &
 # vault gateway: hermes Obsidian vault + uv-python wrapper in .context/bin
 env PATH="$ISO/bin:$PATH" \
     JERICHO_VAULT_GATEWAY_TOKEN="$(cat "$ISO/vault-rag/gateway-token")" \
@@ -201,7 +199,7 @@ BRAIN works without the gateway too — it just shows the honest OFFLINE state.
 | Camera never appears | Permission denied, or another app holds the camera | Re-allow in Chrome site settings; close other camera apps |
 | API returns 401 | Missing/mismatched token | Vite proxy attaches `JERICHO_API_TOKEN` from `.env`; keep bridge + frontend on the same value |
 | `python3 …` errors in tests | Machine policy forces `uv run python3` | Unrelated to voice/gestures; the one red vault-RAG CLI test is this, not a product bug. The running vault gateway avoids it via the `.context/bin/python3` wrapper |
-| AGENTS / TASKS say OFFLINE | Paperclip board unreachable or stale key | Bridge must be started with the working `PAPERCLIP_API_KEY` from `.env` (the shell exports a stale one); check `[jericho] fleet snapshot failed` in the bridge terminal |
+| AGENTS / TASKS say OFFLINE | Paperclip board unreachable or bad key | Check `JERICHO_PAPERCLIP_URL/API_KEY/COMPANY_ID` in `apps/jarvis/.env` and `[jericho] fleet snapshot failed` in the bridge terminal (the stale shell export `PAPERCLIP_API_KEY` is unused now) |
 | BRAIN says VAULT SEARCH OFFLINE | Vault gateway not running | Start it per section 5; search works once `127.0.0.1:8790` is up |
 
 ---

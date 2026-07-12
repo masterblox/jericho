@@ -13,6 +13,16 @@ function Clock() {
 
 const VIEWS = ['CORE', 'AGENTS', 'TASKS', 'BRAIN']
 
+export function FleetLifecycle({ stages }) {
+  return <ol className="fleet-lifecycle" aria-label="Fleet delivery lifecycle">
+    {stages.map((stage, index) => <li key={stage.label} className={stage.active ? 'active' : ''}>
+      <span>{String(index + 1).padStart(2, '0')}</span>
+      <strong>{stage.label}</strong>
+      <b>{String(stage.count).padStart(2, '0')}</b>
+    </li>)}
+  </ol>
+}
+
 export function IdCluster({ activeView, onView, coreState = 'idle', connected = false }) {
   return <div className="cluster id-cluster">
     <div className="id-line">
