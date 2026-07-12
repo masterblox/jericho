@@ -1130,8 +1130,9 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         });
 
         let obsidianReceipt: ObsidianReceipt | undefined;
-        if (storeResult.status === CorrectionConfirmStatus.Confirmed && options.correctionNoteWriter) {
+        if (storeResult.status === CorrectionConfirmStatus.Confirmed) {
           try {
+            if (!options.correctionNoteWriter) throw new Error('Correction note writer is unavailable');
             obsidianReceipt = options.correctionNoteWriter.write({
               relativePath: input.canonicalNotePath,
               expectedHash: input.canonicalNoteHash,
@@ -1195,12 +1196,15 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
           throw new HttpError(503, 'correction_note_writer_unavailable');
         }
 
+        const binding = options.store.getCorrectionNoteBinding(storeResult.correctionId);
+        if (!binding) throw new HttpError(409, 'correction_note_binding_unavailable');
+
         let obsidianReceipt: ObsidianReceipt;
         try {
           obsidianReceipt = options.correctionNoteWriter.write({
             relativePath: input.canonicalNotePath,
             expectedHash: input.canonicalNoteHash,
-            fieldsToAdd: { spouse: 'Carlos Prada' },
+            fieldsToAdd: binding.fieldsToAdd,
             now: retriedAt,
           });
           options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
@@ -1212,6 +1216,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
             completedAt: retriedAt,
             error: noteError instanceof Error ? noteError.message : String(noteError),
           };
+          options.store.finalizeCorrectionObsidian(storeResult.correctionId, failedReceipt);
           throw new HttpError(502, 'correction_note_retry_failed');
         }
 

@@ -56,23 +56,25 @@ export class CanonicalNoteWriter {
     const fieldsWritten: string[] = [];
     let modified = current;
     for (const [key, value] of Object.entries(input.fieldsToAdd)) {
-      if (modified.includes(`${key}: ${JSON.stringify(value)}`)) continue;
-      if (modified.includes(`${key}:`) && modified.includes(JSON.stringify(value))) continue;
-
       const yamlKey = `${key}: `;
-      const yamlValue = JSON.stringify(value);
+      const yamlValue = /^[A-Za-z0-9][A-Za-z0-9 ._@/-]*$/.test(value) ? value : JSON.stringify(value);
       const yamlLine = `${yamlKey}${yamlValue}`;
 
-      if (modified.includes(yamlKey)) {
-        const lines = modified.split('\n');
-        const updatedLines = lines.map((line) =>
-          line.trimStart().startsWith(yamlKey) ? yamlLine : line);
-        modified = updatedLines.join('\n');
+      const frontmatterEnd = modified.indexOf('\n---', 4);
+      if (!modified.startsWith('---\n') || frontmatterEnd === -1) {
+        throw new Error('Note has no valid YAML frontmatter');
+      }
+      const frontmatter = modified.slice(4, frontmatterEnd).split('\n');
+      const existingIndex = frontmatter.findIndex((line) => line.startsWith(yamlKey));
+      if (existingIndex >= 0 && frontmatter[existingIndex] === yamlLine) continue;
+
+      if (existingIndex >= 0) {
+        frontmatter[existingIndex] = yamlLine;
+        modified = `---\n${frontmatter.join('\n')}${modified.slice(frontmatterEnd)}`;
         fieldsWritten.push(key);
       } else {
-        const endOfFrontmatter = modified.indexOf('---', 3);
-        if (endOfFrontmatter === -1) throw new Error('Note has no valid YAML frontmatter');
-        modified = `${modified.slice(0, endOfFrontmatter)}${yamlLine}\n${modified.slice(endOfFrontmatter)}`;
+        frontmatter.push(yamlLine);
+        modified = `---\n${frontmatter.join('\n')}${modified.slice(frontmatterEnd)}`;
         fieldsWritten.push(key);
       }
     }

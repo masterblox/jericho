@@ -886,6 +886,12 @@ export interface CorrectionConfirmResult {
   decision?: CorrectionDecision;
 }
 
+interface CorrectionNoteBinding {
+  canonicalNotePath: string;
+  canonicalNoteHash: string;
+  fieldsToAdd: Record<string, string>;
+}
+
 export class JerichoStore {
   readonly #database: DatabaseSync;
   readonly #masterCrypto: CoreCrypto;
@@ -1505,21 +1511,27 @@ export class JerichoStore {
     const existingReceipt = this.#findCorrectionReceipt(correctionId);
     if (existingReceipt) {
       const obsidianReceipt = this.getCorrectionObsidianReceipt(correctionId);
-      if (existingReceipt.status === 'succeeded' && (!obsidianReceipt || obsidianReceipt.status === 'succeeded' || obsidianReceipt.status === 'skipped')) {
+      if (existingReceipt.status === 'succeeded' && (obsidianReceipt?.status === 'succeeded' || obsidianReceipt?.status === 'skipped')) {
         return {
           status: CorrectionConfirmStatus.Idempotent,
           correctionId,
           coreReceipt: existingReceipt,
         };
       }
-      if (existingReceipt.status === 'succeeded' && obsidianReceipt?.status === 'failed') {
+      if (existingReceipt.status === 'succeeded') {
+        const failedReceipt = obsidianReceipt ?? {
+          status: 'failed' as const,
+          notePath: input.canonicalNotePath,
+          fieldsWritten: [],
+          error: 'Obsidian write has not completed',
+        };
         return {
           status: CorrectionConfirmStatus.Partial,
           correctionId,
           coreReceipt: existingReceipt,
           partialCompletion: {
             coreReceipt: existingReceipt,
-            obsidianReceipt,
+            obsidianReceipt: failedReceipt,
             allowsRetry: true,
             retryOnlyNote: true,
           },
@@ -1630,6 +1642,11 @@ export class JerichoStore {
           .digest('hex'),
       };
       this.#writeCorrectionReceipt(coreReceipt);
+      this.#writeCorrectionNoteBinding(correctionId, {
+        canonicalNotePath: input.canonicalNotePath,
+        canonicalNoteHash: input.canonicalNoteHash,
+        fieldsToAdd: input.obsidianFieldsToAdd,
+      });
 
       this.#appendChangeLog({
         kind: ChangeLogKind.CorrectionApplied,
@@ -1663,7 +1680,14 @@ export class JerichoStore {
 
     const receipt = this.#findCorrectionReceipt(input.correctionId);
     if (!receipt) throw new Error(`Correction ${input.correctionId} receipt not found`);
-    if (receipt.status !== 'partial') throw new Error('Correction is not in a retryable state');
+    if (receipt.status !== 'succeeded') throw new Error('Correction Core write did not succeed');
+    const obsidianReceipt = this.getCorrectionObsidianReceipt(input.correctionId);
+    if (obsidianReceipt && obsidianReceipt.status !== 'failed') throw new Error('Correction is not in a retryable state');
+    const binding = this.getCorrectionNoteBinding(input.correctionId);
+    if (!binding) throw new Error('Correction note binding is unavailable');
+    if (binding.canonicalNotePath !== input.canonicalNotePath || binding.canonicalNoteHash !== input.canonicalNoteHash) {
+      throw new CorrectionDecisionConflictError(input.correctionId, 'retry does not match the confirmed note binding');
+    }
 
     return {
       correctionId: input.correctionId,
@@ -4100,6 +4124,24 @@ export class JerichoStore {
     } catch {
       return undefined;
     }
+  }
+
+  getCorrectionNoteBinding(correctionId: string): CorrectionNoteBinding | undefined {
+    const row = this.#database.prepare(`SELECT value FROM store_metadata WHERE name = ?`)
+      .get(`correction_note_binding:${correctionId}`);
+    if (!row) return undefined;
+    try {
+      return JSON.parse(decodeDbValue(row.value)) as CorrectionNoteBinding;
+    } catch {
+      return undefined;
+    }
+  }
+
+  #writeCorrectionNoteBinding(correctionId: string, binding: CorrectionNoteBinding): void {
+    this.#database.prepare(`
+      INSERT INTO store_metadata (name, value) VALUES (?, ?)
+      ON CONFLICT (name) DO UPDATE SET value = excluded.value
+    `).run(`correction_note_binding:${correctionId}`, Buffer.from(JSON.stringify(binding), 'utf8'));
   }
 
   #findCorrectionReceipt(correctionId: string): CoreReceipt | undefined {

@@ -67,7 +67,7 @@ afterEach(async () => {
 });
 
 function openStore(): JerichoStore {
-  const store = new JerichoStore({ key: KEY });
+  const store = new JerichoStore({ path: ':memory:', key: KEY });
   stores.push(store);
   return store;
 }
@@ -264,6 +264,9 @@ describe('Core confirm (store)', () => {
       obsidianFieldsToAdd: {}, decidedBy: 'carlos', decidedAt: T2,
     });
     expect(first.status).toBe(CorrectionConfirmStatus.Confirmed);
+    store.finalizeCorrectionObsidian(first.correctionId, {
+      status: 'skipped', notePath: 'n.md', fieldsWritten: [], completedAt: T2,
+    });
 
     const second = store.confirmCorrection({
       previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
@@ -356,7 +359,7 @@ describe('CanonicalNoteWriter', () => {
     expect(receipt.fieldsWritten).toContain('spouse');
 
     const updated = readFileSync(join(vault, note.relativePath), 'utf8');
-    expect(updated).toContain('spouse: "Carlos Prada"');
+    expect(updated).toContain('spouse: Carlos Prada');
     expect(updated).toContain('# Isabella Handel');
     expect(updated).toContain("Francisco's wife");
   });
@@ -460,7 +463,7 @@ describe('HTTP correction endpoints with vault', () => {
     expect(obs?.fieldsWritten).toContain('spouse');
 
     const updatedNote = readFileSync(join(vault, note.relativePath), 'utf8');
-    expect(updatedNote).toContain('spouse: "Carlos Prada"');
+    expect(updatedNote).toContain('spouse: Carlos Prada');
 
     const spouses = store.listRelations({ type: RelationType.SpouseOf });
     expect(spouses.length).toBe(2);
@@ -566,7 +569,7 @@ describe('HTTP correction endpoints with vault', () => {
         canonicalNoteHash: staleHash,
         obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
       }),
-    })).rejects.toThrow('does not match');
+    })).rejects.toThrow('correction_decision_conflict');
   });
 
   it('repeated confirmation is idempotent', async () => {
@@ -626,6 +629,61 @@ describe('HTTP correction endpoints with vault', () => {
     }) as Record<string, unknown>;
     expect(second.status).toBe('idempotent');
     expect(store.listRelations({ type: RelationType.SpouseOf }).length).toBe(2);
+  });
+
+  it('reports partial completion and retries only the failed note write', async () => {
+    const vault = tempVault();
+    const note = writeCanonicalNote(vault);
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+    const server = await startServer(store, new CanonicalNoteWriter({ vaultPath: vault }));
+    const base = `http://localhost:${server.port}`;
+
+    const previewBody = await fetchJson(`${base}/api/v1/corrections/preview`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+        sourceProvenance: sourceProvenance(), proposedRelationType: 'spouse_of',
+        proposedFromEntityId: 'entity-carlos', proposedToEntityId: 'entity-isabella',
+        canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+        obsidianFieldsToAdd: { spouse: 'Carlos Prada' }, obsidianFieldsToRemove: [],
+      }),
+    }) as { preview: Record<string, unknown> };
+    const preview = previewBody.preview;
+    const confirmPayload = {
+      previewId: preview.id, previewHash: preview.previewHash, previewVersion: preview.version,
+      entityId: 'entity-isabella', claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos', toEntityId: 'entity-isabella', relationType: 'spouse_of',
+      canonicalNotePath: note.relativePath, canonicalNoteHash: note.hash,
+      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+    };
+
+    writeFileSync(join(vault, note.relativePath), `${CANONICAL_NOTE_CONTENT}\nchanged`, 'utf8');
+    const partial = await fetchJson(`${base}/api/v1/corrections/confirm`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify(confirmPayload),
+    }) as Record<string, unknown>;
+    expect(partial.status).toBe('partial');
+    expect((partial.partialCompletion as Record<string, unknown>).retryOnlyNote).toBe(true);
+    expect(store.listRelations({ type: RelationType.SpouseOf })).toHaveLength(2);
+
+    writeFileSync(join(vault, note.relativePath), CANONICAL_NOTE_CONTENT, 'utf8');
+    const retried = await fetchJson(`${base}/api/v1/corrections/retry`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}` },
+      body: JSON.stringify({
+        correctionId: partial.correctionId,
+        canonicalNotePath: note.relativePath,
+        canonicalNoteHash: note.hash,
+      }),
+    }) as Record<string, unknown>;
+    expect(retried.status).toBe('confirmed');
+    expect((retried.obsidianReceipt as Record<string, unknown>).status).toBe('succeeded');
+    expect(readFileSync(join(vault, note.relativePath), 'utf8')).toContain('spouse: Carlos Prada');
+    expect(store.listRelations({ type: RelationType.SpouseOf })).toHaveLength(2);
   });
 
   it('retrieval answers correctly after correction', async () => {
