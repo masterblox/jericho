@@ -1,5 +1,5 @@
 import type { GestureContextAction } from './gesture-target-registry';
-import type { CalibrationTarget } from './calibration';
+import type { CalibrationTarget, VerificationPointResult } from './calibration';
 import type { GestureState, Handedness, PinchPhase, Point } from './tracking';
 
 export interface GestureCursorView {
@@ -37,6 +37,14 @@ export interface GestureCalibrationView {
   target: CalibrationTarget;
   point: Point;
   message: string;
+  phase: 'collecting' | 'verifying' | 'retrying' | 'confirmed';
+  cursorPoint?: Point;
+  stability?: number;
+  pinchState?: string;
+  sampleConfirmed?: boolean;
+  handednessDetected?: Handedness;
+  verificationResults?: Partial<Record<CalibrationTarget, VerificationPointResult>>;
+  failedPoint?: CalibrationTarget | null;
 }
 
 export interface GestureSurfacePort {
@@ -146,17 +154,77 @@ export class GestureSurfaceRenderer implements GestureSurfacePort {
     if (!view) return;
     const layer = this.ownerDocument.createElement('section');
     layer.className = 'jericho-runtime-calibration';
+    layer.dataset.phase = view.phase;
     layer.setAttribute('role', 'status');
     layer.setAttribute('aria-live', 'assertive');
+
     const copy = this.ownerDocument.createElement('p');
     copy.textContent = view.message;
+    layer.append(copy);
+
+    if (view.handednessDetected) {
+      const handedness = this.ownerDocument.createElement('span');
+      handedness.className = 'jericho-calibration-handedness';
+      handedness.textContent = `Hand: ${view.handednessDetected}`;
+      copy.append(handedness);
+    }
+
+    if (view.pinchState) {
+      const pinch = this.ownerDocument.createElement('span');
+      pinch.className = 'jericho-calibration-pinch-state';
+      pinch.dataset.state = view.pinchState;
+      pinch.textContent = view.pinchState === 'pinched' ? 'PINCHED'
+        : view.pinchState === 'engaging' ? 'engaging'
+        : view.pinchState === 'releasing' ? 'releasing'
+        : 'open palm';
+      copy.append(pinch);
+    }
+
     const target = this.ownerDocument.createElement('div');
     target.className = 'jericho-runtime-calibration-target';
     target.dataset.calibrationTarget = view.target;
     target.style.left = `${view.point.x * 100}%`;
     target.style.top = `${view.point.y * 100}%`;
+    if (view.sampleConfirmed) target.dataset.confirmed = 'true';
     target.setAttribute('aria-hidden', 'true');
-    layer.append(copy, target);
+
+    if (view.stability !== undefined) {
+      const ring = this.ownerDocument.createElement('div');
+      ring.className = 'jericho-calibration-stability';
+      ring.style.setProperty('--stability', String(Math.min(1, Math.max(0, view.stability))));
+      target.append(ring);
+    }
+
+    layer.append(target);
+
+    if (view.cursorPoint) {
+      const cursor = this.ownerDocument.createElement('div');
+      cursor.className = 'jericho-calibration-cursor';
+      cursor.style.left = `${view.cursorPoint.x}px`;
+      cursor.style.top = `${view.cursorPoint.y}px`;
+      if (view.pinchState === 'pinched') cursor.dataset.pinch = 'true';
+      layer.append(cursor);
+    }
+
+    if (view.verificationResults) {
+      const verify = this.ownerDocument.createElement('div');
+      verify.className = 'jericho-calibration-verification';
+      const entries = Object.entries(view.verificationResults) as [CalibrationTarget, VerificationPointResult][];
+      for (const [targetId, result] of entries) {
+        const row = this.ownerDocument.createElement('div');
+        row.className = `jericho-calibration-verify-point ${result.passed ? 'pass' : 'fail'}`;
+        row.textContent = `${targetId}: ${(result.distance * 100).toFixed(1)}%`;
+        verify.append(row);
+      }
+      if (view.failedPoint) {
+        const retry = this.ownerDocument.createElement('div');
+        retry.className = 'jericho-calibration-retry-hint';
+        retry.textContent = `Repeat: ${view.failedPoint}`;
+        verify.append(retry);
+      }
+      layer.append(verify);
+    }
+
     this.surface!.append(layer);
     this.calibration = layer;
   }

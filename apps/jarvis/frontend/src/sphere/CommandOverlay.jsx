@@ -1,5 +1,6 @@
 import React from 'react'
 import { IsabellaGuidedTest } from './IsabellaGuidedTest'
+import { listProfiles, profileCard, resetCalibrations } from '../calibration'
 
 const MODES = [
   ['directive', 'NEW DIRECTIVE'],
@@ -7,6 +8,7 @@ const MODES = [
   ['approvals', 'PENDING APPROVALS'],
   ['missions', 'ACTIVE MISSION'],
   ['outcomes', 'RECENT OUTCOME'],
+  ['gesture', 'GESTURE'],
 ]
 
 export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSession = 0, guidedTestActive = false }) {
@@ -17,6 +19,12 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
   const [selectedMemory, setSelectedMemory] = React.useState(null)
   const [selectedMissionId, setSelectedMissionId] = React.useState(null)
   const [message, setMessage] = React.useState('')
+  const [profiles, setProfiles] = React.useState(() => {
+    try { return listProfiles(localStorage); } catch { return []; }
+  })
+  const refreshProfiles = React.useCallback(() => {
+    try { setProfiles(listProfiles(localStorage)); } catch { setProfiles([]); }
+  }, [])
 
   React.useEffect(() => {
     if (!open) return
@@ -30,6 +38,10 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
     if (guidedTestActive && guidedTestSession > 0) setMode('guided')
     else if (!guidedTestActive) setMode(current => current === 'guided' ? 'home' : current)
   }, [guidedTestActive, guidedTestSession])
+
+  React.useEffect(() => {
+    if (open) refreshProfiles()
+  }, [open, refreshProfiles])
 
   const selectedMission = liveData.missions.find(item => item.id === selectedMissionId)
     ?? liveData.missions.find(item => item.active)
@@ -126,6 +138,40 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
       {mode === 'outcomes' && <div className="sphere-outcomes">
         {liveData.outcomes.length ? liveData.outcomes.map(item => <article key={item.id}><strong>{item.verified ? 'VERIFIED' : 'PENDING'}</strong><span>{item.missionTaskId}</span><code>{item.receiptCount} RECEIPTS</code></article>) : <p>NO VERIFIED OUTCOMES</p>}
         {liveData.paperclip.map(item => <article key={item.id}><strong>PAPERCLIP · {item.status}</strong><span>{item.issueId ?? item.error ?? 'NOT RECONCILED'}</span><code>{item.verifiedByCore ? 'CORE VERIFIED' : 'QUEUE OBSERVATION ONLY'}</code></article>)}
+      </div>}
+      {mode === 'gesture' && <div className="sphere-gesture">
+        <p className="sphere-gesture__intro">Hand calibration profiles stored on this device. Gesture runtime must be engaged to recalibrate.</p>
+        {profiles.length === 0 && <p className="sphere-gesture__empty">No calibration profiles. Engage gesture runtime and calibrate from the gesture controls.</p>}
+        {profiles.map(profile => {
+          const card = profileCard(profile)
+          return <article key={`${profile.handedness}-${profile.cameraId}`} className="sphere-gesture-card">
+            <header>
+              <strong>{card.handedness} hand</strong>
+              <span className={card.residualError <= 0.05 ? 'ok' : 'warn'}>
+                Residual {(card.residualError * 100).toFixed(1)}%
+              </span>
+            </header>
+            <dl>
+              <div><dt>Camera</dt><dd>{card.cameraLabel}</dd></div>
+              <div><dt>Aspect</dt><dd>{card.aspectLabel}</dd></div>
+              <div><dt>Age</dt><dd>{card.ageSeconds < 120 ? 'just now' : card.ageSeconds < 3600 ? `${Math.floor(card.ageSeconds / 60)}m ago` : `${Math.floor(card.ageSeconds / 3600)}h ago`}</dd></div>
+              <div><dt>Pinch engage</dt><dd>{card.pinchEngageRatio}</dd></div>
+              <div><dt>Pinch release</dt><dd>{card.pinchReleaseRatio}</dd></div>
+              <div><dt>Verification</dt><dd>{profile.verificationTimestamp ? 'verified' : 'unverified'}</dd></div>
+            </dl>
+            <footer>
+              <button type="button" data-gesture-target={`gesture:reset:${profile.handedness.toLowerCase()}`} onClick={() => {
+                try {
+                  resetCalibrations(localStorage, profile.cameraId)
+                  refreshProfiles()
+                  setMessage(`${profile.handedness} hand calibration reset`)
+                } catch (error) {
+                  setMessage(error instanceof Error ? error.message : 'Reset failed')
+                }
+              }}>RESET</button>
+            </footer>
+          </article>
+        })}
       </div>}
     </div>
     {message && <footer className="sphere-command__status" role="status">{message}</footer>}
