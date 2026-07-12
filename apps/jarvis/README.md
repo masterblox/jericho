@@ -55,6 +55,12 @@ Automatic master-key rotation is intentionally deferred. Replacing a production
 key in place makes the existing store unavailable; rotation requires a separate
 authenticated re-encryption migration.
 
+If an existing Core cannot be opened because its credential is irrecoverable,
+an operator may explicitly run `pnpm --filter bridge start -- --reinitialize-core`.
+Jericho first verifies copies of `jericho.db` and any WAL/SHM files under a
+timestamped `~/.jericho/recovery/` directory, then initializes a new key and
+Core. This is an archive, not a migration; it never runs automatically.
+
 ## Command center
 
 The product surface is the intelligence sphere at `/`, backed by the

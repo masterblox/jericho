@@ -1,4 +1,6 @@
 import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdirSync } from 'node:fs';
 
 const shared = {
   bundle: true,
@@ -7,6 +9,13 @@ const shared = {
   external: ['electron'],
   sourcemap: true,
 };
+
+mkdirSync('electron/dist', { recursive: true });
+execFileSync('/usr/bin/clang', [
+  '-fobjc-arc', '-framework', 'Foundation', '-framework', 'Security',
+  'electron/keychain-helper.m', '-o', 'electron/dist/jericho-keychain-helper',
+], { stdio: 'inherit' });
+chmodSync('electron/dist/jericho-keychain-helper', 0o755);
 
 await Promise.all([
   build({

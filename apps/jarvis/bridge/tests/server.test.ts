@@ -228,8 +228,17 @@ describe('production Core composition', () => {
       headers: { authorization: `Bearer ${TOKEN}` },
     });
     expect(health.status).toBe(200);
-    const healthBody = await health.json() as { ok: boolean; connectors: unknown[] };
+    const healthBody = await health.json() as {
+      ok: boolean; connectors: unknown[];
+      startup: { database: string; initializedNewCore: boolean };
+      vault: { ready: boolean };
+    };
     expect(healthBody.ok).toBe(true);
+    expect(healthBody.startup).toEqual({
+      storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false,
+    });
+    expect(JSON.stringify(healthBody.startup)).not.toContain('/Users/');
+    expect(healthBody.vault).toEqual({ ready: true });
     expect(healthBody.connectors).toEqual(expect.arrayContaining([expect.objectContaining({
         connectorId: 'hermes-execution',
         status: ConnectorHealthStatus.Unavailable,
@@ -244,19 +253,19 @@ describe('production Core composition', () => {
 
 describe('local API credential', () => {
   it('prefers an explicit environment token without consulting Keychain', () => {
-    const runSecurityCommand = vi.fn();
+    const readSecret = vi.fn();
 
     expect(loadApiToken({
       environment: { JERICHO_API_TOKEN: TOKEN },
       platform: 'darwin',
-      runSecurityCommand,
+      readSecret,
     })).toBe(TOKEN);
-    expect(runSecurityCommand).not.toHaveBeenCalled();
+    expect(readSecret).not.toHaveBeenCalled();
   });
 
   it('generates a missing macOS Keychain token and passes it only over stdin', () => {
     const generated = Buffer.alloc(32, 89).toString('base64url');
-    const calls: Array<{ args: readonly string[]; input?: string }> = [];
+    const writes: Array<{ service: string; secret: string }> = [];
     let persisted: string | undefined;
 
     const token = loadApiToken({
@@ -264,30 +273,18 @@ describe('local API credential', () => {
       platform: 'darwin',
       username: 'test-user',
       generateToken: () => generated,
-      runSecurityCommand: (args, input) => {
-        calls.push({ args, input });
-        if (args[0] === 'find-generic-password') {
-          if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
-          return `${persisted}\n`;
-        }
-        persisted = input?.trim();
-        return '';
+      readSecret: () => {
+        if (!persisted) throw Object.assign(new Error('item not found'), { status: 44 });
+        return `${persisted}\n`;
+      },
+      writeSecret: (service, secret) => {
+        writes.push({ service, secret });
+        persisted = secret;
       },
     });
 
     expect(token).toBe(generated);
-    expect(calls[1]).toEqual({
-      args: [
-        'add-generic-password',
-        '-s',
-        'jericho-core-api',
-        '-a',
-        'test-user',
-        '-w',
-      ],
-      input: `${generated}\n`,
-    });
-    expect(calls[1].args).not.toContain(generated);
+    expect(writes).toEqual([{ service: 'jericho-core-api', secret: generated }]);
   });
 
   it('fails closed off macOS when no token is configured', () => {

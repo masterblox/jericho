@@ -41,6 +41,8 @@ import {
 
 import { buildCommandCenterSnapshot } from './command-center.js';
 import { loadConfig } from './config.js';
+import { normalStartupStatus, reinitializeCore, type CoreStartupStatus } from './core/recovery.js';
+import { writeKeychainSecret } from './platform/keychain.js';
 import { PaperclipFleetClient, type FleetPort } from './fleet/paperclip-client.js';
 import {
   EventConflictError,
@@ -157,6 +159,8 @@ export interface JerichoServerOptions {
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  startupStatus?: CoreStartupStatus;
+  vaultReady?: boolean;
 }
 
 export interface JerichoServerAddress {
@@ -325,6 +329,8 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         ok: true,
         voice: { status: options.geminiApiKey ? 'available' : 'unavailable' },
         connectors: options.store.listConnectorHealth(),
+        startup: options.startupStatus ?? normalStartupStatus(),
+        vault: { ready: options.vaultReady ?? false },
       });
       return;
     }
@@ -2045,6 +2051,18 @@ function contentType(path: string): string {
 
 async function main(): Promise<void> {
   const config = loadConfig();
+  let startupStatus = normalStartupStatus();
+  if (process.argv.slice(2).includes('--reinitialize-core')) {
+    if (process.platform !== 'darwin') throw new Error('--reinitialize-core requires macOS Keychain');
+    if (process.env.JERICHO_MASTER_KEY) {
+      throw new Error('--reinitialize-core cannot be used with JERICHO_MASTER_KEY override');
+    }
+    startupStatus = reinitializeCore({
+      rotateMasterKey: () => writeKeychainSecret(
+        'jericho-core', randomBytes(32).toString('base64'), {}, true,
+      ),
+    });
+  }
   const store = new JerichoStore();
   const intake = new IntakeProcessor({
     store,
@@ -2093,6 +2111,8 @@ async function main(): Promise<void> {
     personaAutoRevertMs: config.personaAutoRevertMs,
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
+    startupStatus,
+    vaultReady: Boolean(config.obsidianVaultPath || config.vaultGatewayUrl),
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),
     supervisor: connectors.supervisor,
     connectorDescriptors: connectors.descriptors,

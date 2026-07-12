@@ -41,11 +41,36 @@ function keychainSecret(service: string): string | undefined {
   }
 }
 
+function addKeychainSecret(service: string, secret: string): void {
+  execFileSync(bridgeResourcePath('electron', 'dist', 'jericho-keychain-helper'), [
+    'add', service, userInfo().username,
+  ], { input: secret, encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
 function bridgeSecrets(): BridgeSecrets {
   const keychainApiToken = keychainSecret('jericho-core-api');
   const keychainMasterKey = keychainSecret('jericho-core');
   if (keychainApiToken && keychainMasterKey) {
     return { apiToken: keychainApiToken, masterKey: keychainMasterKey };
+  }
+  const generated = {
+    apiToken: keychainApiToken ?? randomBytes(32).toString('base64url'),
+    masterKey: keychainMasterKey ?? randomBytes(32).toString('base64'),
+  };
+  try {
+    if (!keychainApiToken) addKeychainSecret('jericho-core-api', generated.apiToken);
+    if (!keychainMasterKey) addKeychainSecret('jericho-core', generated.masterKey);
+    return {
+      apiToken: keychainSecret('jericho-core-api') ?? generated.apiToken,
+      masterKey: keychainSecret('jericho-core') ?? generated.masterKey,
+    };
+  } catch {
+    const winnerApiToken = keychainSecret('jericho-core-api');
+    const winnerMasterKey = keychainSecret('jericho-core');
+    if (winnerApiToken && winnerMasterKey) {
+      return { apiToken: winnerApiToken, masterKey: winnerMasterKey };
+    }
+    // safeStorage remains a last-resort Electron-only fallback when Keychain is locked.
   }
   if (!safeStorage.isEncryptionAvailable()) {
     throw new Error('macOS secure storage is unavailable. Unlock your login Keychain and try again.');
@@ -59,10 +84,7 @@ function bridgeSecrets(): BridgeSecrets {
       throw new Error('Jericho could not decrypt its local credentials.', { cause: error });
     }
   }
-  const created = {
-    apiToken: keychainApiToken ?? randomBytes(32).toString('base64url'),
-    masterKey: keychainMasterKey ?? randomBytes(32).toString('base64'),
-  };
+  const created = generated;
   writeFileSync(secretsPath, safeStorage.encryptString(JSON.stringify(created)), { mode: 0o600 });
   chmodSync(secretsPath, 0o600);
   return created;
