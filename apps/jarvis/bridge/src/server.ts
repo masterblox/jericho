@@ -10,6 +10,7 @@ import { GoogleGenAI, Modality, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import {
+  CorrectionConfirmStatus,
   DecisionOutcome,
   IdentityReviewDisposition,
   IntentRoute,
@@ -22,6 +23,11 @@ import {
   RiskLevel,
   SourceType,
   RouteType,
+  type CorrectionConfirmRequest,
+  type CorrectionConfirmResponse,
+  type CorrectionPreviewRequest,
+  type CorrectionPreviewResponse,
+  type CorrectionRetryRequest,
   type DecisionRecord,
   type CheckpointDecisionRequest,
   type EventEnvelope,
@@ -34,6 +40,7 @@ import {
   type MissionDecisionRequest,
   type MissionDecisionResponse,
   type MissionPlan,
+  type ObsidianReceipt,
   type Proposal,
   type ProposalDecisionRequest,
   type ProposalDecisionResponse,
@@ -50,11 +57,15 @@ import { PaperclipFleetClient, type FleetPort } from './fleet/paperclip-client.j
 import {
   EventConflictError,
   CheckpointDecisionConflictError,
+  CorrectionDecisionConflictError,
   IdentityReviewDecisionConflictError,
   JerichoStore,
   MissionDecisionConflictError,
   ProposalDecisionConflictError,
   ReviewIntentDecisionConflictError,
+  type CorrectionPreviewInput,
+  type CorrectionConfirmInput,
+  type CorrectionRetryInput,
 } from './core/store.js';
 import {
   IntakeProcessor,
@@ -66,6 +77,7 @@ import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
 import type { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
 import { FederatedRetrievalService } from './retrieval/federated-retrieval.js';
 import { HttpPaperclipPort, PaperclipExecutor } from './connectors/paperclip-executor.js';
+import { CanonicalNoteWriter } from './correction/note-writer.js';
 import { ObsidianNoteOpener } from './connectors/obsidian-open.js';
 import { createPersonas, isPersonaMode, type PersonaMode } from './personas.js';
 import {
@@ -187,6 +199,7 @@ export interface JerichoServerOptions {
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  correctionNoteWriter?: CanonicalNoteWriter;
   /** Absolute path for the user-local presentation voice preset JSON. */
   voicePreferencePath?: string;
   startupStatus?: CoreStartupStatus;
@@ -1074,6 +1087,151 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         ));
       } catch (error) {
         if (/path|outside|regular file|resolution/iu.test(String(error))) throw new HttpError(400, 'invalid_obsidian_note_path');
+        throw error;
+      }
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/corrections/preview') {
+      const input = correctionPreviewRequest(await readJsonBody(request, 64 * 1024));
+      const preview = options.store.createCorrectionPreview({
+        entityId: input.entityId,
+        claimPattern: input.claimPattern,
+        sourceProvenance: input.sourceProvenance,
+        proposedFromEntityId: input.proposedFromEntityId,
+        proposedToEntityId: input.proposedToEntityId,
+        proposedRelationType: input.proposedRelationType,
+        canonicalNotePath: input.canonicalNotePath,
+        canonicalNoteHash: input.canonicalNoteHash,
+        obsidianFieldsToAdd: input.obsidianFieldsToAdd,
+        obsidianFieldsToRemove: input.obsidianFieldsToRemove,
+      });
+      const result: CorrectionPreviewResponse = { preview };
+      sendJson(response, 200, result);
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/corrections/confirm') {
+      const input = correctionConfirmRequest(await readJsonBody(request, 64 * 1024));
+      const decidedAt = now();
+      try {
+        const storeResult = options.store.confirmCorrection({
+          previewId: input.previewId,
+          previewHash: input.previewHash,
+          previewVersion: input.previewVersion,
+          entityId: input.entityId,
+          claimPattern: input.claimPattern,
+          fromEntityId: input.fromEntityId,
+          toEntityId: input.toEntityId,
+          relationType: input.relationType,
+          canonicalNoteHash: input.canonicalNoteHash,
+          canonicalNotePath: input.canonicalNotePath,
+          obsidianFieldsToAdd: input.obsidianFieldsToAdd,
+          decidedBy: 'carlos',
+          decidedAt,
+        });
+
+        let obsidianReceipt: ObsidianReceipt | undefined;
+        if (storeResult.status === CorrectionConfirmStatus.Confirmed) {
+          try {
+            if (!options.correctionNoteWriter) throw new Error('Correction note writer is unavailable');
+            obsidianReceipt = options.correctionNoteWriter.write({
+              relativePath: input.canonicalNotePath,
+              expectedHash: input.canonicalNoteHash,
+              fieldsToAdd: input.obsidianFieldsToAdd,
+              now: decidedAt,
+            });
+            options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
+          } catch (noteError) {
+            const failedReceipt: ObsidianReceipt = {
+              status: 'failed',
+              notePath: input.canonicalNotePath,
+              fieldsWritten: [],
+              completedAt: decidedAt,
+              error: noteError instanceof Error ? noteError.message : String(noteError),
+            };
+            options.store.finalizeCorrectionObsidian(storeResult.correctionId, failedReceipt);
+            const partialResult: CorrectionConfirmResponse = {
+              status: CorrectionConfirmStatus.Partial,
+              correctionId: storeResult.correctionId,
+              coreReceipt: storeResult.coreReceipt,
+              partialCompletion: {
+                coreReceipt: storeResult.coreReceipt,
+                obsidianReceipt: failedReceipt,
+                allowsRetry: true,
+                retryOnlyNote: true,
+              },
+            };
+            sendJson(response, 200, partialResult);
+            return;
+          }
+        } else if (storeResult.status === CorrectionConfirmStatus.Idempotent) {
+          const currentObsidian = options.store.getCorrectionObsidianReceipt(storeResult.correctionId);
+          obsidianReceipt = currentObsidian;
+        }
+
+        const finalResult: CorrectionConfirmResponse = {
+          ...storeResult,
+          ...(obsidianReceipt ? { obsidianReceipt } : {}),
+        };
+        sendJson(response, 200, finalResult);
+      } catch (error) {
+        if (error instanceof CorrectionDecisionConflictError) {
+          throw new HttpError(409, 'correction_decision_conflict');
+        }
+        throw error;
+      }
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/corrections/retry') {
+      const input = correctionRetryRequest(await readJsonBody(request, 64 * 1024));
+      const retriedAt = now();
+      try {
+        const storeResult = options.store.retryCorrectionNote({
+          correctionId: input.correctionId,
+          canonicalNoteHash: input.canonicalNoteHash,
+          canonicalNotePath: input.canonicalNotePath,
+          retriedAt,
+        });
+
+        if (!options.correctionNoteWriter) {
+          throw new HttpError(503, 'correction_note_writer_unavailable');
+        }
+
+        const binding = options.store.getCorrectionNoteBinding(storeResult.correctionId);
+        if (!binding) throw new HttpError(409, 'correction_note_binding_unavailable');
+
+        let obsidianReceipt: ObsidianReceipt;
+        try {
+          obsidianReceipt = options.correctionNoteWriter.write({
+            relativePath: input.canonicalNotePath,
+            expectedHash: input.canonicalNoteHash,
+            fieldsToAdd: binding.fieldsToAdd,
+            now: retriedAt,
+          });
+          options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
+        } catch (noteError) {
+          const failedReceipt: ObsidianReceipt = {
+            status: 'failed',
+            notePath: input.canonicalNotePath,
+            fieldsWritten: [],
+            completedAt: retriedAt,
+            error: noteError instanceof Error ? noteError.message : String(noteError),
+          };
+          options.store.finalizeCorrectionObsidian(storeResult.correctionId, failedReceipt);
+          throw new HttpError(502, 'correction_note_retry_failed');
+        }
+
+        const retryResult: CorrectionConfirmResponse = {
+          status: CorrectionConfirmStatus.Confirmed,
+          correctionId: storeResult.correctionId,
+          coreReceipt: storeResult.coreReceipt,
+          obsidianReceipt,
+        };
+        sendJson(response, 200, retryResult);
+      } catch (error) {
+        if (error instanceof CorrectionDecisionConflictError) {
+          throw new HttpError(409, 'correction_retry_conflict');
+        }
+        if (error instanceof HttpError) throw error;
         throw error;
       }
       return;
@@ -2378,6 +2536,9 @@ async function main(): Promise<void> {
   const obsidianOpen = config.obsidianVaultPath
     ? new ObsidianNoteOpener({ vaultPath: config.obsidianVaultPath })
     : undefined;
+  const correctionNoteWriter = config.obsidianVaultPath
+    ? new CanonicalNoteWriter({ vaultPath: config.obsidianVaultPath })
+    : undefined;
   const runtime = new ProductionRuntimeLifecycle({
     knowledge,
     connectors,
@@ -2420,6 +2581,7 @@ async function main(): Promise<void> {
     retrieval,
     ...(paperclip ? { paperclip } : {}),
     ...(obsidianOpen ? { obsidianOpen } : {}),
+    ...(correctionNoteWriter ? { correctionNoteWriter } : {}),
   });
   const address = await server.listen(config.port, config.host);
   let shuttingDown = false;
@@ -2453,6 +2615,133 @@ async function main(): Promise<void> {
   if (shuttingDown) return;
   console.log(`[jericho] listening on http://${config.host}:${address.port}`);
   console.log(`[jericho] one-time browser bootstrap ${address.bootstrapUrl}`);
+}
+
+function correctionPreviewRequest(body: Record<string, unknown>): CorrectionPreviewRequest {
+  const allowedFields = new Set([
+    'entityId', 'claimPattern', 'sourceProvenance', 'proposedRelationType',
+    'proposedFromEntityId', 'proposedToEntityId', 'canonicalNotePath',
+    'canonicalNoteHash', 'obsidianFieldsToAdd', 'obsidianFieldsToRemove',
+  ]);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'correction_preview_field_not_allowed');
+  }
+  if (typeof body.entityId !== 'string' || !body.entityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_entity_id');
+  }
+  if (typeof body.claimPattern !== 'string' || !body.claimPattern.trim()) {
+    throw new HttpError(400, 'invalid_correction_claim_pattern');
+  }
+  if (!Array.isArray(body.sourceProvenance) || !body.sourceProvenance.length) {
+    throw new HttpError(400, 'invalid_correction_source_provenance');
+  }
+  if (typeof body.proposedRelationType !== 'string' || !Object.values(RelationType).includes(body.proposedRelationType as RelationType)) {
+    throw new HttpError(400, 'invalid_correction_relation_type');
+  }
+  if (typeof body.proposedFromEntityId !== 'string' || !body.proposedFromEntityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_from_entity');
+  }
+  if (typeof body.proposedToEntityId !== 'string' || !body.proposedToEntityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_to_entity');
+  }
+  if (typeof body.canonicalNotePath !== 'string' || !body.canonicalNotePath.trim()) {
+    throw new HttpError(400, 'invalid_correction_note_path');
+  }
+  if (typeof body.canonicalNoteHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.canonicalNoteHash)) {
+    throw new HttpError(400, 'invalid_correction_note_hash');
+  }
+  if (typeof body.obsidianFieldsToAdd !== 'object' || body.obsidianFieldsToAdd === null) {
+    throw new HttpError(400, 'invalid_correction_obsidian_fields');
+  }
+  return {
+    entityId: body.entityId.trim(),
+    claimPattern: body.claimPattern.trim(),
+    sourceProvenance: body.sourceProvenance as CorrectionPreviewRequest['sourceProvenance'],
+    proposedRelationType: body.proposedRelationType as RelationType,
+    proposedFromEntityId: body.proposedFromEntityId.trim(),
+    proposedToEntityId: body.proposedToEntityId.trim(),
+    canonicalNotePath: body.canonicalNotePath.trim(),
+    canonicalNoteHash: body.canonicalNoteHash,
+    obsidianFieldsToAdd: body.obsidianFieldsToAdd as Record<string, string>,
+    obsidianFieldsToRemove: Array.isArray(body.obsidianFieldsToRemove) ? body.obsidianFieldsToRemove as string[] : [],
+  };
+}
+
+function correctionConfirmRequest(body: Record<string, unknown>): CorrectionConfirmRequest {
+  const allowedFields = new Set([
+    'previewId', 'previewHash', 'previewVersion',
+    'entityId', 'claimPattern', 'fromEntityId', 'toEntityId',
+    'relationType', 'canonicalNoteHash', 'canonicalNotePath',
+    'obsidianFieldsToAdd',
+  ]);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'correction_confirm_field_not_allowed');
+  }
+  if (typeof body.previewId !== 'string' || !body.previewId.trim()) {
+    throw new HttpError(400, 'invalid_correction_preview_id');
+  }
+  if (typeof body.previewHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.previewHash)) {
+    throw new HttpError(400, 'invalid_correction_preview_hash');
+  }
+  if (!Number.isInteger(body.previewVersion) || (body.previewVersion as number) < 1) {
+    throw new HttpError(400, 'invalid_correction_preview_version');
+  }
+  if (typeof body.entityId !== 'string' || !body.entityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_entity_id');
+  }
+  if (typeof body.claimPattern !== 'string' || !body.claimPattern.trim()) {
+    throw new HttpError(400, 'invalid_correction_claim_pattern');
+  }
+  if (typeof body.fromEntityId !== 'string' || !body.fromEntityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_from_entity');
+  }
+  if (typeof body.toEntityId !== 'string' || !body.toEntityId.trim()) {
+    throw new HttpError(400, 'invalid_correction_to_entity');
+  }
+  if (typeof body.relationType !== 'string' || !Object.values(RelationType).includes(body.relationType as RelationType)) {
+    throw new HttpError(400, 'invalid_correction_relation_type');
+  }
+  if (typeof body.canonicalNoteHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.canonicalNoteHash)) {
+    throw new HttpError(400, 'invalid_correction_note_hash');
+  }
+  if (typeof body.canonicalNotePath !== 'string' || !body.canonicalNotePath.trim()) {
+    throw new HttpError(400, 'invalid_correction_note_path');
+  }
+  return {
+    previewId: body.previewId.trim(),
+    previewHash: body.previewHash,
+    previewVersion: body.previewVersion as number,
+    entityId: body.entityId.trim(),
+    claimPattern: body.claimPattern.trim(),
+    fromEntityId: body.fromEntityId.trim(),
+    toEntityId: body.toEntityId.trim(),
+    relationType: body.relationType as RelationType,
+    canonicalNoteHash: body.canonicalNoteHash,
+    canonicalNotePath: body.canonicalNotePath.trim(),
+    obsidianFieldsToAdd: (typeof body.obsidianFieldsToAdd === 'object' && body.obsidianFieldsToAdd !== null)
+      ? body.obsidianFieldsToAdd as Record<string, string> : {},
+  };
+}
+
+function correctionRetryRequest(body: Record<string, unknown>): CorrectionRetryRequest {
+  const allowedFields = new Set(['correctionId', 'canonicalNoteHash', 'canonicalNotePath']);
+  if (Object.keys(body).some((field) => !allowedFields.has(field))) {
+    throw new HttpError(400, 'correction_retry_field_not_allowed');
+  }
+  if (typeof body.correctionId !== 'string' || !body.correctionId.trim()) {
+    throw new HttpError(400, 'invalid_correction_id');
+  }
+  if (typeof body.canonicalNoteHash !== 'string' || !/^[a-f0-9]{64}$/.test(body.canonicalNoteHash)) {
+    throw new HttpError(400, 'invalid_correction_note_hash');
+  }
+  if (typeof body.canonicalNotePath !== 'string' || !body.canonicalNotePath.trim()) {
+    throw new HttpError(400, 'invalid_correction_note_path');
+  }
+  return {
+    correctionId: body.correctionId.trim(),
+    canonicalNoteHash: body.canonicalNoteHash,
+    canonicalNotePath: body.canonicalNotePath.trim(),
+  };
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

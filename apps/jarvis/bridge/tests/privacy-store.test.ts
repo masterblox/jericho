@@ -106,7 +106,7 @@ describe('private deterministic lookup projections', () => {
       RECEIPT_EXTERNAL_SECRET,
     ]);
     const database = new DatabaseSync(path);
-    expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all().at(-1)?.version).toBe(7);
+    expect(database.prepare('SELECT version FROM schema_migrations ORDER BY version').all().at(-1)?.version).toBe(8);
     expect(database.prepare('SELECT value FROM store_metadata WHERE name = ?').get('lookup-token-migration-v1')).toBeDefined();
     database.close();
 

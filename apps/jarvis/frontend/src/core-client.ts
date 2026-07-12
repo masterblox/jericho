@@ -2,6 +2,10 @@ import type {
   CheckpointDecisionRequest,
   CheckpointDecisionResponse,
   CommandCenterSnapshot,
+  CorrectionConfirmRequest,
+  CorrectionConfirmResponse,
+  CorrectionPreviewRequest,
+  CorrectionPreviewResponse,
   IdentityReviewDecisionRequest,
   IdentityReviewDecisionResponse,
   MissionDecisionRequest,
@@ -240,6 +244,30 @@ export class CoreClient {
     // Retention appends an immutable Core event after the filesystem write.
     // Refetch so its replay entry and Nucleus pulse appear immediately.
     await this.#refresh(this.#generation, true);
+    return result;
+  }
+
+  async createCorrectionPreview(input: CorrectionPreviewRequest): Promise<CorrectionPreviewResponse> {
+    const response = await this.#fetch('/api/v1/corrections/preview', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Correction preview failed'));
+    return response.json() as Promise<CorrectionPreviewResponse>;
+  }
+
+  async confirmCorrection(input: CorrectionConfirmRequest): Promise<CorrectionConfirmResponse> {
+    const response = await this.#fetch('/api/v1/corrections/confirm', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'content-type': 'application/json', accept: 'application/json' },
+      body: JSON.stringify(input),
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Correction confirm failed'));
+    const result = await response.json() as CorrectionConfirmResponse;
+    await this.#refresh(this.#generation);
     return result;
   }
 

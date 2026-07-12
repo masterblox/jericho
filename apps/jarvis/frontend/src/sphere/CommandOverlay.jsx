@@ -5,6 +5,7 @@ import { listProfiles, profileCard, resetCalibrations } from '../calibration'
 const MODES = [
   ['directive', 'NEW DIRECTIVE'],
   ['memory', 'SEARCH MEMORY'],
+  ['correct', 'CORRECT IDENTITY'],
   ['approvals', 'PENDING APPROVALS'],
   ['missions', 'ACTIVE MISSION'],
   ['outcomes', 'RECENT OUTCOME'],
@@ -19,6 +20,7 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
   const [selectedMemory, setSelectedMemory] = React.useState(null)
   const [selectedMissionId, setSelectedMissionId] = React.useState(null)
   const [message, setMessage] = React.useState('')
+  const [correction, setCorrection] = React.useState({ status: 'idle', preview: null, result: null, error: '' })
   const [profiles, setProfiles] = React.useState(() => {
     try { return listProfiles(localStorage); } catch { return []; }
   })
@@ -117,6 +119,43 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
           <button type="button" data-gesture-target="memory:open" onClick={() => void run(
             () => actions.openMemory(selectedMemory.path), 'OPENED IN OBSIDIAN',
           )}>OPEN IN OBSIDIAN</button>
+        </article>}
+      </div>}
+      {mode === 'correct' && <div className="sphere-memory">
+        <form className="sphere-command__form" onSubmit={async event => {
+          event.preventDefault()
+          setCorrection({ status: 'loading', preview: null, result: null, error: '' })
+          try {
+            if (actions.correctIdentity) {
+              const result = await actions.correctIdentity()
+              setCorrection({ status: 'preview', preview: result, result: null, error: '' })
+            }
+          } catch (error) {
+            setCorrection({ status: 'error', preview: null, result: null, error: error instanceof Error ? error.message : 'CORRECTION FAILED' })
+          }
+        }}>
+          <label htmlFor="sphere-correct">IDENTITY CORRECTION</label>
+          <p className="micro">Mark a disputed claim for exclusion and create a verified spouse_of relation.</p>
+          <button type="submit" data-gesture-target="command:correct-preview" disabled={correction.status === 'loading'}>
+            {correction.status === 'loading' ? 'BUILDING PREVIEW' : 'PREVIEW CORRECTION'}
+          </button>
+        </form>
+        {correction.error && <p className="sphere-command__error">{correction.error}</p>}
+        {correction.preview && <article className="sphere-memory__preview">
+          <header><strong>CORRECTION PREVIEW</strong><code>V{correction.preview.version}</code></header>
+          <dl>
+            <div><dt>DISPUTED CLAIM</dt><dd>{correction.preview.disputedClaim}</dd></div>
+            <div><dt>ENTITY</dt><dd>{correction.preview.currentIdentityBinding.entityName}</dd></div>
+            <div><dt>PROPOSED RELATION</dt><dd>{correction.preview.coreEffects.relationsToCreate[0]?.type ?? 'NONE'}</dd></div>
+            <div><dt>CANONICAL NOTE</dt><dd>{correction.preview.canonicalNotePath}</dd></div>
+          </dl>
+          <footer>
+            <button type="button" className="ok" data-gesture-target="command:correct-confirm" onClick={() => void run(
+              () => actions.confirmCorrection ? actions.confirmCorrection(correction.preview) : Promise.reject(new Error('NOT AVAILABLE')),
+              'CORRECTION CONFIRMED',
+            )}>CONFIRM CORRECTION</button>
+            <button type="button" data-gesture-target="command:correct-reject" onClick={() => setCorrection({ status: 'idle', preview: null, result: null, error: '' })}>REJECT</button>
+          </footer>
         </article>}
       </div>}
       {(mode === 'missions' || mode === 'approvals') && <div className="sphere-missions">
