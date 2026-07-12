@@ -165,6 +165,7 @@ describe('reflection review publication', () => {
           indexSizeMb: 1, cachedQueries: 0, reason: 'ok',
         }),
         rebuildIndex,
+        readNote: async () => null,
       },
       vaultMaintenanceIntervalMs: 600_000,
       vaultRebuildWindowStartUtc: 1,

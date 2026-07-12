@@ -16,6 +16,7 @@ describe('vault maintenance scheduler', () => {
           indexSizeMb: 2, cachedQueries: 1, reason: 'ok',
         }),
         rebuildIndex,
+        readNote: async () => null,
       },
       intervalMs: 10 * 60_000,
       windowStartUtcHour: 1,
@@ -42,6 +43,7 @@ describe('vault maintenance scheduler', () => {
           reason: healthStatus === 'healthy' ? 'ok' : 'sync_stale',
         }),
         rebuildIndex,
+        readNote: async () => null,
       },
       intervalMs: 600_000, windowStartUtcHour: 1, windowEndUtcHour: 5,
       clock: () => now,
@@ -60,7 +62,7 @@ describe('vault maintenance scheduler', () => {
       throw signal.reason;
     });
     const scheduler = new VaultMaintenanceScheduler({
-      gateway: { search: async () => ({ cached: false, results: [] }), health, rebuildIndex: vi.fn() },
+      gateway: { search: async () => ({ cached: false, results: [] }), health, rebuildIndex: vi.fn(), readNote: async () => null },
       intervalMs: 600_000, windowStartUtcHour: 1, windowEndUtcHour: 5,
       clock: () => '2026-07-11T03:00:00.000Z',
     });
@@ -83,6 +85,7 @@ describe('vault maintenance scheduler', () => {
         search: async () => ({ cached: false, results: [] }),
         health: async () => { throw new Error('gateway offline'); },
         rebuildIndex: vi.fn(),
+        readNote: async () => null,
       },
       intervalMs: 600_000, windowStartUtcHour: 1, windowEndUtcHour: 5,
       clock: () => '2026-07-11T03:00:00.000Z',

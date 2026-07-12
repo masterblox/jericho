@@ -58,6 +58,7 @@ export interface JerichoConfig {
   missionRepositoryGrants: RepositoryGrant[];
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
+  webSearchEnabled: boolean;
 }
 
 export interface NamedPath {
@@ -269,6 +270,7 @@ export function loadConfig(
       environment.JERICHO_VOICE_ACTIVE_TURN_MS ?? '30000',
       'JERICHO_VOICE_ACTIVE_TURN_MS',
     ),
+    webSearchEnabled: environment.JERICHO_WEB_SEARCH_ENABLED === 'true',
   };
 }
 

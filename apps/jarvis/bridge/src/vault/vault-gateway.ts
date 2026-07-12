@@ -1,9 +1,9 @@
 import { createHash, randomUUID, timingSafeEqual } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
@@ -180,6 +180,46 @@ export class VaultGatewayService {
     });
   }
 
+  /**
+   * Read a specific vault note by its relative path.
+   * Returns the note content, title, and last modified timestamp.
+   */
+  async readNote(relativePath: string): Promise<{
+    content: string;
+    title: string;
+    lastModified: string;
+  } | null> {
+    return this.#exclusive(() => this.#readNote(relativePath));
+  }
+
+  async #readNote(relativePath: string): Promise<{
+    content: string;
+    title: string;
+    lastModified: string;
+  } | null> {
+    const normalized = relativePath.replace(/\\/gu, '/').replace(/^\/+/u, '');
+    if (normalized.includes('..') || normalized.startsWith('.')) {
+      throw new VaultGatewayError('invalid_path', 'Vault note path contains traversal');
+    }
+    const fullPath = join(this.options.vaultPath, normalized);
+    try {
+      const vaultReal = realpathSync(this.options.vaultPath);
+      const fileReal = realpathSync(fullPath);
+      if (!fileReal.startsWith(vaultReal)) {
+        throw new VaultGatewayError('path_escape', 'Vault note path escapes the vault');
+      }
+      const content = readFileSync(fullPath, 'utf8');
+      const titleMatch = /^#\s+(.+)$/u.exec(content);
+      const title = titleMatch?.[1] ?? normalized.split('/').pop()?.replace(/\.md$/u, '') ?? normalized;
+      const stat = statSync(fullPath);
+      const lastModified = stat.mtime.toISOString();
+      return { content, title, lastModified };
+    } catch (cause) {
+      if (cause instanceof VaultGatewayError) throw cause;
+      return null;
+    }
+  }
+
   #now(): Date {
     return timestamp(this.#clock(), 'Vault gateway clock');
   }
@@ -272,6 +312,13 @@ async function route(
   if (request.method === 'POST' && path === '/v1/jericho/vault/search') {
     const body = await readJson(request);
     return sendJson(response, 200, await options.service.search(String(body.query ?? ''), Number(body.limit)));
+  }
+  if (request.method === 'POST' && path === '/v1/jericho/vault/note') {
+    const body = await readJson(request);
+    const notePath = String(body.path ?? '');
+    if (!notePath.trim()) return sendJson(response, 400, { error: 'path_required' });
+    const note = await options.service.readNote(notePath);
+    return sendJson(response, 200, note ?? { error: 'not_found' });
   }
   if (request.method === 'POST' && path === '/v1/jericho/vault/index') {
     return sendJson(response, 200, await options.service.rebuildIndex());

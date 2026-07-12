@@ -276,6 +276,7 @@ describe('ObsidianConnector', () => {
           cachedQueries: 0, reason: 'ok',
         }),
         rebuildIndex: async () => ({ lastIndexAt: T0, indexSizeMb: 1 }),
+        readNote: async () => null,
       },
     });
 
@@ -307,6 +308,7 @@ describe('ObsidianConnector', () => {
           cachedQueries: 2, reason: 'sync_stale',
         }),
         rebuildIndex: async () => ({ lastIndexAt: T0, indexSizeMb: 1 }),
+        readNote: async () => null,
       },
     });
     await expect(degraded.probe(new AbortController().signal)).resolves.toEqual({

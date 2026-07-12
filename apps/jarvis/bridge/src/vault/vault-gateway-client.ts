@@ -22,6 +22,11 @@ export interface VaultGatewayPort {
   }>;
   health(signal: AbortSignal): Promise<VaultGatewayHealth>;
   rebuildIndex(signal: AbortSignal): Promise<{ lastIndexAt: string; indexSizeMb: number }>;
+  readNote(relativePath: string, signal: AbortSignal): Promise<{
+    content: string;
+    title: string;
+    lastModified: string;
+  } | null>;
 }
 
 export interface HttpVaultGatewayClientOptions {
@@ -83,6 +88,20 @@ export class HttpVaultGatewayClient implements VaultGatewayPort {
     return {
       lastIndexAt: isoTimestamp(value.lastIndexAt, 'lastIndexAt'),
       indexSizeMb: boundedNumber(value.indexSizeMb, 'indexSizeMb'),
+    };
+  }
+
+  async readNote(relativePath: string, signal: AbortSignal): Promise<{
+    content: string;
+    title: string;
+    lastModified: string;
+  } | null> {
+    const value = await this.#request('/v1/jericho/vault/note', 'POST', signal, { path: relativePath });
+    if (typeof value.error === 'string' && value.error === 'not_found') return null;
+    return {
+      content: boundedString(value.content, 64_000, 'content'),
+      title: boundedString(value.title, 500, 'title'),
+      lastModified: isoTimestamp(value.lastModified, 'lastModified'),
     };
   }
 

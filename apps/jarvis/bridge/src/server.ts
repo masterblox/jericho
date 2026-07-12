@@ -74,7 +74,12 @@ import {
   FUNCTION_DECLARATIONS,
   type ToolExecutor,
   type VaultToolSearchPort,
+  type VaultToolReadPort,
+  type WebSearchPort,
+  type LinearSearchPort,
+  type MessageReadPort,
 } from './tools.js';
+import { ConversationMemory, type ConversationMemoryStore } from './memory/conversation-memory.js';
 
 export interface SyncPort {
   sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
@@ -143,6 +148,10 @@ export interface JerichoServerOptions {
   connectorDescriptors?: readonly unknown[];
   obsidianSearch?: ObsidianSearchPort;
   vaultSearch?: VaultToolSearchPort;
+  vaultRead?: VaultToolReadPort;
+  webSearch?: WebSearchPort;
+  linearSearch?: LinearSearchPort;
+  messageRead?: MessageReadPort;
   fleet?: FleetPort;
   intake?: IntakePort;
   retention?: MissionRetentionPort;
@@ -157,6 +166,7 @@ export interface JerichoServerOptions {
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  conversationMemory?: ConversationMemoryStore;
 }
 
 export interface JerichoServerAddress {
@@ -206,7 +216,14 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const tools = options.toolExecutor ?? createToolExecutor({
     store: options.store,
     ...(options.vaultSearch ? { vaultSearch: options.vaultSearch } : {}),
+    ...(options.vaultRead ? { vaultRead: options.vaultRead } : {}),
+    ...(options.webSearch ? { webSearch: options.webSearch } : {}),
+    ...(options.linearSearch ? { linearSearch: options.linearSearch } : {}),
+    ...(options.messageRead ? { messageRead: options.messageRead } : {}),
   });
+  const conversationMemory = options.conversationMemory
+    ? new ConversationMemory(options.conversationMemory, options.clock)
+    : undefined;
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
       const failure = httpFailure(error);
@@ -224,6 +241,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     host,
     allowedOrigins,
     browserSessionToken,
+    conversationMemory,
   );
 
   async function handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -1103,6 +1121,7 @@ function attachVoice(
   host: string,
   allowedOrigins: Set<string>,
   browserSessionToken: string,
+  conversationMemory?: ConversationMemory,
 ) {
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (request, socket, head) => {
@@ -1145,7 +1164,7 @@ function attachVoice(
     wss.handleUpgrade(request, socket, head, (webSocket) => wss.emit('connection', webSocket));
   });
   wss.on('connection', (webSocket: WebSocket) => {
-    openVoiceSession(webSocket, options, tools);
+    openVoiceSession(webSocket, options, tools, conversationMemory);
   });
   return {
     close: () => new Promise<void>((resolveClose) => {
@@ -1155,7 +1174,12 @@ function attachVoice(
   };
 }
 
-function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, tools: ToolExecutor): void {
+function openVoiceSession(
+  webSocket: WebSocket,
+  options: JerichoServerOptions,
+  tools: ToolExecutor,
+  conversationMemory?: ConversationMemory,
+): void {
   const ai = options.voiceConnect
     ? undefined
     : new GoogleGenAI({ apiKey: options.geminiApiKey! });
@@ -1180,6 +1204,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let greetingActive = false;
   let greetingPending = false;
   let captureTurn: { id: string; transcript: string } | undefined;
+  const sessionId = randomUUID();
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
@@ -1247,6 +1272,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     transcriptTimer = undefined;
     const transcript = turn.transcript.replace(/\s+/gu, ' ').trim();
     if (!transcript) return;
+    // Record user input in conversation memory.
+    conversationMemory?.recordTurn(sessionId, 'user', transcript, turn.id);
     const occurredAt = new Date(options.clock?.() ?? new Date().toISOString()).toISOString();
     try {
       const result = options.store.commitLocalCapture(localCaptureEvent({
@@ -1284,14 +1311,20 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     session = undefined;
     currentVoice = voice;
     send({ type: 'voice_switching', voice });
+    // Build system instruction with conversation context from memory.
+    const baseInstruction = personaEnabled
+      ? personas[currentMode].systemInstruction
+      : options.systemInstruction ?? '';
+    const memoryContext = conversationMemory?.buildContextSummary(sessionId) ?? '';
+    const systemInstruction = memoryContext
+      ? `${baseInstruction}\n\n${memoryContext}`
+      : baseInstruction;
     void voiceConnect({
       model: options.geminiModel ?? 'gemini-2.5-flash-native-audio-latest',
       config: {
         responseModalities: [Modality.AUDIO],
         inputAudioTranscription: {},
-        systemInstruction: personaEnabled
-          ? personas[currentMode].systemInstruction
-          : options.systemInstruction,
+        systemInstruction,
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
         tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as never }],
       },
@@ -1316,7 +1349,11 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
                 data: part.inlineData.data,
               });
             }
-            if (part.text) send({ type: 'text', text: part.text });
+            if (part.text) {
+              send({ type: 'text', text: part.text });
+              // Record model response in conversation memory.
+              conversationMemory?.recordTurn(sessionId, 'model', part.text, randomUUID());
+            }
           }
           const calls = message.toolCall?.functionCalls ?? [];
           const activeSession = session;
