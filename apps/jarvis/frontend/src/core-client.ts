@@ -80,6 +80,24 @@ export interface VaultSearchResponse {
   error?: string;
 }
 
+export interface NoteReorganizationProposalInput {
+  relativePath: string;
+  title: string;
+}
+
+export interface CoreHealth {
+  ok: boolean;
+  startup: {
+    storage: 'persistent';
+    database: '~/.jericho/jericho.db';
+    initializedNewCore: boolean;
+    recovery?: { outcome: 'archived_not_migrated'; archive: string };
+  };
+  connectors: Array<{ connectorId: string; status: string }>;
+  vault: { ready: boolean };
+  voice: { status: 'available' | 'unavailable' };
+}
+
 export class CoreClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #createEventSource: (url: string) => EventSourcePort;
@@ -125,6 +143,14 @@ export class CoreClient {
       this.store.gap();
       void this.#refresh(this.#generation);
     });
+  }
+
+  async health(): Promise<CoreHealth> {
+    const response = await this.#fetch('/api/v1/health', {
+      credentials: 'same-origin', headers: { accept: 'application/json' },
+    });
+    if (!response.ok) throw new Error(await responseError(response, 'Core health unavailable'));
+    return response.json() as Promise<CoreHealth>;
   }
 
   stop(): void {
@@ -248,6 +274,14 @@ export class CoreClient {
       '/api/v1/relationship-proposals',
       input,
       'Relationship proposal failed',
+    );
+  }
+
+  proposeNoteReorganization(input: NoteReorganizationProposalInput): Promise<unknown> {
+    return this.#postWithSnapshot(
+      '/api/v1/obsidian/reorganization-proposals',
+      input,
+      'Note reorganization proposal failed',
     );
   }
 

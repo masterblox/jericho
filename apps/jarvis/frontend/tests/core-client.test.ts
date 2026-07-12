@@ -11,6 +11,13 @@ afterEach(() => {
 });
 
 describe('CoreClient', () => {
+  it('loads the typed startup health payload from the authenticated Core', async () => {
+    const payload = { ok: true, startup: { storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false }, connectors: [], vault: { ready: true }, voice: { status: 'available' } };
+    const fetchPort = vi.fn().mockResolvedValue(new Response(JSON.stringify(payload), { status: 200 }));
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+    await expect(client.health()).resolves.toEqual(payload);
+    expect(fetchPort).toHaveBeenCalledWith('/api/v1/health', expect.objectContaining({ credentials: 'same-origin' }));
+  });
   it('preserves the browser receiver when using native same-origin fetch', async () => {
     const nativeLikeFetch = vi.fn(function (this: unknown) {
       if (this !== globalThis) throw new TypeError('Illegal invocation');

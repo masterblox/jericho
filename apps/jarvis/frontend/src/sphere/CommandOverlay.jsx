@@ -1,4 +1,5 @@
 import React from 'react'
+import { IsabellaGuidedTest } from './IsabellaGuidedTest'
 import { listProfiles, profileCard, resetCalibrations } from '../calibration'
 
 const MODES = [
@@ -10,7 +11,7 @@ const MODES = [
   ['gesture', 'GESTURE'],
 ]
 
-export function CommandOverlay({ open, onClose, liveData, actions }) {
+export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSession = 0, guidedTestActive = false }) {
   const [mode, setMode] = React.useState('home')
   const [query, setQuery] = React.useState('')
   const [directive, setDirective] = React.useState('')
@@ -33,12 +34,15 @@ export function CommandOverlay({ open, onClose, liveData, actions }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [open, onClose])
+  React.useEffect(() => {
+    if (guidedTestActive && guidedTestSession > 0) setMode('guided')
+    else if (!guidedTestActive) setMode(current => current === 'guided' ? 'home' : current)
+  }, [guidedTestActive, guidedTestSession])
 
   React.useEffect(() => {
     if (open) refreshProfiles()
   }, [open, refreshProfiles])
 
-  if (!open) return null
   const selectedMission = liveData.missions.find(item => item.id === selectedMissionId)
     ?? liveData.missions.find(item => item.active)
     ?? liveData.missions[0]
@@ -66,10 +70,10 @@ export function CommandOverlay({ open, onClose, liveData, actions }) {
     }
   }
 
-  return <section className="sphere-command" role="dialog" aria-modal="true" aria-label="Jericho command overlay">
+  return <section className="sphere-command" role="dialog" aria-modal={open ? 'true' : undefined} aria-label="Jericho command overlay" hidden={!open}>
     <header>
       <span className="micro">SPHERE COMMAND / BOUNDED OPERATOR ACTIONS</span>
-      <strong>{mode === 'home' ? 'COMMAND' : mode.toUpperCase()}</strong>
+      <strong>{mode === 'home' ? 'COMMAND' : mode === 'guided' ? 'GUIDED TEST · ISABELLA' : mode.toUpperCase()}</strong>
       <button type="button" data-gesture-target="command:close" onClick={onClose} aria-label="Close command overlay">×</button>
     </header>
     <nav aria-label="Command modes">
@@ -86,6 +90,7 @@ export function CommandOverlay({ open, onClose, liveData, actions }) {
         <p>Choose one bounded action. No send, deploy, destructive mutation, or unapproved execution is available here.</p>
         <dl><div><dt>MISSIONS</dt><dd>{liveData.missions.length}</dd></div><div><dt>APPROVALS</dt><dd>{liveData.approvals.length}</dd></div><div><dt>OUTCOMES</dt><dd>{liveData.outcomes.length}</dd></div></dl>
       </div>}
+      {mode === 'guided' && <IsabellaGuidedTest session={guidedTestSession} active={guidedTestActive} actions={actions} />}
       {mode === 'directive' && <form className="sphere-command__form" onSubmit={event => {
         event.preventDefault()
         if (!directive.trim()) return

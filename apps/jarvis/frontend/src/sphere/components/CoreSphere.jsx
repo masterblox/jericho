@@ -32,7 +32,17 @@ export function CoreSphere() {
     const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 2000)
     camera.position.set(0, 0, 100)
 
-    const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
+    let renderer
+    try {
+      renderer = new THREE.WebGLRenderer({ antialias: false, alpha: true, powerPreference: 'high-performance' })
+    } catch {
+      container.dataset.webgl = 'unavailable'
+      window.__jerichoSphere = { count: 0, fallback: true }
+      return () => {
+        delete container.dataset.webgl
+        delete window.__jerichoSphere
+      }
+    }
     renderer.setPixelRatio(1) // HADAL's biggest perf win
     renderer.setClearColor(0x000000, 0)
     container.appendChild(renderer.domElement)

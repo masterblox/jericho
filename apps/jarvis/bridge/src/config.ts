@@ -1,6 +1,5 @@
 import dotenv from 'dotenv';
 import { randomBytes } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
 import { userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -8,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { MutationClass, type RepositoryGrant } from '@jericho/shared';
 
 import type { PersonaMode } from './personas.js';
+import { readKeychainSecret, writeKeychainSecret } from './platform/keychain.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.resolve(directory, '../../.env') });
@@ -69,7 +69,8 @@ export interface ApiTokenOptions {
   environment?: Record<string, string | undefined>;
   platform?: NodeJS.Platform;
   username?: string;
-  runSecurityCommand?: (args: readonly string[], input?: string) => string;
+  readSecret?: (service: string) => string;
+  writeSecret?: (service: string, secret: string) => void;
   generateToken?: () => string;
 }
 
@@ -88,15 +89,9 @@ export function loadApiToken(options: ApiTokenOptions = {}): string {
     throw new Error('No Jericho API token is available. Set JERICHO_API_TOKEN.');
   }
   const username = options.username ?? userInfo().username;
-  const runSecurityCommand = options.runSecurityCommand ?? defaultSecurityCommand;
-  const readPersistedToken = () => validateApiToken(runSecurityCommand([
-    'find-generic-password',
-    '-s',
-    'jericho-core-api',
-    '-a',
-    username,
-    '-w',
-  ]), 'macOS Keychain item jericho-core-api');
+  const readSecret = options.readSecret ?? ((service) => readKeychainSecret(service, { username }));
+  const writeSecret = options.writeSecret ?? ((service, secret) => writeKeychainSecret(service, secret, { username }));
+  const readPersistedToken = () => validateApiToken(readSecret('jericho-core-api'), 'macOS Keychain item jericho-core-api');
 
   try {
     return readPersistedToken();
@@ -111,14 +106,7 @@ export function loadApiToken(options: ApiTokenOptions = {}): string {
     'Generated Jericho API token',
   );
   try {
-    runSecurityCommand([
-      'add-generic-password',
-      '-s',
-      'jericho-core-api',
-      '-a',
-      username,
-      '-w',
-    ], `${generated}\n`);
+    writeSecret('jericho-core-api', generated);
   } catch (cause) {
     if (!isSecurityStatus(cause, 45)) {
       throw new Error('Unable to persist Jericho API token in macOS Keychain', { cause });
@@ -306,14 +294,6 @@ function isSecurityStatus(cause: unknown, status: number): boolean {
   return typeof cause === 'object' && cause !== null && 'status' in cause && cause.status === status;
 }
 
-function defaultSecurityCommand(args: readonly string[], input?: string): string {
-  return execFileSync('security', [...args], {
-    encoding: 'utf8',
-    input,
-    stdio: ['pipe', 'pipe', 'pipe'],
-  });
-}
-
 const DEFAULT_SYSTEM_INSTRUCTION = [
   'You are JARVIS, Carlos’s private chief of staff in the style of the Iron Man films.',
   'You are English, refined, unflappable, concise, and exceptionally competent.',
@@ -323,6 +303,7 @@ const DEFAULT_SYSTEM_INSTRUCTION = [
   'PRIVACY GATE: the client and server voice gates deliver audio only during an explicitly active turn.',
   'Do not demand or listen for a spoken wake word; any audio you receive has already passed the local gate.',
   'Handle the active request directly and finish each response cleanly so the gate can return to standby.',
+  'Do not invent guided-test scripts, party tricks, or ask Carlos to ask a scripted follow-up question.',
 ].join(' ');
 
 function commandLinePort(argv: readonly string[]): string | undefined {
