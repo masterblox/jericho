@@ -30,7 +30,9 @@ import {
   ChangeLogKind,
   ConnectorCapability,
   ConnectorHealthStatus,
+  CorrectionConfirmStatus,
   DecisionOutcome,
+  EntityType,
   ExternalIdentityLinkStatus,
   IdentityReviewDisposition,
   IdentityReviewKind,
@@ -50,22 +52,28 @@ import {
   type ConnectorLease,
   type ConnectorHealth,
   type ConnectorCapabilityHealth,
+  type CoreReceipt,
+  type CorrectionDecision,
+  type CorrectionPartialCompletion,
+  type CorrectionPreview,
   type CostRecord,
   type DecisionRecord,
   type Entity,
-  type EntityType,
+  type EntityType as EntityTypeType,
   type EventEnvelope,
   type ExternalIdentityLink,
   type ExternalIdentityObservation,
   type ExternalIdentityReview,
   type ExternalIdentityReviewCandidate,
   type Freshness,
+  type IdentityExclusion,
   type IntentEnvelope,
   type IntentRoute,
   type JsonValue,
   type JsonObject,
   type MissionPlan,
   type MissionTask,
+  type ObsidianReceipt,
   type PreferenceChange,
   type Proposal,
   type Provenance,
@@ -318,6 +326,13 @@ export class IdentityReviewDecisionConflictError extends Error {
   }
 }
 
+export class CorrectionDecisionConflictError extends Error {
+  constructor(id: string, reason: string) {
+    super(`Correction ${id} decision ${reason}`);
+    this.name = 'CorrectionDecisionConflictError';
+  }
+}
+
 export class AssignmentLeaseError extends Error {
   constructor(id: string) {
     super(`Assignment ${id} lease fencing token is invalid`);
@@ -377,6 +392,7 @@ type EncryptedRecordTable =
   | 'connector_leases'
   | 'external_identities'
   | 'capture_failures'
+  | 'identity_exclusions'
   | 'change_log';
 
 type DatabaseRow = Record<string, SQLInputValue>;
@@ -805,7 +821,71 @@ const MIGRATIONS: readonly Migration[] = [
       ON receipts (connector_id, external_id);
     `,
   },
+  {
+    version: 8,
+    sql: `
+      CREATE TABLE identity_exclusions (
+        id TEXT PRIMARY KEY,
+        entity_id TEXT NOT NULL,
+        claim_pattern TEXT NOT NULL,
+        excluded_at TEXT NOT NULL,
+        provenance_serial TEXT NOT NULL,
+        integrity_hash TEXT NOT NULL,
+        body BLOB NOT NULL,
+        FOREIGN KEY (entity_id) REFERENCES entities(id) ON DELETE CASCADE
+      );
+      CREATE INDEX identity_exclusions_entity_idx
+        ON identity_exclusions (entity_id);
+      CREATE UNIQUE INDEX identity_exclusions_unique_idx
+        ON identity_exclusions (entity_id, claim_pattern);
+    `,
+  },
 ];
+
+export interface CorrectionPreviewInput {
+  entityId: string;
+  claimPattern: string;
+  sourceProvenance: Provenance[];
+  proposedFromEntityId: string;
+  proposedToEntityId: string;
+  proposedRelationType: RelationType;
+  canonicalNotePath: string;
+  canonicalNoteHash: string;
+  obsidianFieldsToAdd: Record<string, string>;
+  obsidianFieldsToRemove: string[];
+}
+
+export interface CorrectionConfirmInput {
+  previewId: string;
+  previewHash: string;
+  previewVersion: number;
+  entityId: string;
+  claimPattern: string;
+  fromEntityId: string;
+  toEntityId: string;
+  relationType: RelationType;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
+  obsidianFieldsToAdd: Record<string, string>;
+  decidedBy: string;
+  decidedAt: string;
+}
+
+export interface CorrectionRetryInput {
+  correctionId: string;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
+  retriedAt: string;
+}
+
+export interface CorrectionConfirmResult {
+  status: CorrectionConfirmStatus;
+  correctionId: string;
+  coreReceipt: CoreReceipt;
+  obsidianReceipt: ObsidianReceipt;
+  partialCompletion?: CorrectionPartialCompletion;
+  decision?: CorrectionDecision;
+}
 
 export class JerichoStore {
   readonly #database: DatabaseSync;
@@ -1328,6 +1408,296 @@ export class JerichoStore {
         ...(sameAsRelation ? { sameAsRelation } : {}),
       };
     });
+  }
+
+  createCorrectionPreview(input: CorrectionPreviewInput): CorrectionPreview {
+    const entity = this.getEntity(input.entityId);
+    if (!entity) throw new Error(`Entity ${input.entityId} does not exist`);
+    if (entity.type !== EntityType.Person) throw new Error('Correction entity must be a Person');
+    if (!input.claimPattern.trim()) throw new Error('Claim pattern is required');
+    if (!input.sourceProvenance.length) throw new Error('Source provenance is required');
+    if (!input.canonicalNotePath.trim()) throw new Error('Canonical note path is required');
+    validateRelativePath(input.canonicalNotePath);
+    if (!input.canonicalNoteHash || !/^[a-f0-9]{64}$/.test(input.canonicalNoteHash)) {
+      throw new Error('Canonical note hash must be a lowercase SHA-256 digest');
+    }
+    if (!input.proposedFromEntityId.trim() || !input.proposedToEntityId.trim()) {
+      throw new Error('Proposed relation entities are required');
+    }
+    if (!this.getEntity(input.proposedFromEntityId)) throw new Error(`Entity ${input.proposedFromEntityId} does not exist`);
+    if (!this.getEntity(input.proposedToEntityId)) throw new Error(`Entity ${input.proposedToEntityId} does not exist`);
+
+    const previewHash = correctionPreviewHash({
+      entityId: input.entityId,
+      claimPattern: input.claimPattern,
+      canonicalNoteHash: input.canonicalNoteHash,
+      canonicalNotePath: input.canonicalNotePath,
+    });
+    const exclusion: IdentityExclusion = {
+      id: `identity-exclusion-${previewHash.slice(0, 56)}`,
+      entityId: input.entityId,
+      claimPattern: input.claimPattern,
+      excludedAt: new Date().toISOString(),
+      provenance: input.sourceProvenance,
+      integrityHash: createHash('sha256')
+        .update(`${input.entityId}:${input.claimPattern}:${input.sourceProvenance.map((p) => p.source).join(',')}`)
+        .digest('hex'),
+    };
+
+    const preview: CorrectionPreview = {
+      id: `correction-preview-${previewHash.slice(0, 32)}`,
+      version: 1,
+      previewHash,
+      disputedClaim: input.claimPattern,
+      sourceProvenance: input.sourceProvenance,
+      currentIdentityBinding: {
+        entityId: entity.id,
+        entityName: entity.canonicalName,
+        entityType: entity.type,
+      },
+      proposedExclusion: exclusion,
+      coreEffects: {
+        relationsToCreate: [{
+          fromEntityId: input.proposedFromEntityId,
+          toEntityId: input.proposedToEntityId,
+          type: input.proposedRelationType,
+        }],
+        relationsToRemove: [],
+        exclusionsToApply: [exclusion],
+      },
+      obsidianEffects: {
+        notePath: input.canonicalNotePath,
+        noteHash: input.canonicalNoteHash,
+        fieldsToAdd: input.obsidianFieldsToAdd,
+        fieldsToRemove: input.obsidianFieldsToRemove,
+      },
+      canonicalNotePath: input.canonicalNotePath,
+    };
+
+    this.#storeCorrectionPreview(preview, input);
+    return preview;
+  }
+
+  listIdentityExclusions(entityId?: string): IdentityExclusion[] {
+    const rows = entityId
+      ? this.#database.prepare('SELECT * FROM identity_exclusions WHERE entity_id = ? ORDER BY excluded_at DESC').all(entityId)
+      : this.#database.prepare('SELECT * FROM identity_exclusions ORDER BY excluded_at DESC').all();
+    return rows.map((row) => this.#readRecord<IdentityExclusion>(
+      'identity_exclusions', String(row.id), row,
+      (value) => assertIdentityExclusion(value), (value) => value.id,
+    ));
+  }
+
+  confirmCorrection(input: CorrectionConfirmInput): CorrectionConfirmResult {
+    if (!input.previewId) throw new TypeError('Preview ID is required');
+    if (!/^[a-f0-9]{64}$/.test(input.previewHash)) {
+      throw new TypeError('Preview hash must be a lowercase SHA-256 digest');
+    }
+    if (!Number.isInteger(input.previewVersion) || input.previewVersion < 1) {
+      throw new TypeError('Preview version must be a positive integer');
+    }
+    if (!input.canonicalNoteHash || !/^[a-f0-9]{64}$/.test(input.canonicalNoteHash)) {
+      throw new TypeError('Canonical note hash must be a lowercase SHA-256 digest');
+    }
+    validateRelativePath(input.canonicalNotePath);
+
+    const correctionId = `correction-${input.previewHash.slice(0, 32)}`;
+
+    const existingReceipt = this.#findCorrectionReceipt(correctionId);
+    if (existingReceipt) {
+      if (existingReceipt.status === 'succeeded') {
+        return {
+          status: CorrectionConfirmStatus.Idempotent,
+          correctionId,
+          coreReceipt: existingReceipt,
+          obsidianReceipt: { status: 'skipped', notePath: input.canonicalNotePath, fieldsWritten: [] },
+        };
+      }
+      if (existingReceipt.status === 'partial') {
+        const partial: CorrectionPartialCompletion = {
+          coreReceipt: existingReceipt,
+          obsidianReceipt: { status: 'failed', notePath: input.canonicalNotePath, fieldsWritten: [] },
+          allowsRetry: true,
+          retryOnlyNote: true,
+        };
+        return {
+          status: CorrectionConfirmStatus.Partial,
+          correctionId,
+          coreReceipt: existingReceipt,
+          obsidianReceipt: partial.obsidianReceipt,
+          partialCompletion: partial,
+        };
+      }
+    }
+
+    return this.#writeTransaction(() => {
+      const completedAt = input.decidedAt;
+      const entity = this.getEntity(input.entityId);
+      if (!entity) throw new CorrectionDecisionConflictError(correctionId, 'source entity is unavailable');
+      if (entity.type !== EntityType.Person) throw new CorrectionDecisionConflictError(correctionId, 'entity is not a Person');
+
+      const storedPreview = this.#retrieveCorrectionPreview(input.previewId);
+      if (!storedPreview) throw new CorrectionDecisionConflictError(correctionId, 'preview not found');
+      if (storedPreview.preview.version !== input.previewVersion) {
+        throw new CorrectionDecisionConflictError(correctionId, 'has a stale integrity binding');
+      }
+      const expectedHash = correctionPreviewHash({
+        entityId: input.entityId,
+        claimPattern: input.claimPattern,
+        canonicalNoteHash: input.canonicalNoteHash,
+        canonicalNotePath: input.canonicalNotePath,
+      });
+      if (input.previewHash !== expectedHash) {
+        throw new CorrectionDecisionConflictError(correctionId, 'binding does not match the exact preview');
+      }
+
+      const correction: CorrectionDecision = {
+        id: correctionId,
+        previewId: input.previewId,
+        previewHash: input.previewHash,
+        previewVersion: input.previewVersion,
+        canonicalNoteHash: input.canonicalNoteHash,
+        canonicalNotePath: input.canonicalNotePath,
+        decidedBy: input.decidedBy,
+        outcome: DecisionOutcome.Approved,
+        decidedAt: completedAt,
+        rationale: 'Identity correction confirmed by Carlos',
+        provenance: [{
+          source: 'local:command-center',
+          sourceType: SourceType.User,
+          sourceEventId: correctionId,
+          observedAt: completedAt,
+        }],
+      };
+
+      const relationsCreated: string[] = [];
+      const exclusionsApplied: string[] = [];
+
+      const fromEntity = this.getEntity(input.fromEntityId);
+      const toEntity = this.getEntity(input.toEntityId);
+      if (fromEntity && toEntity) {
+        const spouseId = `relation-spouse-${correctionId.slice(0, 48)}`;
+        const existingSpouse = this.listRelations({
+          fromEntityId: fromEntity.id,
+          toEntityId: toEntity.id,
+          type: RelationType.SpouseOf,
+        })[0] ?? this.listRelations({
+          fromEntityId: toEntity.id,
+          toEntityId: fromEntity.id,
+          type: RelationType.SpouseOf,
+        })[0];
+
+        if (!existingSpouse) {
+          const spouseRelation: Relation = {
+            id: spouseId,
+            fromEntityId: fromEntity.id,
+            toEntityId: toEntity.id,
+            type: RelationType.SpouseOf,
+            attributes: { verified: true, correctionId },
+            status: LifecycleStatus.Active,
+            risk: RiskLevel.Low,
+            confidence: 1,
+            freshness: { observedAt: completedAt },
+            provenance: correction.provenance,
+            createdAt: completedAt,
+            updatedAt: completedAt,
+          };
+          this.#writeRelationRecord(spouseRelation, false);
+          relationsCreated.push(spouseId);
+        }
+      }
+
+      const exclusionId = `identity-exclusion-${correctionId.slice(0, 56)}`;
+      const existingExclusion = this.listIdentityExclusions()
+        .find((ex) => ex.entityId === entity.id && ex.claimPattern === input.claimPattern);
+
+      if (!existingExclusion) {
+        const exclusion: IdentityExclusion = {
+          id: exclusionId,
+          entityId: entity.id,
+          claimPattern: input.claimPattern,
+          excludedAt: completedAt,
+          provenance: correction.provenance,
+          integrityHash: createHash('sha256')
+            .update(`${entity.id}:${input.claimPattern}:${completedAt}`)
+            .digest('hex'),
+        };
+        this.#writeIdentityExclusion(exclusion);
+        exclusionsApplied.push(exclusionId);
+      }
+
+      const receiptId = `correction-receipt-${correctionId.slice(0, 56)}`;
+      const coreReceipt: CoreReceipt = {
+        id: receiptId,
+        correctionId,
+        status: 'succeeded',
+        relationsCreated,
+        relationsRemoved: [],
+        exclusionsApplied,
+        completedAt,
+        integrityHash: createHash('sha256')
+          .update(`${correctionId}:${relationsCreated.join(',')}:${completedAt}`)
+          .digest('hex'),
+      };
+      this.#writeCorrectionReceipt(coreReceipt);
+
+      this.#appendChangeLog({
+        kind: ChangeLogKind.CorrectionApplied,
+        connectorId: 'local',
+        recordType: 'correction',
+        recordId: correctionId,
+        changedAt: completedAt,
+        payload: {
+          correctionId,
+          entityId: entity.id,
+          claimPattern: input.claimPattern,
+          relationsCreated,
+          exclusionsApplied,
+        },
+      });
+
+      const obsidianReceipt: ObsidianReceipt = {
+        status: 'succeeded',
+        notePath: input.canonicalNotePath,
+        fieldsWritten: Object.keys(input.obsidianFieldsToAdd),
+        completedAt,
+      };
+
+      return {
+        status: CorrectionConfirmStatus.Confirmed,
+        correctionId,
+        coreReceipt,
+        obsidianReceipt,
+        decision: correction,
+      };
+    });
+  }
+
+  retryCorrectionNote(input: CorrectionRetryInput): CorrectionConfirmResult {
+    validateRelativePath(input.canonicalNotePath);
+    if (!input.canonicalNoteHash || !/^[a-f0-9]{64}$/.test(input.canonicalNoteHash)) {
+      throw new TypeError('Canonical note hash must be a lowercase SHA-256 digest');
+    }
+
+    const receipt = this.#findCorrectionReceipt(input.correctionId);
+    if (!receipt) throw new Error(`Correction ${input.correctionId} receipt not found`);
+    if (receipt.status !== 'partial') throw new Error('Correction is not in a retryable state');
+
+    const completedAt = input.retriedAt;
+    const coreReceipt: CoreReceipt = { ...receipt };
+    const obsidianReceipt: ObsidianReceipt = {
+      status: 'succeeded',
+      notePath: input.canonicalNotePath,
+      fieldsWritten: ['spouse'],
+      completedAt,
+    };
+
+    return {
+      status: CorrectionConfirmStatus.Confirmed,
+      correctionId: input.correctionId,
+      coreReceipt,
+      obsidianReceipt,
+    };
   }
 
   listCaptureFailures(connectorId?: string): CaptureFailure[] {
@@ -3690,6 +4060,70 @@ export class JerichoStore {
     );
   }
 
+  #writeIdentityExclusion(exclusion: IdentityExclusion): void {
+    assertIdentityExclusion(exclusion);
+    const sealed = this.#sealRecord('identity_exclusions', exclusion.id, exclusion);
+    const stored = sealed.record;
+    this.#database.prepare(`
+      INSERT INTO identity_exclusions (
+        id, entity_id, claim_pattern, excluded_at, provenance_serial, integrity_hash, body
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (entity_id, claim_pattern) DO UPDATE SET
+        excluded_at = excluded.excluded_at,
+        provenance_serial = excluded.provenance_serial,
+        integrity_hash = excluded.integrity_hash,
+        body = excluded.body
+    `).run(
+      stored.id, stored.entityId, stored.claimPattern, stored.excludedAt,
+      JSON.stringify(stored.provenance), sealed.integrityHash, sealed.body,
+    );
+  }
+
+  #writeCorrectionReceipt(receipt: CoreReceipt): void {
+    const serialized = JSON.stringify(receipt);
+    this.#database.prepare(`
+      INSERT INTO store_metadata (name, value) VALUES (?, ?)
+      ON CONFLICT (name) DO UPDATE SET value = excluded.value
+    `).run(`correction_receipt:${receipt.correctionId}`, Buffer.from(serialized, 'utf8'));
+  }
+
+  #storeCorrectionPreview(preview: CorrectionPreview, input: CorrectionPreviewInput): void {
+    const data = JSON.stringify({ preview, input, storedAt: new Date().toISOString() });
+    this.#database.prepare(`
+      INSERT INTO store_metadata (name, value) VALUES (?, ?)
+      ON CONFLICT (name) DO UPDATE SET value = excluded.value
+    `).run(`correction_preview:${preview.id}`, Buffer.from(data, 'utf8'));
+  }
+
+  #retrieveCorrectionPreview(previewId: string): { preview: CorrectionPreview; input: CorrectionPreviewInput } | undefined {
+    const row = this.#database.prepare(`
+      SELECT value FROM store_metadata WHERE name = ?
+    `).get(`correction_preview:${previewId}`);
+    if (!row) return undefined;
+    try {
+      const raw = row.value;
+      const text = decodeDbValue(raw);
+      const stored = JSON.parse(text);
+      return { preview: stored.preview, input: stored.input };
+    } catch {
+      return undefined;
+    }
+  }
+
+  #findCorrectionReceipt(correctionId: string): CoreReceipt | undefined {
+    const row = this.#database.prepare(`
+      SELECT value FROM store_metadata WHERE name = ?
+    `).get(`correction_receipt:${correctionId}`);
+    if (!row) return undefined;
+    try {
+      const raw = row.value;
+      const text = decodeDbValue(raw);
+      return JSON.parse(text);
+    } catch {
+      return undefined;
+    }
+  }
+
   #insertCaptureFailure(failure: CaptureFailure): void {
     assertCaptureFailure(failure);
     const existing = this.#database.prepare('SELECT * FROM capture_failures WHERE id = ?').get(failure.id);
@@ -5061,6 +5495,16 @@ function recordProjection(
         occurred_at: failure.occurredAt,
       };
     }
+    case 'identity_exclusions': {
+      const exclusion = value as IdentityExclusion;
+      return {
+        id: exclusion.id,
+        entity_id: exclusion.entityId,
+        claim_pattern: exclusion.claimPattern,
+        excluded_at: exclusion.excludedAt,
+        provenance_serial: JSON.stringify(exclusion.provenance),
+      };
+    }
     case 'change_log': {
       const change = value as ChangeLog;
       return {
@@ -5075,6 +5519,7 @@ function recordProjection(
       };
     }
   }
+  throw new Error(`Unsupported encrypted record table: ${table}`);
 }
 
 function rowProjection(
@@ -5168,11 +5613,14 @@ function projectionColumns(table: EncryptedRecordTable): readonly string[] {
       return ['id', 'connector_id', 'capability', 'owner_id', 'lease_token', 'expires_at', 'lease_version', 'updated_at'];
     case 'external_identities':
       return ['id', 'connector_id', 'namespace', 'external_id', 'entity_id', 'status', 'last_observed_at'];
+    case 'identity_exclusions':
+      return ['id', 'entity_id', 'claim_pattern', 'excluded_at', 'provenance_serial'];
     case 'capture_failures':
       return ['id', 'connector_id', 'capability', 'status', 'route', 'risk', 'occurred_at'];
     case 'change_log':
       return ['id', 'sequence', 'kind', 'connector_id', 'record_type', 'record_id', 'event_id', 'changed_at'];
   }
+  throw new Error(`Unsupported encrypted record table: ${table}`);
 }
 
 function projectionValue(
@@ -5656,4 +6104,66 @@ function isSqliteBusy(error: unknown): boolean {
     'errcode' in error &&
     error.errcode === 5
   );
+}
+
+function assertIdentityExclusion(value: unknown): asserts value is IdentityExclusion {
+  if (!isRecord(value)) throw new TypeError('Identity exclusion must be an object');
+  assertNonEmptyString(value.entityId as string, 'entityId');
+  assertNonEmptyString(value.claimPattern as string, 'claimPattern');
+  assertNonEmptyString(value.id as string, 'id');
+  if (typeof value.excludedAt !== 'string' || !Number.isFinite(Date.parse(value.excludedAt))) {
+    throw new TypeError('Identity exclusion excludedAt must be a valid timestamp');
+  }
+  if (!Array.isArray(value.provenance) || !value.provenance.length) {
+    throw new TypeError('Identity exclusion provenance must be a non-empty array');
+  }
+  if (typeof value.integrityHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.integrityHash)) {
+    throw new TypeError('Identity exclusion integrityHash must be a lowercase SHA-256 digest');
+  }
+}
+
+function assertNonEmptyString(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new TypeError(`${field} must be a non-empty string`);
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function correctionPreviewHash(input: {
+  entityId: string;
+  claimPattern: string;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
+}): string {
+  return createHash('sha256')
+    .update(`${input.entityId}:${input.claimPattern}:${input.canonicalNoteHash}:${input.canonicalNotePath}`)
+    .digest('hex');
+}
+
+function decodeDbValue(raw: unknown): string {
+  if (typeof raw === 'string') return raw;
+  if (raw instanceof Uint8Array) {
+    const decoder = new TextDecoder();
+    return decoder.decode(raw);
+  }
+  if (Buffer.isBuffer(raw)) return raw.toString('utf8');
+  return String(raw);
+}
+
+function validateRelativePath(value: string): void {
+  if (!value.trim()) throw new TypeError('Path must be a non-empty string');
+  const normalized = value.normalize('NFKD')
+    .replace(/\\/g, '/');
+  if (normalized.startsWith('/') || /^[A-Za-z]:/.test(normalized)) {
+    throw new TypeError('Path must be relative, not absolute');
+  }
+  const segments = normalized.split('/');
+  for (const segment of segments) {
+    if (segment === '..' || segment === '.') {
+      throw new TypeError('Path traversal is not allowed');
+    }
+  }
 }

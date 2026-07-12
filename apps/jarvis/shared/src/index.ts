@@ -145,6 +145,7 @@ export enum RelationType {
   ParentOf = 'parent_of',
   Supports = 'supports',
   ConflictsWith = 'conflicts_with',
+  SpouseOf = 'spouse_of',
 }
 
 export enum IntentKind {
@@ -255,6 +256,7 @@ export enum ChangeLogKind {
   ReceiptChanged = 'receipt_changed',
   CostRecorded = 'cost_recorded',
   HealthChanged = 'health_changed',
+  CorrectionApplied = 'correction_applied',
 }
 
 export enum CommandCenterActionKind {
@@ -471,6 +473,133 @@ export interface CaptureFailure {
   occurredAt: IsoTimestamp;
   provenance: Provenance[];
   integrityHash?: string;
+}
+
+export interface IdentityExclusion {
+  id: string;
+  entityId: string;
+  claimPattern: string;
+  excludedAt: IsoTimestamp;
+  provenance: Provenance[];
+  integrityHash: string;
+}
+
+export interface CorrectionPreview {
+  id: string;
+  version: number;
+  previewHash: string;
+  disputedClaim: string;
+  sourceProvenance: Provenance[];
+  currentIdentityBinding: {
+    entityId: string;
+    entityName: string;
+    entityType: EntityType;
+  };
+  proposedExclusion: IdentityExclusion;
+  coreEffects: {
+    relationsToCreate: Array<{ fromEntityId: string; toEntityId: string; type: RelationType }>;
+    relationsToRemove: string[];
+    exclusionsToApply: IdentityExclusion[];
+  };
+  obsidianEffects: {
+    notePath: string;
+    noteHash: string;
+    fieldsToAdd: Record<string, string>;
+    fieldsToRemove: string[];
+  };
+  canonicalNotePath: string;
+}
+
+export interface CorrectionDecision {
+  id: string;
+  previewId: string;
+  previewHash: string;
+  previewVersion: number;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
+  decidedBy: string;
+  outcome: DecisionOutcome;
+  decidedAt: IsoTimestamp;
+  rationale: string;
+  provenance: Provenance[];
+}
+
+export interface CoreReceipt {
+  id: string;
+  correctionId: string;
+  status: 'succeeded' | 'failed' | 'partial';
+  relationsCreated: string[];
+  relationsRemoved: string[];
+  exclusionsApplied: string[];
+  completedAt: IsoTimestamp;
+  integrityHash: string;
+}
+
+export interface ObsidianReceipt {
+  status: 'succeeded' | 'failed' | 'skipped';
+  notePath: string;
+  fieldsWritten: string[];
+  completedAt?: IsoTimestamp;
+  error?: string;
+}
+
+export interface CorrectionPartialCompletion {
+  coreReceipt: CoreReceipt;
+  obsidianReceipt: ObsidianReceipt;
+  allowsRetry: boolean;
+  retryOnlyNote: boolean;
+}
+
+export interface CorrectionPreviewRequest {
+  entityId: string;
+  claimPattern: string;
+  sourceProvenance: Provenance[];
+  proposedRelationType: RelationType;
+  proposedFromEntityId: string;
+  proposedToEntityId: string;
+  canonicalNotePath: string;
+  canonicalNoteHash: string;
+  obsidianFieldsToAdd: Record<string, string>;
+  obsidianFieldsToRemove: string[];
+}
+
+export interface CorrectionPreviewResponse {
+  preview: CorrectionPreview;
+}
+
+export interface CorrectionConfirmRequest {
+  previewId: string;
+  previewHash: string;
+  previewVersion: number;
+  entityId: string;
+  claimPattern: string;
+  fromEntityId: string;
+  toEntityId: string;
+  relationType: RelationType;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
+  obsidianFieldsToAdd: Record<string, string>;
+}
+
+export enum CorrectionConfirmStatus {
+  Confirmed = 'confirmed',
+  Rejected = 'rejected',
+  Partial = 'partial',
+  Idempotent = 'idempotent',
+}
+
+export interface CorrectionConfirmResponse {
+  status: CorrectionConfirmStatus;
+  correctionId: string;
+  coreReceipt: CoreReceipt;
+  obsidianReceipt: ObsidianReceipt;
+  partialCompletion?: CorrectionPartialCompletion;
+}
+
+export interface CorrectionRetryRequest {
+  correctionId: string;
+  canonicalNoteHash: string;
+  canonicalNotePath: string;
 }
 
 export interface NormalizedCapture {
