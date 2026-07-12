@@ -99,6 +99,37 @@ describe('voice socket privacy gate', () => {
     }));
   });
 
+  it('lets Gemini search the bounded local Obsidian adapter when no RAG gateway is configured', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const search = vi.fn(async () => [{
+      path: 'People/Isabella.md', title: 'Isabella', excerpt: 'Verified local note.',
+    }]);
+    const runtime = await startVoiceServer(voiceConnect, 1_000, { obsidianSearch: { search } });
+    const socket = await connectSocket(runtime.port);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await flushIo();
+
+    callbacks?.onmessage({
+      toolCall: { functionCalls: [{ id: 'local-1', name: 'search_vault', args: { query: 'Isabella' } }] },
+    });
+
+    await vi.waitFor(() => expect(search).toHaveBeenCalledWith('Isabella', 5));
+    await vi.waitFor(() => expect(session.sendToolResponse).toHaveBeenCalledWith({
+      functionResponses: [expect.objectContaining({
+        id: 'local-1', name: 'search_vault',
+        response: expect.objectContaining({ available: true, count: 1, cached: false }),
+      })],
+    }));
+  });
+
   it('rejects a forged same-origin header without a bearer or browser session credential', async () => {
     const voiceConnect = vi.fn<VoiceConnect>();
     const runtime = await startVoiceServer(voiceConnect);
@@ -216,6 +247,67 @@ describe('voice socket privacy gate', () => {
     }));
   });
 
+  it('emits a bounded Isabella walkthrough signal without exposing the transcript', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return {
+        sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+      };
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'armed', armed: true }));
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: 'Test Isabella', finished: true } },
+    });
+
+    await vi.waitFor(() => expect(messages()).toContainEqual({
+      type: 'guided_test_start', test: 'isabella',
+    }));
+    expect(messages()).not.toContainEqual(expect.objectContaining({ transcript: expect.anything() }));
+  });
+
+  it('resumes an active Isabella test without replaying the generic greeting', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: 'Test Isabella', finished: true } },
+    });
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'turn_complete' }));
+
+    const beforeResume = session.sendClientContent.mock.calls.length;
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(messages()).toContainEqual({
+      type: 'guided_test_resume', test: 'isabella',
+    }));
+    expect(messages()).toContainEqual({ type: 'greeting_complete' });
+    expect(messages()).toContainEqual({ type: 'armed', armed: true });
+    expect(session.sendClientContent).toHaveBeenCalledTimes(beforeResume);
+  });
+
   it('honors client standby and independently expires an abandoned active turn', async () => {
     const session = {
       sendClientContent: vi.fn(),
@@ -289,11 +381,12 @@ async function startVoiceServer(
   voiceConnect: VoiceConnect,
   voiceActiveTurnMs = 1_000,
   persona: {
-    defaultPersonaMode: 'jarvis' | 'megatron';
-    megatronVoice: string;
-    personaAutoRevertMs: number;
+    defaultPersonaMode?: 'jarvis' | 'megatron';
+    megatronVoice?: string;
+    personaAutoRevertMs?: number;
     vaultSearch?: { search(query: string, limit: number, signal: AbortSignal): Promise<any> };
-  } | { vaultSearch: { search(query: string, limit: number, signal: AbortSignal): Promise<any> } } | undefined = undefined,
+    obsidianSearch?: { search(query: string, limit: number): Promise<any> };
+  } | undefined = undefined,
 ) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });
   openStores.push(store);

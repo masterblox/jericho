@@ -201,9 +201,23 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const browserBootstrapToken = randomBytes(32).toString('base64url');
   let browserBootstrapAvailable = true;
   const sseClients = new Set<{ response: ServerResponse; timer: ReturnType<typeof setInterval> }>();
+  const voiceVaultSearch = options.vaultSearch ?? (options.obsidianSearch ? {
+    search: async (query: string, limit: number, _signal: AbortSignal) => {
+      const results = await options.obsidianSearch!.search(query, limit) as Array<{
+        path: string; title: string; excerpt: string;
+      }>;
+      return {
+        cached: false,
+        results: results.map((result, index) => ({
+          ...result,
+          score: Math.max(0.1, 1 - index * 0.08),
+        })),
+      };
+    },
+  } : undefined);
   const tools = options.toolExecutor ?? createToolExecutor({
     store: options.store,
-    ...(options.vaultSearch ? { vaultSearch: options.vaultSearch } : {}),
+    ...(voiceVaultSearch ? { vaultSearch: voiceVaultSearch } : {}),
   });
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -555,6 +569,49 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       const stored = options.store.saveProposal(proposal);
       sendJson(response, 201, {
         proposal: stored,
+        snapshot: buildCommandCenterSnapshot(options.store, now()),
+      });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/obsidian/reorganization-proposals') {
+      const input = recordBody(await readJsonBody(request, 64 * 1024));
+      const relativePath = safeVaultRelativePath(requiredBodyString(input.relativePath, 'invalid_note_path'));
+      const title = requiredBodyString(input.title, 'invalid_note_title');
+      if (!/isabella/iu.test(`${title} ${relativePath}`)) {
+        throw new HttpError(400, 'guided_test_note_mismatch');
+      }
+      const createdAt = now();
+      const proposalId = `obsidian-reorganization-${randomUUID()}`;
+      const proposal = options.store.saveProposal({
+        id: proposalId,
+        version: 1,
+        proposedByAgentId: 'jericho-guided-test',
+        kind: ProposalKind.DataChange,
+        summary: `Reorganize ${title} across family and Masterblox contexts`,
+        body: {
+          effect: 'reorganize_obsidian_note',
+          test: 'isabella-v1',
+          relativePath,
+          writesApplied: false,
+          changes: [
+            { operation: 'add_context', value: 'family', rationale: 'Carlos identified Isabella as his wife' },
+            { operation: 'add_context', value: 'masterblox', rationale: 'Carlos identified Isabella as working at Masterblox' },
+            { operation: 'preserve_existing_content', value: true },
+          ],
+        },
+        status: LifecycleStatus.PendingApproval,
+        route: RouteType.HumanApproval,
+        risk: RiskLevel.Low,
+        createdAt,
+        provenance: [{
+          source: 'local:guided-test',
+          sourceType: SourceType.User,
+          sourceEventId: proposalId,
+          observedAt: createdAt,
+        }],
+      });
+      sendJson(response, 201, {
+        proposal,
         snapshot: buildCommandCenterSnapshot(options.store, now()),
       });
       return;
@@ -1169,6 +1226,12 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let greetingActive = false;
   let greetingPending = false;
   let captureTurn: { id: string; transcript: string } | undefined;
+  let guidedTest: { test: 'isabella'; expiresAt: number } | undefined;
+
+  const activeGuidedTest = () => {
+    if (guidedTest && guidedTest.expiresAt <= Date.now()) guidedTest = undefined;
+    return guidedTest;
+  };
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
@@ -1201,6 +1264,15 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const requestWakeGreeting = () => {
     if (!active || clientClosed) return;
+    const guided = activeGuidedTest();
+    if (guided) {
+      greetingPending = false;
+      greetingActive = false;
+      send({ type: 'guided_test_resume', test: guided.test });
+      send({ type: 'greeting_complete' });
+      send({ type: 'armed', armed: true });
+      return;
+    }
     if (!session) {
       greetingPending = true;
       return;
@@ -1236,6 +1308,16 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     transcriptTimer = undefined;
     const transcript = turn.transcript.replace(/\s+/gu, ' ').trim();
     if (!transcript) return;
+    if (/^test isabella[.!?]?$/iu.test(transcript)) {
+      guidedTest = { test: 'isabella', expiresAt: Date.now() + 5 * 60_000 };
+      send({ type: 'guided_test_start', test: 'isabella' });
+    } else if (/^(?:stop|end|cancel)(?: the)? isabella test[.!?]?$/iu.test(transcript)
+      || /^(?:stop|end|cancel) test[.!?]?$/iu.test(transcript)) {
+      if (activeGuidedTest()) send({ type: 'guided_test_end', test: 'isabella' });
+      guidedTest = undefined;
+    } else if (activeGuidedTest()) {
+      guidedTest = { test: 'isabella', expiresAt: Date.now() + 5 * 60_000 };
+    }
     const occurredAt = new Date(options.clock?.() ?? new Date().toISOString()).toISOString();
     try {
       const result = options.store.commitLocalCapture(localCaptureEvent({
@@ -1907,6 +1989,17 @@ function recordBody(value: unknown): Record<string, unknown> {
 function requiredBodyString(value: unknown, error: string): string {
   if (typeof value !== 'string' || !value.trim() || value.length > 1_024) throw new HttpError(400, error);
   return value.trim();
+}
+
+function safeVaultRelativePath(value: string): string {
+  if (value.includes('\\')) throw new HttpError(400, 'invalid_note_path');
+  const normalized = value;
+  if (
+    normalized.startsWith('/') ||
+    !normalized.toLocaleLowerCase().endsWith('.md') ||
+    normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')
+  ) throw new HttpError(400, 'invalid_note_path');
+  return normalized;
 }
 
 function stringList(value: unknown, error: string): string[] {

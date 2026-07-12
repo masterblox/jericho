@@ -80,6 +80,11 @@ export interface VaultSearchResponse {
   error?: string;
 }
 
+export interface NoteReorganizationProposalInput {
+  relativePath: string;
+  title: string;
+}
+
 export class CoreClient {
   readonly #fetch: typeof globalThis.fetch;
   readonly #createEventSource: (url: string) => EventSourcePort;
@@ -248,6 +253,14 @@ export class CoreClient {
       '/api/v1/relationship-proposals',
       input,
       'Relationship proposal failed',
+    );
+  }
+
+  proposeNoteReorganization(input: NoteReorganizationProposalInput): Promise<unknown> {
+    return this.#postWithSnapshot(
+      '/api/v1/obsidian/reorganization-proposals',
+      input,
+      'Note reorganization proposal failed',
     );
   }
 

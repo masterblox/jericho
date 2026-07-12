@@ -289,7 +289,17 @@ export class JarvisRuntime {
         onStatus: (value) => this.setStatus(`voice ${value}`),
         onWake: (source) => { this.lastWakeSource = source; },
         onToolStart: (name) => this.setStatus(`agent action · ${name}`),
-        onToolResult: (name) => this.setStatus(`agent action complete · ${name}`),
+        onToolResult: (name, result) => {
+          this.setStatus(`agent action complete · ${name}`);
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-result', {
+            detail: { name, result },
+          }));
+        },
+        onGuidedTestStart: (test) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-start', {
+            detail: { test },
+          }));
+        },
         onModePending: (_mode, name) => {
           this.root.classList.add('jericho-persona--pending');
           this.setStatus(`persona pending · ${name}`);

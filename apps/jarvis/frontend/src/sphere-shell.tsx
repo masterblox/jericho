@@ -75,6 +75,9 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
   return <SphereApp liveData={liveData} onDirective={captureDirective} commandActions={{
     searchMemory: (query: string) => client.searchVault(query, 8),
     openMemory: (relativePath: string) => client.openVaultNote(relativePath),
+    proposeNoteReorganization: (input: { relativePath: string; title: string }) =>
+      client.proposeNoteReorganization(input),
+    decideProposal: (input: Parameters<CoreClient['decideProposal']>[0]) => client.decideProposal(input),
     decide: (approval: CommandCenterApproval, outcome: 'approved' | 'rejected') => client.decideMission({
       missionId: approval.missionId,
       planHash: approval.planHash,

@@ -9,6 +9,7 @@ const VIEW_KEYS = { '1': 'CORE', '2': 'MISSIONS', '3': 'SIGNALS' }
 export default function App({ liveData, onDirective, commandActions }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [commandOpen, setCommandOpen] = React.useState(false)
+  const [guidedTestSession, setGuidedTestSession] = React.useState(0)
 
   React.useEffect(() => installJerichoApi(), [])
   React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
@@ -18,6 +19,15 @@ export default function App({ liveData, onDirective, commandActions }) {
     }
     document.addEventListener('jericho:context', open)
     return () => document.removeEventListener('jericho:context', open)
+  }, [])
+  React.useEffect(() => {
+    const start = event => {
+      if (event.detail?.test !== 'isabella') return
+      setGuidedTestSession(current => current + 1)
+      setCommandOpen(true)
+    }
+    document.addEventListener('jericho:guided-test-start', start)
+    return () => document.removeEventListener('jericho:guided-test-start', start)
   }, [])
 
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
@@ -53,7 +63,7 @@ export default function App({ liveData, onDirective, commandActions }) {
         liveData={liveData}
         onOpenCommand={() => setCommandOpen(true)}
       />
-      <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} actions={{
+      <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} guidedTestSession={guidedTestSession} actions={{
         ...commandActions,
         dispatchDirective: api.dispatch,
       }} />
