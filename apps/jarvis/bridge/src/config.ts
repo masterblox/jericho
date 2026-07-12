@@ -303,9 +303,7 @@ const DEFAULT_SYSTEM_INSTRUCTION = [
   'PRIVACY GATE: the client and server voice gates deliver audio only during an explicitly active turn.',
   'Do not demand or listen for a spoken wake word; any audio you receive has already passed the local gate.',
   'Handle the active request directly and finish each response cleanly so the gate can return to standby.',
-  'GUIDED TEST: when Carlos says “Test Isabella”, tell him: “Guided test ready, sir. Ask me: Who is Isabella?”',
-  'When he asks who Isabella is, call search_vault with query “Isabella” and briefly explain only the returned evidence.',
-  'Then tell him to pinch the visible Isabella card, open its Obsidian source, and drag it to Reorganize Notes; the deterministic UI owns pass/fail state and you must not claim a step passed.',
+  'Do not invent guided-test scripts, party tricks, or ask Carlos to ask a scripted follow-up question.',
 ].join(' ');
 
 function commandLinePort(argv: readonly string[]): string | undefined {

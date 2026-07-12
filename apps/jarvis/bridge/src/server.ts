@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -27,6 +28,8 @@ import {
   type IntentEnvelope,
   type IdentityReviewDecisionRequest,
   type IdentityReviewDecisionResponse,
+  type GuidedTestPhase,
+  type IdentityAwareRetrievalResult,
   type JsonValue,
   type MissionDecisionRequest,
   type MissionDecisionResponse,
@@ -77,6 +80,31 @@ import {
   type ToolExecutor,
   type VaultToolSearchPort,
 } from './tools.js';
+import {
+  advancePhase,
+  createIsabellaGuidedSession,
+  guidedPhaseInstruction,
+  isGuidedExpired,
+  markPhaseAnnounced,
+  refreshGuidedExpiry,
+  type IsabellaGuidedSession,
+} from './guided/isabella-session.js';
+import { groupIdentityEvidence } from './retrieval/identity-aware.js';
+import {
+  VOICE_AUDITION_SENTENCE,
+  VOICE_PREVIEW_TIMEOUT_MS,
+  isSupportedVoice,
+  resolvePresentationVoice,
+  saveVoicePreset,
+} from './voice/voice-preference.js';
+import { VOICES } from './voice/voices.js';
+
+export { VOICES } from './voice/voices.js';
+export {
+  VOICE_AUDITION_SENTENCE,
+  VOICE_PREVIEW_TIMEOUT_MS,
+  DEFAULT_FALLBACK_VOICE,
+} from './voice/voice-preference.js';
 
 export interface SyncPort {
   sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
@@ -159,6 +187,8 @@ export interface JerichoServerOptions {
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  /** Absolute path for the user-local presentation voice preset JSON. */
+  voicePreferencePath?: string;
   startupStatus?: CoreStartupStatus;
   vaultReady?: boolean;
 }
@@ -181,11 +211,6 @@ const SECURITY_HEADERS = {
   'Referrer-Policy': 'no-referrer',
   'Permissions-Policy': 'camera=(self), microphone=(self), geolocation=()',
 } as const;
-
-export const VOICES = [
-  'Fenrir', 'Charon', 'Orus', 'Iapetus', 'Sulafat',
-  'Enceladus', 'Erinome', 'Algieba', 'Algenib', 'Kratos',
-] as const;
 
 export function createJerichoServer(options: JerichoServerOptions): JerichoServer {
   if (!options.apiToken) throw new Error('Local Core API token is required');
@@ -1228,8 +1253,13 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let session: VoiceSessionPort | undefined;
   const personaEnabled = options.defaultPersonaMode !== undefined || options.megatronVoice !== undefined;
   let currentMode: PersonaMode = options.defaultPersonaMode ?? 'jarvis';
+  const confirmedJarvisVoice = resolvePresentationVoice({
+    preferencePath: options.voicePreferencePath,
+    configuredVoice: options.geminiVoice,
+  });
+  let confirmedVoice = confirmedJarvisVoice;
   const personas = createPersonas({
-    jarvisVoice: options.geminiVoice ?? 'Algieba',
+    jarvisVoice: confirmedJarvisVoice,
     megatronVoice: options.megatronVoice ?? 'Fenrir',
     coreInstruction: options.systemInstruction ?? '',
   });
@@ -1243,15 +1273,40 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let greetingActive = false;
   let greetingPending = false;
   let captureTurn: { id: string; transcript: string } | undefined;
-  let guidedTest: { test: 'isabella'; expiresAt: number } | undefined;
+  let guidedTest: IsabellaGuidedSession | undefined;
+  let preview: {
+    id: string;
+    voice: string;
+    timer?: ReturnType<typeof setTimeout>;
+    generation: number;
+  } | undefined;
+  let retrievalInFlight = false;
 
   const activeGuidedTest = () => {
-    if (guidedTest && guidedTest.expiresAt <= Date.now()) guidedTest = undefined;
+    if (isGuidedExpired(guidedTest)) guidedTest = undefined;
     return guidedTest;
   };
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
+  };
+  const publishPhase = (sessionState: IsabellaGuidedSession, extras: Record<string, unknown> = {}) => {
+    send({
+      type: 'guided_test_phase',
+      test: 'isabella',
+      phase: sessionState.phase,
+      ...(sessionState.evidence ? { evidence: sessionState.evidence } : {}),
+      ...extras,
+    });
+  };
+  const instructGeminiOnce = (phase: GuidedTestPhase, evidence?: IdentityAwareRetrievalResult) => {
+    const guided = activeGuidedTest();
+    if (!guided || !session) return;
+    if (!markPhaseAnnounced(guided, phase)) return;
+    session.sendClientContent({
+      turns: [{ role: 'user', parts: [{ text: guidedPhaseInstruction(phase, evidence) }] }],
+      turnComplete: true,
+    });
   };
   const deactivate = (turnComplete = false) => {
     active = false;
@@ -1285,7 +1340,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     if (guided) {
       greetingPending = false;
       greetingActive = false;
-      send({ type: 'guided_test_resume', test: guided.test });
+      refreshGuidedExpiry(guided);
+      send({ type: 'guided_test_resume', test: guided.test, phase: guided.phase });
       send({ type: 'greeting_complete' });
       send({ type: 'armed', armed: true });
       return;
@@ -1305,8 +1361,71 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       turnComplete: true,
     });
   };
+  const endGuidedTest = () => {
+    if (activeGuidedTest()) send({ type: 'guided_test_end', test: 'isabella' });
+    guidedTest = undefined;
+    retrievalInFlight = false;
+  };
+  const runIsabellaRetrieval = async () => {
+    const guided = activeGuidedTest();
+    if (!guided || guided.phase !== 'ready' || guided.retrievalCount > 0 || retrievalInFlight) return;
+    retrievalInFlight = true;
+    advancePhase(guided, 'retrieving');
+    guided.retrievalCount = 1;
+    refreshGuidedExpiry(guided);
+    publishPhase(guided);
+    send({ type: 'interrupt' });
+    instructGeminiOnce('retrieving');
+
+    try {
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), 15_000);
+      let hits: Array<{ path: string; title: string; excerpt: string; score: number }> = [];
+      try {
+        if (options.vaultSearch) {
+          const response = await options.vaultSearch.search('Isabella', 8, abort.signal);
+          hits = response.results;
+        } else if (options.obsidianSearch) {
+          const results = await options.obsidianSearch.search('Isabella', 8) as Array<{
+            path: string; title: string; excerpt: string;
+          }>;
+          hits = results.map((result, index) => ({
+            ...result,
+            score: Math.max(0.1, 1 - index * 0.08),
+          }));
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+
+      const evidence = groupIdentityEvidence('Isabella', hits, 1);
+      const still = activeGuidedTest();
+      if (!still || still.retrievalCount !== 1) return;
+      still.evidence = evidence;
+      advancePhase(still, 'presenting');
+      refreshGuidedExpiry(still);
+      publishPhase(still);
+      send({
+        type: 'tool_result',
+        name: 'identity_aware_retrieval',
+        result: evidence,
+      });
+      instructGeminiOnce('presenting', evidence);
+    } catch {
+      const still = activeGuidedTest();
+      if (!still) return;
+      send({ type: 'error', message: 'identity retrieval unavailable' });
+      publishPhase(still, { error: 'retrieval_unavailable' });
+    } finally {
+      retrievalInFlight = false;
+    }
+  };
   const captureInputTranscription = (value: unknown) => {
-    if (!captureTurn || !isRecord(value)) return;
+    if (!isRecord(value)) return;
+    if (!captureTurn) {
+      if (!active || greetingActive || greetingPending || preview) return;
+      captureTurn = { id: randomUUID(), transcript: '' };
+    }
     if (typeof value.text === 'string') {
       const combined = `${captureTurn.transcript}${value.text}`;
       if (combined.length > 64 * 1024) {
@@ -1326,14 +1445,24 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     const transcript = turn.transcript.replace(/\s+/gu, ' ').trim();
     if (!transcript) return;
     if (/^test isabella[.!?]?$/iu.test(transcript)) {
-      guidedTest = { test: 'isabella', expiresAt: Date.now() + 5 * 60_000 };
-      send({ type: 'guided_test_start', test: 'isabella' });
+      guidedTest = createIsabellaGuidedSession();
+      send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
+      publishPhase(guidedTest);
+      instructGeminiOnce('ready');
     } else if (/^(?:stop|end|cancel)(?: the)? isabella test[.!?]?$/iu.test(transcript)
       || /^(?:stop|end|cancel) test[.!?]?$/iu.test(transcript)) {
-      if (activeGuidedTest()) send({ type: 'guided_test_end', test: 'isabella' });
-      guidedTest = undefined;
+      endGuidedTest();
+    } else if (/^who is isabella[.!?]?$/iu.test(transcript)) {
+      const guided = activeGuidedTest();
+      if (guided?.phase === 'ready' && guided.retrievalCount === 0) {
+        void runIsabellaRetrieval();
+      } else if (guided && guided.retrievalCount > 0) {
+        // One-query guarantee: never re-run or ask the user to ask again.
+        refreshGuidedExpiry(guided);
+        if (guided.evidence) publishPhase(guided);
+      }
     } else if (activeGuidedTest()) {
-      guidedTest = { test: 'isabella', expiresAt: Date.now() + 5 * 60_000 };
+      refreshGuidedExpiry(activeGuidedTest()!);
     }
     const occurredAt = new Date(options.clock?.() ?? new Date().toISOString()).toISOString();
     try {
@@ -1357,17 +1486,32 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       personaRevertTimer = undefined;
       if (clientClosed) return;
       currentMode = 'jarvis';
-      connect(personas.jarvis.voice);
+      connect(confirmedVoice);
     }, options.personaAutoRevertMs ?? 120_000);
     // Presentation cleanup must never keep the private Core process alive.
     personaRevertTimer.unref();
   };
-  const connect = (voice: string) => {
+  const finishPreview = (status: 'cancelled' | 'complete' | 'unavailable') => {
+    const activePreview = preview;
+    if (!activePreview) return;
+    if (activePreview.timer) clearTimeout(activePreview.timer);
+    preview = undefined;
+    send({
+      type: 'voice_preview',
+      previewId: activePreview.id,
+      voice: activePreview.voice,
+      status,
+    });
+    if (currentVoice !== confirmedVoice || status !== 'complete') {
+      connect(currentMode === 'megatron' ? personas.megatron.voice : confirmedVoice);
+    }
+  };
+  const connect = (voice: string, optionsConnect: { previewId?: string } = {}) => {
     if (personaRevertTimer) clearTimeout(personaRevertTimer);
     personaRevertTimer = undefined;
     if (clientClosed) return;
     const connectionGeneration = ++generation;
-    if (active) deactivate();
+    if (active && !optionsConnect.previewId) deactivate();
     session?.close();
     session = undefined;
     currentVoice = voice;
@@ -1388,11 +1532,24 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
           if (connectionGeneration === generation) {
             send({ type: 'ready', voice });
             send({ type: 'mode_change', mode: currentMode, name: personas[currentMode].name });
-            armPersonaRevert();
+            if (!optionsConnect.previewId) armPersonaRevert();
           }
         },
         onmessage: (message: any) => {
           if (connectionGeneration !== generation) return;
+          if (preview && preview.generation === connectionGeneration) {
+            for (const part of message.serverContent?.modelTurn?.parts ?? []) {
+              if (part.inlineData?.data) {
+                send({
+                  type: 'audio',
+                  mimeType: part.inlineData.mimeType ?? 'audio/pcm;rate=24000',
+                  data: part.inlineData.data,
+                });
+              }
+            }
+            if (message.serverContent?.turnComplete) finishPreview('complete');
+            return;
+          }
           captureInputTranscription(message.serverContent?.inputTranscription);
           if (!active) return;
           if (message.serverContent?.interrupted) send({ type: 'interrupt' });
@@ -1435,12 +1592,20 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         },
         onerror: () => {
           if (connectionGeneration === generation) {
+            if (preview?.generation === connectionGeneration) {
+              finishPreview('unavailable');
+              return;
+            }
             send({ type: 'error', message: 'voice unavailable' });
             if (greetingActive || greetingPending) deactivate();
           }
         },
         onclose: () => {
           if (!clientClosed && connectionGeneration === generation) {
+            if (preview?.generation === connectionGeneration) {
+              finishPreview('cancelled');
+              return;
+            }
             if (active) deactivate();
             send({ type: 'closed' });
           }
@@ -1452,9 +1617,29 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         return;
       }
       session = connected;
+      if (optionsConnect.previewId && preview?.id === optionsConnect.previewId) {
+        send({
+          type: 'voice_preview',
+          previewId: optionsConnect.previewId,
+          voice,
+          status: 'playing',
+        });
+        connected.sendClientContent({
+          turns: [{
+            role: 'user',
+            parts: [{ text: `Say exactly: “${VOICE_AUDITION_SENTENCE}”` }],
+          }],
+          turnComplete: true,
+        });
+        return;
+      }
       if (greetingPending && active) requestWakeGreeting();
     }).catch((cause: unknown) => {
       if (connectionGeneration === generation) {
+        if (preview?.generation === connectionGeneration) {
+          finishPreview('unavailable');
+          return;
+        }
         // Message only: the failure text must stay diagnosable without the key.
         console.error(
           '[jericho] voice connect failed:',
@@ -1465,8 +1650,55 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       }
     });
   };
+  const startPreview = (voice: string, previewId: string) => {
+    if (!isSupportedVoice(voice)) {
+      send({ type: 'voice_preview', previewId, voice, status: 'unavailable' });
+      return;
+    }
+    if (preview?.timer) clearTimeout(preview.timer);
+    send({ type: 'interrupt' });
+    const nextGeneration = generation + 1;
+    preview = {
+      id: previewId,
+      voice,
+      generation: nextGeneration,
+      timer: setTimeout(() => {
+        if (preview?.id === previewId) finishPreview('cancelled');
+      }, VOICE_PREVIEW_TIMEOUT_MS),
+    };
+    preview.timer?.unref?.();
+    connect(voice, { previewId });
+  };
+  const confirmVoice = (voice: string) => {
+    if (!isSupportedVoice(voice)) {
+      send({ type: 'voice_failed', voice });
+      return;
+    }
+    if (preview?.timer) clearTimeout(preview.timer);
+    preview = undefined;
+    const preference = saveVoicePreset(
+      options.voicePreferencePath,
+      voice,
+      options.clock?.() ?? new Date().toISOString(),
+    );
+    confirmedVoice = preference.voice;
+    personas.jarvis.voice = preference.voice;
+    currentMode = 'jarvis';
+    send({
+      type: 'voice_confirmed',
+      voice: preference.voice,
+      confirmedAt: preference.confirmedAt,
+    });
+    connect(preference.voice);
+  };
 
-  send({ type: 'voices', voices: [...VOICES], active: currentVoice });
+  send({
+    type: 'voices',
+    voices: [...VOICES],
+    active: currentVoice,
+    confirmed: confirmedVoice,
+    auditionSentence: VOICE_AUDITION_SENTENCE,
+  });
   send({ type: 'mode_change', mode: currentMode, name: personas[currentMode].name });
   send({ type: 'armed', armed: false });
   connect(currentVoice);
@@ -1474,23 +1706,48 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     try {
       const message = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (message.type === 'audio' && typeof message.data === 'string') {
-        if (active && !greetingActive && !greetingPending) {
+        if (active && !greetingActive && !greetingPending && !preview) {
           session?.sendRealtimeInput({
             media: { data: message.data, mimeType: 'audio/pcm;rate=16000' },
           });
         }
       }
       if (
+        message.type === 'preview_voice' &&
+        typeof message.voice === 'string' &&
+        typeof message.previewId === 'string'
+      ) {
+        startPreview(message.voice, message.previewId);
+      }
+      if (message.type === 'cancel_preview') {
+        if (preview) finishPreview('cancelled');
+      }
+      if (message.type === 'confirm_voice' && typeof message.voice === 'string') {
+        confirmVoice(message.voice);
+      }
+      if (
         message.type === 'set_voice' &&
         typeof message.voice === 'string' &&
-        (VOICES as readonly string[]).includes(message.voice) &&
+        isSupportedVoice(message.voice) &&
         message.voice !== currentVoice
       ) {
         connect(message.voice);
       }
       if (message.type === 'set_mode' && isPersonaMode(message.mode) && message.mode !== currentMode) {
         currentMode = message.mode;
-        connect(personas[currentMode].voice);
+        connect(currentMode === 'megatron' ? personas.megatron.voice : confirmedVoice);
+      }
+      if (message.type === 'guided_phase_complete' && typeof message.phase === 'string') {
+        const guided = activeGuidedTest();
+        const requested = message.phase as GuidedTestPhase;
+        if (guided) {
+          const next = mapUiPhaseCompletion(guided.phase, requested);
+          if (next && advancePhase(guided, next)) {
+            refreshGuidedExpiry(guided);
+            publishPhase(guided);
+            instructGeminiOnce(next, guided.evidence);
+          }
+        }
       }
       if (message.type === 'wake') {
         if (!active) {
@@ -1506,12 +1763,28 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   webSocket.on('close', () => {
     clientClosed = true;
     generation += 1;
+    if (preview?.timer) clearTimeout(preview.timer);
+    preview = undefined;
     if (activeTimer) clearTimeout(activeTimer);
     if (transcriptTimer) clearTimeout(transcriptTimer);
     if (personaRevertTimer) clearTimeout(personaRevertTimer);
     captureTurn = undefined;
     session?.close();
   });
+}
+
+/** Map UI completion events onto the next legal guided phase. */
+function mapUiPhaseCompletion(
+  current: GuidedTestPhase,
+  completed: GuidedTestPhase | string,
+): GuidedTestPhase | undefined {
+  if (completed === 'opening' && (current === 'presenting' || current === 'opening')) return 'opening';
+  if (completed === 'correcting_organizing' && (current === 'opening' || current === 'presenting' || current === 'correcting_organizing')) {
+    return 'correcting_organizing';
+  }
+  if (completed === 'reviewing' && (current === 'correcting_organizing' || current === 'reviewing')) return 'reviewing';
+  if (completed === 'complete' && (current === 'reviewing' || current === 'complete')) return 'complete';
+  return undefined;
 }
 
 async function serveFrontend(
@@ -2123,6 +2396,7 @@ async function main(): Promise<void> {
     personaAutoRevertMs: config.personaAutoRevertMs,
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
+    voicePreferencePath: join(homedir(), '.jericho', 'presentation-voice.json'),
     startupStatus,
     vaultReady: Boolean(config.obsidianVaultPath || config.vaultGatewayUrl),
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),

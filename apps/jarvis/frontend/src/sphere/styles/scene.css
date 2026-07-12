@@ -305,7 +305,7 @@
 .sphere-outcomes code { color: var(--faint); }
 
 .isabella-test { display: grid; gap: 14px; }
-.isabella-test__progress { display: grid; grid-template-columns: repeat(4, 1fr); border: 1px solid var(--stroke-dim); }
+.isabella-test__progress { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--stroke-dim); }
 .isabella-test__progress > span { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; padding: 7px 9px; border-right: 1px solid var(--stroke-dim); color: var(--faint); font: 8px var(--mono); letter-spacing: .12em; }
 .isabella-test__progress > span:last-child { border-right: 0; }
 .isabella-test__progress b { color: var(--cyan); font-weight: 500; }
@@ -329,6 +329,63 @@
 .isabella-test__actions { display: flex; gap: 7px; }
 .isabella-test__actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
 .isabella-test__verdict { color: var(--ok) !important; font: 9px var(--mono); letter-spacing: .1em; }
+.isabella-test__ambiguous { color: var(--faint) !important; font: 9px var(--mono) !important; letter-spacing: .06em; }
+
+.voice-calibration {
+  position: absolute;
+  left: 3.5%;
+  bottom: 4%;
+  width: min(360px, 34vw);
+  z-index: 4;
+}
+.voice-calibration__sentence {
+  margin: 10px 0 12px;
+  color: var(--muted);
+  line-height: 1.5;
+  font: 12px/1.5 var(--serif, Georgia, serif);
+}
+.voice-calibration__voices {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 10px;
+  max-height: 180px;
+  overflow: auto;
+}
+.voice-calibration__voices button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--stroke-dim);
+  padding: 8px 10px;
+  color: var(--text);
+  background: transparent;
+  font: 600 9px var(--cond);
+  letter-spacing: .08em;
+  cursor: pointer;
+}
+.voice-calibration__voices button.is-selected,
+.voice-calibration__voices button[aria-selected="true"] {
+  border-color: rgba(var(--hud), .55);
+  color: var(--cyan);
+}
+.voice-calibration__actions {
+  display: flex;
+  gap: 7px;
+  margin-top: 10px;
+}
+.voice-calibration__actions button {
+  border: 1px solid var(--stroke);
+  padding: 9px 12px;
+  color: var(--cyan);
+  background: transparent;
+  font: 600 9px var(--cond);
+  letter-spacing: .1em;
+  cursor: pointer;
+}
+.voice-calibration__actions button:disabled { opacity: .35; cursor: default; }
+.voice-calibration__actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
 
 @media (max-width: 760px) {
   .sphere-command { inset: 8px; grid-template-columns: 1fr; grid-template-rows: auto auto minmax(0, 1fr) auto; }

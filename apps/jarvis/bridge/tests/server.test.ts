@@ -125,6 +125,7 @@ describe('runtime config', () => {
     expect(defaults.systemInstruction).not.toMatch(
       /stay completely silent unless|unless Carlos says|say(?:s)? “?JARVIS/i,
     );
+    expect(defaults.systemInstruction).not.toMatch(/Isabella|Who is Isabella|Test Isabella/i);
     expect(() => loadConfig({
       JERICHO_API_TOKEN: TOKEN,
       JERICHO_GIT_REPOSITORIES: '{"jericho":"/repos/jericho"}',

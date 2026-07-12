@@ -67,6 +67,10 @@ export interface BridgeRuntimePort {
   start(): void | Promise<void>;
   wake(source?: 'clap' | 'manual'): void;
   dispose(): void | Promise<void>;
+  previewVoice?(voice: string, previewId?: string): string | void;
+  cancelVoicePreview?(): void;
+  confirmVoice?(voice: string): void;
+  completeGuidedPhase?(phase: string): void;
 }
 
 export interface RuntimeMediaDevices {
@@ -164,6 +168,7 @@ export class JarvisRuntime {
   private readonly calibrationBuffer = new StableSampleBuffer();
   private calibrationOpenRatios: number[] = [];
   private calibrationClosedRatios: number[] = [];
+  private unbindVoiceCalibration: (() => void) | null = null;
 
   constructor(options: JarvisRuntimeOptions) {
     this.root = options.root;
@@ -237,6 +242,8 @@ export class JarvisRuntime {
       this.eventTarget.removeEventListener('keydown', this.onKeyDown);
       this.keyListenerAttached = false;
     }
+    this.unbindVoiceCalibration?.();
+    this.unbindVoiceCalibration = null;
     this.stopObserving?.();
     this.stopObserving = null;
     this.context.cancel();
@@ -288,6 +295,19 @@ export class JarvisRuntime {
         onReady: () => this.setStatus('voice and gestures online'),
         onStatus: (value) => this.setStatus(`voice ${value}`),
         onWake: (source) => { this.lastWakeSource = source; },
+        onVoices: (voices, active, meta) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voices', {
+            detail: { voices, active, confirmed: meta?.confirmed, auditionSentence: meta?.auditionSentence },
+          }));
+        },
+        onVoicePreview: (state) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-preview', { detail: state }));
+        },
+        onVoiceConfirmed: (voice, confirmedAt) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-confirmed', {
+            detail: { voice, confirmedAt },
+          }));
+        },
         onToolStart: (name) => this.setStatus(`agent action · ${name}`),
         onToolResult: (name, result) => {
           this.setStatus(`agent action complete · ${name}`);
@@ -295,20 +315,23 @@ export class JarvisRuntime {
             detail: { name, result },
           }));
         },
-        onGuidedTestStart: (test) => {
+        onGuidedTestStart: (test, phase) => {
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-start', {
-            detail: { test },
+            detail: { test, phase },
           }));
         },
-        onGuidedTestResume: (test) => {
+        onGuidedTestResume: (test, phase) => {
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-resume', {
-            detail: { test },
+            detail: { test, phase },
           }));
         },
         onGuidedTestEnd: (test) => {
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-end', {
             detail: { test },
           }));
+        },
+        onGuidedTestPhase: (detail) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-phase', { detail }));
         },
         onModePending: (_mode, name) => {
           this.root.classList.add('jericho-persona--pending');
@@ -325,6 +348,7 @@ export class JarvisRuntime {
       this.engine.start(this.onFrame);
       await this.bridge.start();
       this.assertNotDisposed();
+      this.bindVoiceCalibrationEvents();
       this.eventTarget.addEventListener('keydown', this.onKeyDown);
       this.keyListenerAttached = true;
       this.engaged = true;
@@ -575,6 +599,37 @@ export class JarvisRuntime {
           : status.includes('agent action') ? 'thinking'
             : 'idle';
     jericho?.setCoreState?.(coreState);
+  }
+
+  private bindVoiceCalibrationEvents(): void {
+    this.unbindVoiceCalibration?.();
+    const doc = this.root.ownerDocument;
+    const onPreview = (event: Event) => {
+      const detail = (event as CustomEvent<{ voice?: string; previewId?: string }>).detail;
+      if (!detail?.voice || !this.bridge?.previewVoice) return;
+      this.bridge.previewVoice(detail.voice, detail.previewId);
+    };
+    const onCancel = () => this.bridge?.cancelVoicePreview?.();
+    const onConfirm = (event: Event) => {
+      const voice = (event as CustomEvent<{ voice?: string }>).detail?.voice;
+      if (!voice) return;
+      this.bridge?.confirmVoice?.(voice);
+    };
+    const onPhaseComplete = (event: Event) => {
+      const phase = (event as CustomEvent<{ phase?: string }>).detail?.phase;
+      if (!phase) return;
+      this.bridge?.completeGuidedPhase?.(phase);
+    };
+    doc.addEventListener('jericho:preview-voice', onPreview);
+    doc.addEventListener('jericho:cancel-voice-preview', onCancel);
+    doc.addEventListener('jericho:confirm-voice', onConfirm);
+    doc.addEventListener('jericho:guided-phase-complete', onPhaseComplete);
+    this.unbindVoiceCalibration = () => {
+      doc.removeEventListener('jericho:preview-voice', onPreview);
+      doc.removeEventListener('jericho:cancel-voice-preview', onCancel);
+      doc.removeEventListener('jericho:confirm-voice', onConfirm);
+      doc.removeEventListener('jericho:guided-phase-complete', onPhaseComplete);
+    };
   }
 
   private releaseVideoAndStream() {
