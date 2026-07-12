@@ -9,8 +9,11 @@ import {
   loadCalibration,
   resetCalibrations,
   saveCalibration,
+  verifyCalibration,
   type CalibrationProfile,
   type CalibrationSample,
+  type CalibrationTarget,
+  type VerificationResult,
 } from './calibration';
 import { ContextHoldController, type ContextHoldAction } from './context-hold-controller';
 import { mapHandToScreen } from './coords';
@@ -164,6 +167,15 @@ export class JarvisRuntime {
   private readonly calibrationBuffer = new StableSampleBuffer();
   private calibrationOpenRatios: number[] = [];
   private calibrationClosedRatios: number[] = [];
+  private calibrationPhase: 'collecting' | 'verifying' | 'retrying' | 'confirmed' = 'collecting';
+  private verificationResult: VerificationResult | null = null;
+  private calibrationCursorPoint: Point | undefined;
+  private calibrationHandDetected: Handedness | undefined;
+  private calibrationPinchState: string = 'open';
+  private calibrationSampleConfirmed = false;
+  private calibrationStability = 0;
+  private retryTargets: CalibrationTarget[] = [];
+  private retryIndex = 0;
 
   constructor(options: JarvisRuntimeOptions) {
     this.root = options.root;
@@ -333,15 +345,38 @@ export class JarvisRuntime {
     const viewport = this.viewport();
     if (this.calibrationHand) {
       const hand = this.calibrationHand === 'Left' ? frame.left : frame.right;
-      if (hand?.fresh) this.handleCalibration(hand);
+      if (hand?.fresh) {
+        this.handleCalibration(hand);
+        this.calibrationHandDetected = hand.handedness;
+        this.calibrationPinchState = hand.pinchPhase;
+        this.calibrationStability = Math.max(0, 1 - this.calibrationBuffer.deviation() / 0.06);
+        const point = this.screenPoint(hand, viewport);
+        this.calibrationCursorPoint = point;
+      } else {
+        this.calibrationCursorPoint = undefined;
+        this.calibrationPinchState = 'lost';
+        this.calibrationStability = 0;
+        if (this.calibrationBuffer.size() > 0) {
+          this.renderCalibration('Hand lost. Keep your hand visible to the camera.');
+        }
+      }
       this.dispatchContextActions(this.context.cancel());
       this.coordinator.cancelAll();
       this.registry.releaseSticky();
       this.recordDiagnostics(frame, [], null, null);
       this.renderer.render({
-        right: cursorView(), left: cursorView(), status: this.status,
+        right: cursorView(
+          this.calibrationHand === 'Right' ? hand : undefined,
+          this.calibrationHand === 'Right' ? this.calibrationCursorPoint : undefined,
+        ),
+        left: cursorView(
+          this.calibrationHand === 'Left' ? hand : undefined,
+          this.calibrationHand === 'Left' ? this.calibrationCursorPoint : undefined,
+        ),
+        status: this.status,
       });
       this.updateDiagnosticsPanel();
+      this.renderCalibration(this.calibrationMessage());
       return;
     }
 
@@ -635,17 +670,49 @@ export class JarvisRuntime {
     this.calibrationBuffer.clear();
     this.calibrationOpenRatios = [];
     this.calibrationClosedRatios = [];
+    this.calibrationPhase = 'collecting';
+    this.verificationResult = null;
+    this.calibrationCursorPoint = undefined;
+    this.calibrationHandDetected = undefined;
+    this.calibrationPinchState = 'open';
+    this.calibrationSampleConfirmed = false;
+    this.calibrationStability = 0;
+    this.retryTargets = [];
+    this.retryIndex = 0;
     this.renderCalibration(`Hold ${handedness.toLowerCase()} palm at center, then pinch`);
   }
 
   private handleCalibration(hand: TrackedHandFrame): void {
     if (hand.handedness !== this.calibrationHand) return;
+
+    if (this.calibrationPhase === 'collecting') {
+      this.handleCollectingPhase(hand);
+    } else if (this.calibrationPhase === 'verifying') {
+      this.handleVerifyingPhase(hand);
+    } else if (this.calibrationPhase === 'retrying') {
+      this.handleRetryPhase(hand);
+    }
+  }
+
+  private handleCollectingPhase(hand: TrackedHandFrame): void {
     if (hand.state === 'palm' || hand.recognizedGesture === 'Open_Palm') {
       this.calibrationBuffer.push(hand.palmAnchor);
       this.calibrationOpenRatios.push(hand.pinchRatio);
       if (this.calibrationOpenRatios.length > 80) this.calibrationOpenRatios.shift();
     }
+
+    this.calibrationPinchState = hand.pinchPhase;
+
     const openMedian = medianNumber(this.calibrationOpenRatios) ?? 0.75;
+
+    if (this.calibrationSampleConfirmed) {
+      if (hand.pinchPhase === 'open') {
+        this.calibrationSampleConfirmed = false;
+      }
+      this.calibrationPreviousPinch = hand.pinchRatio <= Math.min(0.72, Math.max(0.38, openMedian * 0.68));
+      return;
+    }
+
     const rawPinched = hand.pinchRatio <= Math.min(0.72, Math.max(0.38, openMedian * 0.68));
     const pinchStarted = rawPinched && !this.calibrationPreviousPinch;
     if (pinchStarted) {
@@ -658,18 +725,16 @@ export class JarvisRuntime {
           target: CALIBRATION_ORDER[this.calibrationIndex],
           camera: point,
         });
+        this.calibrationSampleConfirmed = true;
         this.calibrationIndex += 1;
         this.calibrationBuffer.clear();
-        if (this.calibrationIndex === CALIBRATION_ORDER.length) this.finishCalibration();
-        else this.renderCalibration(
-          `Move ${this.calibrationHand?.toLowerCase()} palm to ${CALIBRATION_ORDER[this.calibrationIndex]}, hold, then pinch`,
-        );
+        if (this.calibrationIndex === CALIBRATION_ORDER.length) this.finishCollectingPhase();
       }
     }
     this.calibrationPreviousPinch = rawPinched;
   }
 
-  private finishCalibration(): void {
+  private finishCollectingPhase(): void {
     const handedness = this.calibrationHand;
     if (!handedness) return;
     try {
@@ -681,35 +746,142 @@ export class JarvisRuntime {
         new Date().toISOString(),
         derivePinchThresholds(this.calibrationOpenRatios, this.calibrationClosedRatios),
       );
-      saveCalibration(this.storage, profile);
-      this.profiles.set(handedness, profile);
-      this.engine?.setPinchThresholds?.(handedness, {
-        engageRatio: profile.pinchEngageRatio,
-        releaseRatio: profile.pinchReleaseRatio,
-      });
-      this.suppressUntilPalm.add(handedness);
-      this.calibrationHand = null;
-      this.renderer.showCalibration(null);
-      this.updateControlState();
-      this.setStatus(`${handedness.toLowerCase()} hand calibrated`);
+      const verification = verifyCalibration(this.calibrationSamples, profile.matrix);
+      this.verificationResult = verification;
+      this.calibrationPhase = 'verifying';
+      if (verification.passed) {
+        this.acceptCalibration(profile);
+      } else {
+        this.retryTargets = verification.failedPoints;
+        this.retryIndex = 0;
+        this.calibrationPhase = 'retrying';
+        this.calibrationBuffer.clear();
+        this.renderCalibration(`Verification failed on ${verification.failedPoints.join(', ')}. Repeat first failed point.`);
+      }
     } catch (error) {
       this.calibrationIndex = 0;
       this.calibrationSamples = [];
       this.calibrationBuffer.clear();
       this.calibrationOpenRatios = [];
       this.calibrationClosedRatios = [];
+      this.calibrationPhase = 'collecting';
       this.renderCalibration(`${error instanceof Error ? error.message : 'Calibration failed'}. Repeat from center.`);
     }
   }
 
+  private handleVerifyingPhase(_hand: TrackedHandFrame): void {
+    // Verification already completed in finishCollectingPhase; idle until transition.
+  }
+
+  private handleRetryPhase(hand: TrackedHandFrame): void {
+    if (hand.state === 'palm' || hand.recognizedGesture === 'Open_Palm') {
+      this.calibrationBuffer.push(hand.palmAnchor);
+    }
+    const rawPinched = hand.pinchRatio <= 0.42;
+    const pinchStarted = rawPinched && !this.calibrationPreviousPinch;
+    if (pinchStarted) {
+      const point = this.calibrationBuffer.median();
+      if (!point) {
+        this.renderCalibration('Hold steady at the retry point, then pinch');
+      } else {
+        const target = this.retryTargets[this.retryIndex];
+        const existing = this.calibrationSamples.findIndex((s) => s.target === target);
+        if (existing >= 0) {
+          this.calibrationSamples[existing] = { target, camera: point };
+        } else {
+          this.calibrationSamples.push({ target, camera: point });
+        }
+        this.calibrationSampleConfirmed = true;
+        this.retryIndex += 1;
+        this.calibrationBuffer.clear();
+        if (this.retryIndex >= this.retryTargets.length) {
+          this.finishRetryPhase();
+        }
+      }
+    }
+    this.calibrationPreviousPinch = rawPinched;
+  }
+
+  private finishRetryPhase(): void {
+    const handedness = this.calibrationHand;
+    if (!handedness) return;
+    try {
+      const profile = createCalibrationProfile(
+        this.calibrationSamples,
+        this.cameraId,
+        this.cameraAspectRatio,
+        handedness,
+        new Date().toISOString(),
+        derivePinchThresholds(this.calibrationOpenRatios, this.calibrationClosedRatios),
+      );
+      const verification = verifyCalibration(this.calibrationSamples, profile.matrix);
+      this.verificationResult = verification;
+      if (verification.passed) {
+        this.acceptCalibration(profile);
+      } else {
+        this.calibrationPhase = 'retrying';
+        this.retryTargets = verification.failedPoints;
+        this.retryIndex = 0;
+        this.calibrationBuffer.clear();
+        this.renderCalibration(`Still failing: ${verification.failedPoints.join(', ')}. Retrying first failed point.`);
+      }
+    } catch (error) {
+      this.retryIndex = 0;
+      this.retryTargets = this.verificationResult?.failedPoints ?? [];
+      this.calibrationBuffer.clear();
+    }
+  }
+
+  private acceptCalibration(profile: CalibrationProfile): void {
+    const handedness = this.calibrationHand!;
+    saveCalibration(this.storage, profile);
+    this.profiles.set(handedness, profile);
+    this.engine?.setPinchThresholds?.(handedness, {
+      engageRatio: profile.pinchEngageRatio,
+      releaseRatio: profile.pinchReleaseRatio,
+    });
+    this.suppressUntilPalm.add(handedness);
+    this.calibrationHand = null;
+    this.calibrationPhase = 'confirmed';
+    this.verificationResult = null;
+    this.calibrationCursorPoint = undefined;
+    this.renderer.showCalibration(null);
+    this.updateControlState();
+    this.setStatus(`${handedness.toLowerCase()} hand calibrated · residual ${(profile.residualError * 100).toFixed(1)}%`);
+  }
+
+  private calibrationMessage(): string {
+    if (this.calibrationPhase === 'retrying') {
+      const target = this.retryTargets[this.retryIndex];
+      return target ? `Retry: move ${this.calibrationHand?.toLowerCase()} palm to ${target}, hold, then pinch` : 'Retry failed point.';
+    }
+    if (this.calibrationPhase === 'verifying') {
+      return 'Verifying calibration...';
+    }
+    if (this.calibrationSampleConfirmed) {
+      return 'Sample confirmed. Release pinch and move to next target.';
+    }
+    return `Hold ${this.calibrationHand?.toLowerCase()} palm at ${CALIBRATION_ORDER[this.calibrationIndex]}, then pinch`;
+  }
+
   private renderCalibration(message: string): void {
     if (!this.calibrationHand) return;
-    const target = CALIBRATION_ORDER[this.calibrationIndex];
+    const target = this.calibrationPhase === 'retrying'
+      ? (this.retryTargets[this.retryIndex] ?? CALIBRATION_ORDER[0])
+      : CALIBRATION_ORDER[this.calibrationIndex] ?? CALIBRATION_ORDER[0];
     this.renderer.showCalibration({
       handedness: this.calibrationHand,
       target,
       point: TARGET_POINTS[target],
       message,
+      phase: this.calibrationPhase,
+      cursorPoint: this.calibrationCursorPoint,
+      stability: this.calibrationStability,
+      pinchState: this.calibrationPinchState,
+      sampleConfirmed: this.calibrationSampleConfirmed,
+      handednessDetected: this.calibrationHandDetected,
+      verificationResults: this.verificationResult?.perPoint,
+      failedPoint: this.calibrationPhase === 'retrying' ? (this.retryTargets[this.retryIndex] ?? null) : null,
     });
   }
 

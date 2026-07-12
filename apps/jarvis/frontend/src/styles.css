@@ -1196,6 +1196,93 @@ a:focus-visible {
   box-shadow: 0 0 0 12px rgba(228, 179, 106, 0.08), 0 0 26px rgba(228, 179, 106, 0.5);
 }
 
+.jericho-runtime-calibration-target[data-confirmed="true"] {
+  border-color: var(--jericho-green);
+  box-shadow: 0 0 0 12px rgba(72, 231, 182, 0.12), 0 0 32px rgba(72, 231, 182, 0.8);
+  animation: jericho-calibration-confirm 0.5s ease-out;
+}
+
+@keyframes jericho-calibration-confirm {
+  0% { scale: 1.4; }
+  100% { scale: 1; }
+}
+
+.jericho-calibration-stability {
+  position: absolute;
+  inset: -12px;
+  border-radius: 50%;
+  border: 1px solid rgba(119, 215, 220, calc(0.2 + var(--stability, 0) * 0.6));
+  box-shadow: 0 0 0 calc(4px * var(--stability, 0)) rgba(119, 215, 220, calc(0.04 + var(--stability, 0) * 0.1));
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.jericho-calibration-cursor {
+  position: absolute;
+  width: 16px;
+  height: 16px;
+  margin: -8px 0 0 -8px;
+  border: 1px solid var(--jericho-cyan-hot);
+  border-radius: 50%;
+  background: rgba(119, 215, 220, 0.2);
+  z-index: 1;
+  pointer-events: none;
+}
+
+.jericho-calibration-cursor[data-pinch="true"] {
+  border-color: var(--jericho-amber);
+  background: rgba(228, 179, 106, 0.35);
+}
+
+.jericho-runtime-calibration p .jericho-calibration-handedness {
+  display: block;
+  margin-top: 4px;
+  font-size: 8px;
+  color: var(--jericho-muted);
+}
+
+.jericho-runtime-calibration p .jericho-calibration-pinch-state {
+  display: block;
+  margin-top: 3px;
+  font-size: 8px;
+  color: var(--jericho-muted);
+}
+
+.jericho-runtime-calibration p .jericho-calibration-pinch-state[data-state="pinched"] {
+  color: var(--jericho-amber);
+}
+
+.jericho-calibration-verification {
+  position: absolute;
+  top: 28%;
+  right: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--jericho-rule);
+  background: rgba(5, 9, 12, 0.94);
+  pointer-events: none;
+}
+
+.jericho-calibration-verify-point {
+  font: 8px/1.6 var(--jericho-mono);
+  color: var(--jericho-muted);
+}
+
+.jericho-calibration-verify-point.pass {
+  color: var(--jericho-green);
+}
+
+.jericho-calibration-verify-point.fail {
+  color: var(--jericho-amber);
+}
+
+.jericho-calibration-retry-hint {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--jericho-rule);
+  font: 7px/1.4 var(--jericho-mono);
+  color: var(--jericho-amber);
+  text-transform: uppercase;
+}
+
 .jericho-runtime-diagnostics {
   position: absolute;
   bottom: 42px;
