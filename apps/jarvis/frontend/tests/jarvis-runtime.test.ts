@@ -82,6 +82,27 @@ describe('JarvisRuntime lifecycle', () => {
     expect(harness.engine.start).toHaveBeenCalledTimes(2);
   });
 
+  it('wakes voice manually on the V key, but never while typing in a field', async () => {
+    const harness = createHarness();
+    await harness.runtime.engage();
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }));
+    expect(harness.bridge.wake).toHaveBeenCalledTimes(1);
+    expect(harness.bridge.wake).toHaveBeenCalledWith('manual');
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'V' }));
+    expect(harness.bridge.wake).toHaveBeenCalledTimes(2);
+
+    const input = document.createElement('input');
+    document.body.append(input);
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true }));
+    expect(harness.bridge.wake).toHaveBeenCalledTimes(2);
+    input.remove();
+
+    await harness.runtime.dispose();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v' }));
+    expect(harness.bridge.wake).toHaveBeenCalledTimes(2);
+  });
+
   it('renders persona pending and active state without changing execution authority', async () => {
     const harness = createHarness();
     await harness.runtime.engage();

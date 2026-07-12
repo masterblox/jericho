@@ -2,20 +2,23 @@
 
 **Owner:** Jericho frontend
 
-**Freshness:** 2026-07-11. Review after every command-center visual pass.
+**Freshness:** 2026-07-12. Review after every sphere visual pass.
 
 The visual pass may freely change layout, typography, animation, and component
 composition. Keep the contracts below intact so the finished UI can be wired to
 the already-tested production gesture and voice runtime without reimplementing
-recognition.
+recognition. The sphere at `/` is the only product surface; the legacy
+`?view=command` operator view is deleted. The sphere renders persisted Core
+truth only — no fixture roster, tasks, signals, or gauges.
 
 ## Test before and after the visual pass
 
-- Normal UI: `http://localhost:5174/`
-- Hardware lab: `http://localhost:5174/?lab=gestures`
+- Product (sphere): `http://localhost:5173/`
+- Hardware lab: `http://localhost:5173/?lab=gestures`
 - Click **Engage local runtime** before testing camera, clap, or hand input.
+- Press **V** (or clap) for manual voice wake.
 
-The lab is intentionally independent of the command-center design. Do not copy
+The lab is intentionally independent of the sphere design. Do not copy
 gesture thresholds or recognition logic into React components. It must continue
 to construct `JarvisRuntime` and use `GestureTargetRegistry`.
 

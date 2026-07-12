@@ -3,17 +3,18 @@
 // the voice/gesture bridge (apps/jarvis) drives. Every mutation notifies React
 // subscribers and emits `jericho:state` for non-React listeners.
 
-import { agents } from './data'
-
 const CORE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'alert']
-const VIEWS = ['CORE', 'MISSIONS', 'SIGNALS']
+const VIEWS = ['CORE', 'AGENTS', 'TASKS', 'BRAIN']
 const MODES = ['jarvis', 'megatron']
-const ORDER = agents.map(a => a.id)
+
+// Live agent order comes from persisted Core missions via api.setAgents.
+// No fixture roster: with no live agents there is no selection.
+let order = []
 
 let snapshot = {
   coreState: 'idle',
   mode: 'jarvis',
-  selectedAgent: ORDER[0],
+  selectedAgent: null,
   activeView: 'CORE',
   directive: '',
   toast: '',
@@ -46,12 +47,19 @@ export const api = {
   setMode(mode) {
     if (MODES.includes(mode)) commit({ mode })
   },
+  setAgents(ids) {
+    order = Array.isArray(ids) ? [...new Set(ids.filter(id => typeof id === 'string' && id))] : []
+    if (!order.includes(snapshot.selectedAgent)) {
+      commit({ selectedAgent: order[0] ?? null })
+    }
+  },
   select(agentId) {
-    if (ORDER.includes(agentId)) commit({ selectedAgent: agentId })
+    if (order.includes(agentId)) commit({ selectedAgent: agentId })
   },
   cycle(step = 1) {
-    const i = ORDER.indexOf(snapshot.selectedAgent)
-    commit({ selectedAgent: ORDER[(i + step + ORDER.length) % ORDER.length] })
+    if (!order.length) return
+    const i = order.indexOf(snapshot.selectedAgent)
+    commit({ selectedAgent: order[(i + step + order.length) % order.length] })
   },
   summon(view) {
     if (VIEWS.includes(view)) commit({ activeView: view })
