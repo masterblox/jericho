@@ -133,9 +133,23 @@ export class ObsidianConnector implements CaptureConnector {
     if (!query.trim() || !Number.isInteger(limit) || limit < 1 || limit > 50) {
       throw new Error('Obsidian search bounds are invalid');
     }
-    if (!this.options.gateway) throw new Error('Obsidian vault RAG search is unavailable');
-    const response = await this.options.gateway.search(query.trim(), limit, new AbortController().signal);
-    return response.results.map(({ path, title, excerpt }) => ({ path, title, excerpt }));
+    if (this.options.gateway) {
+      const response = await this.options.gateway.search(query.trim(), limit, new AbortController().signal);
+      return response.results.map(({ path, title, excerpt }) => ({ path, title, excerpt }));
+    }
+    const terms = query.trim().toLocaleLowerCase().split(/\s+/u);
+    return this.scan().map((note) => {
+      const parsed = parseMarkdown(note.content);
+      const title = typeof parsed.frontmatter.title === 'string'
+        ? parsed.frontmatter.title : note.path.replace(/\.md$/iu, '');
+      const searchable = `${title}\n${note.content}`.toLocaleLowerCase();
+      const matches = terms.reduce((count, term) => count + searchable.split(term).length - 1, 0);
+      const first = Math.max(0, Math.min(...terms.map((term) => searchable.indexOf(term)).filter((index) => index >= 0)) - 120);
+      return { path: note.path, title, excerpt: note.content.slice(first, first + 500).replace(/\s+/gu, ' ').trim(), matches };
+    }).filter((result) => result.matches > 0)
+      .sort((left, right) => right.matches - left.matches || left.path.localeCompare(right.path))
+      .slice(0, limit)
+      .map(({ matches: _matches, ...result }) => result);
   }
 
   private scan(): NoteSnapshot[] {

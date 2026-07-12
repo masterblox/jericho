@@ -130,6 +130,14 @@ appends a retention event for replay. The scheduled deterministic reflection
 pass produces pending review proposals only; it cannot resolve contradictions,
 merge memory, or approve a preference.
 
+Verified missions also produce immutable content-addressed knowledge packages.
+Obsidian renders the private package; Notion may receive only an explicitly
+approved redacted projection. Retrieval indexes may rebuild and promote a
+benchmark-improving candidate automatically, but routing, source knowledge,
+consolidation, redaction, and benchmark policy remain review-gated. Paperclip
+is a reconciled execution projection and its completion state never substitutes
+for Core verification.
+
 ### Present
 
 The command center projects Today, ranked communications and people, active context, approvals, assignments, outcomes, connector health, and replayable history. The left bay owns Today, communications, people, tasks, and commitments; the center owns mission context, pipeline, Nucleus, retention, and replay; the right bay owns Review, proposals/checkpoints, approvals, runs, outcomes, and receipts. Narrow screens expose Today, Communications, Nucleus, and Approvals as explicit tabs.

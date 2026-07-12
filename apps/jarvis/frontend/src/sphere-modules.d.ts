@@ -3,3 +3,4 @@ declare module '*.jsx' {
   const component: ComponentType<any>;
   export default component;
 }
+declare const __JERICHO_COMMIT__: string;

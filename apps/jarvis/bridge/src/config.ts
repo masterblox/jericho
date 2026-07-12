@@ -29,6 +29,12 @@ export interface JerichoConfig {
   whatsappGatewayUrl?: string;
   whatsappGatewayToken?: string;
   linearApiKey?: string;
+  paperclipUrl?: string;
+  paperclipApiKey?: string;
+  paperclipCompanyId?: string;
+  notionToken?: string;
+  notionDatabaseId?: string;
+  notionProjectionFields: string[];
   gitRepositories: NamedPath[];
   githubRepositories: string[];
   conductorRoots: NamedPath[];
@@ -156,6 +162,18 @@ export function loadConfig(
   if (Boolean(vaultGatewayUrl) !== Boolean(vaultGatewayToken)) {
     throw new Error('JERICHO_VAULT_GATEWAY_URL and JERICHO_VAULT_GATEWAY_TOKEN must be configured together');
   }
+  const paperclipUrl = optionalString(environment.JERICHO_PAPERCLIP_URL);
+  const paperclipApiKey = optionalString(environment.JERICHO_PAPERCLIP_API_KEY);
+  const paperclipCompanyId = optionalString(environment.JERICHO_PAPERCLIP_COMPANY_ID);
+  if ([paperclipUrl, paperclipApiKey, paperclipCompanyId].some(Boolean)
+    && ![paperclipUrl, paperclipApiKey, paperclipCompanyId].every(Boolean)) {
+    throw new Error('Paperclip URL, API key, and company ID must be configured together');
+  }
+  const notionToken = optionalString(environment.JERICHO_NOTION_TOKEN);
+  const notionDatabaseId = optionalString(environment.JERICHO_NOTION_DATABASE_ID);
+  if (Boolean(notionToken) !== Boolean(notionDatabaseId)) {
+    throw new Error('Notion token and database ID must be configured together');
+  }
   const vaultRebuildWindowStartUtc = parseUtcHour(
     environment.JERICHO_VAULT_REBUILD_WINDOW_START_UTC ?? '1',
     'JERICHO_VAULT_REBUILD_WINDOW_START_UTC',
@@ -187,6 +205,12 @@ export function loadConfig(
     whatsappGatewayUrl: optionalString(environment.JERICHO_WHATSAPP_GATEWAY_URL),
     whatsappGatewayToken: optionalString(environment.JERICHO_WHATSAPP_GATEWAY_TOKEN),
     linearApiKey: optionalString(environment.LINEAR_API_KEY),
+    ...(paperclipUrl ? { paperclipUrl } : {}),
+    ...(paperclipApiKey ? { paperclipApiKey } : {}),
+    ...(paperclipCompanyId ? { paperclipCompanyId } : {}),
+    ...(notionToken ? { notionToken } : {}),
+    ...(notionDatabaseId ? { notionDatabaseId } : {}),
+    notionProjectionFields: parseCsv(environment.JERICHO_NOTION_PROJECTION_FIELDS),
     gitRepositories: parseNamedPaths(
       environment.JERICHO_GIT_REPOSITORIES,
       'JERICHO_GIT_REPOSITORIES',

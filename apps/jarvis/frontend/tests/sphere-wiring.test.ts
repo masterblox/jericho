@@ -23,6 +23,17 @@ describe('production sphere wiring', () => {
     expect(shell).toContain('client.cancelMission');
   });
 
+  it('projects the five-stage fleet lifecycle and maps real lifecycle enum values', () => {
+    const shell = source('sphere-shell.tsx');
+    const peripherals = source('sphere/components/peripherals.jsx');
+    expect(shell).toContain("label: 'LEARN'");
+    expect(shell).toContain('LifecycleStatus.Active');
+    expect(shell).toContain('LifecycleStatus.Succeeded');
+    expect(shell).not.toMatch(/status === ['"]executing['"]/);
+    expect(peripherals).toContain('Fleet delivery lifecycle');
+    expect(peripherals).toContain('key={signal.id');
+  });
+
   it('retains the command center and Gesture Lab as explicit fallback surfaces', () => {
     const entry = source('main.tsx');
     expect(entry).toContain("get('view') === 'command'");

@@ -11,6 +11,7 @@ import {
   pinchPoint,
   type Handedness,
   type Landmark,
+  type PinchThresholds,
 } from './tracking';
 
 export type { TrackedHandFrame } from './hand-tracks';
@@ -57,6 +58,10 @@ export class GestureEngine {
   setSwapHands(swapped: boolean) {
     this.swapHands = swapped;
     localStorage.setItem('jericho.swap-hands', String(swapped));
+  }
+
+  setPinchThresholds(handedness: Handedness, thresholds: PinchThresholds) {
+    this.tracks.setPinchThresholds(handedness, thresholds);
   }
 
   start(onFrame: (frame: GestureFrame) => void) {

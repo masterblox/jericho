@@ -1,0 +1,11 @@
+{
+  "version": "retrieval-v1",
+  "description": "Fixed regression set for Fleet knowledge retrieval. Replace placeholders only through reviewed benchmark changes.",
+  "cases": [
+    { "id": "people-owner", "query": "Carlos owner context", "collection": "private_vault", "expectedSources": ["People", "Carlos"], "expectedEvidenceEventIds": [] },
+    { "id": "project-fleet", "query": "Fleet delivery knowledge architecture", "collection": "private_vault", "expectedSources": ["Fleet", "Jericho"], "expectedEvidenceEventIds": [] },
+    { "id": "verified-decision", "query": "approved mission decision", "collection": "core_evidence", "expectedSources": ["jericho", "core"], "expectedEvidenceEventIds": ["event-request"] },
+    { "id": "contradiction-review", "query": "contradictory evidence review", "collection": "core_evidence", "expectedSources": ["jericho", "core"], "expectedEvidenceEventIds": ["event-a", "event-b"] },
+    { "id": "shared-fleet", "query": "Fleet operating model", "collection": "shared_notion", "expectedSources": ["notion"], "expectedEvidenceEventIds": [] }
+  ]
+}

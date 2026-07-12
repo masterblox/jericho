@@ -99,13 +99,14 @@ describe('NucleusGestureInterpreter', () => {
     expect(interpreter.update({
       right, rightPoint: { x: 300, y: 200 }, rightOnEmptyNucleus: true,
       bothHandsInsideNucleus: false, now: 0,
-    })).toEqual([{ type: 'camera', phase: 'start', point: { x: 300, y: 200 } }]);
+    })).toEqual([]);
     expect(interpreter.update({
       right, rightPoint: { x: 330, y: 185 }, rightOnEmptyNucleus: true,
       bothHandsInsideNucleus: false, now: 20,
-    })).toEqual([{
-      type: 'camera', phase: 'move', point: { x: 330, y: 185 }, delta: { x: 30, y: -15 },
-    }]);
+    })).toEqual([
+      { type: 'camera', phase: 'start', point: { x: 300, y: 200 } },
+      { type: 'camera', phase: 'move', point: { x: 330, y: 185 }, delta: { x: 30, y: -15 } },
+    ]);
     expect(interpreter.update({
       right: hand('Right', 'None'), rightPoint: { x: 330, y: 185 }, rightOnEmptyNucleus: true,
       bothHandsInsideNucleus: false, now: 40,
@@ -131,7 +132,14 @@ describe('NucleusGestureInterpreter', () => {
     expect(interpreter.update({
       right, rightPoint: { x: 300, y: 200 }, rightOnEmptyNucleus: true,
       bothHandsInsideNucleus: false, now: 60,
-    })).toEqual([{ type: 'camera', phase: 'start', point: { x: 300, y: 200 } }]);
+    })).toEqual([]);
+    expect(interpreter.update({
+      right, rightPoint: { x: 320, y: 200 }, rightOnEmptyNucleus: true,
+      bothHandsInsideNucleus: false, now: 80,
+    })).toEqual([
+      { type: 'camera', phase: 'start', point: { x: 300, y: 200 } },
+      { type: 'camera', phase: 'move', point: { x: 320, y: 200 }, delta: { x: 20, y: 0 } },
+    ]);
   });
 
   it('converts held two-palm span changes into debounced semantic depth steps', () => {

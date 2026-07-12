@@ -14,6 +14,16 @@ function Clock() {
 
 const VIEWS = ['CORE', 'MISSIONS', 'SIGNALS']
 
+export function FleetLifecycle({ stages }) {
+  return <ol className="fleet-lifecycle" aria-label="Fleet delivery lifecycle">
+    {stages.map((stage, index) => <li key={stage.label} className={stage.active ? 'active' : ''}>
+      <span>{String(index + 1).padStart(2, '0')}</span>
+      <strong>{stage.label}</strong>
+      <b>{String(stage.count).padStart(2, '0')}</b>
+    </li>)}
+  </ol>
+}
+
 export function IdCluster({ activeView, onView, coreState = 'idle', connected = false }) {
   return <div className="cluster id-cluster">
     <div className="id-line">
@@ -86,7 +96,7 @@ export function SignalsProjection({ signals }) {
     {signals.map((signal, i) => {
       const slot = SLOTS[i % SLOTS.length]
       return <JerichoCard
-        key={signal.time}
+        key={signal.id ?? `${signal.time}:${i}`}
         index={i}
         className="radial-card"
         data-gesture-target={`signal:${signal.id ?? signal.time}`}

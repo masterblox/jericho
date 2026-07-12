@@ -6,6 +6,7 @@ export const GESTURE_DEBOUNCE_MS = 900;
 export const NUCLEUS_DEPTH_HOLD_MS = 700;
 export const NUCLEUS_DEPTH_STEP_PX = 72;
 export const NUCLEUS_DEPTH_DEBOUNCE_MS = 240;
+export const NUCLEUS_CLUTCH_DRAG_PX = 12;
 
 export interface ActiveApprovalScope {
   missionId: string;
@@ -131,6 +132,7 @@ export interface NucleusGestureInput {
  */
 export class NucleusGestureInterpreter {
   private previousRightPinching = false;
+  private cameraCandidatePoint: Point | null = null;
   private cameraPoint: Point | null = null;
   private depthCandidateSince: number | null = null;
   private depthAnchorSpan: number | null = null;
@@ -156,9 +158,21 @@ export class NucleusGestureInterpreter {
         this.cameraPoint = null;
         actions.push({ type: 'camera', phase: 'end', cancelled });
       }
+    } else if (this.cameraCandidatePoint) {
+      if (!rightPinching || !input.rightPoint) {
+        this.cameraCandidatePoint = null;
+      } else if (distance(this.cameraCandidatePoint, input.rightPoint) >= NUCLEUS_CLUTCH_DRAG_PX) {
+        const start = { ...this.cameraCandidatePoint };
+        const point = { ...input.rightPoint };
+        this.cameraCandidatePoint = null;
+        this.cameraPoint = point;
+        actions.push({ type: 'camera', phase: 'start', point: start });
+        actions.push({ type: 'camera', phase: 'move', point, delta: subtract(point, start) });
+      }
     } else if (pinchStarted && input.rightOnEmptyNucleus && input.rightPoint) {
-      this.cameraPoint = { ...input.rightPoint };
-      actions.push({ type: 'camera', phase: 'start', point: { ...input.rightPoint } });
+      // Empty-space pinches are only candidates. Registered targets are resolved
+      // before this interpreter and a clutch starts only after intentional drag.
+      this.cameraCandidatePoint = { ...input.rightPoint };
     }
     this.previousRightPinching = rightPinching;
 
@@ -211,6 +225,7 @@ export class NucleusGestureInterpreter {
       ? [{ type: 'camera', phase: 'end', cancelled: true }]
       : [];
     this.previousRightPinching = false;
+    this.cameraCandidatePoint = null;
     this.cameraPoint = null;
     this.resetDepth();
     return actions;

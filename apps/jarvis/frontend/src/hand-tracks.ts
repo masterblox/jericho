@@ -7,6 +7,7 @@ import {
   type Landmark,
   type PinchPhase,
   type Point,
+  type PinchThresholds,
 } from './tracking';
 
 export type HandTrackId = number;
@@ -87,6 +88,12 @@ function associationCost(track: TrackRuntime, observation: RawHandObservation, n
 export class HandTrackManager {
   private tracks: TrackRuntime[] = [];
   private nextTrackId = 1;
+  private readonly thresholds = new Map<Handedness, PinchThresholds>();
+
+  setPinchThresholds(handedness: Handedness, thresholds: PinchThresholds) {
+    this.thresholds.set(handedness, { ...thresholds });
+    this.tracks.find((track) => track.handedness === handedness)?.pinch.setThresholds(thresholds);
+  }
 
   update(observations: RawHandObservation[], now: number, swapRoles = false): TrackedHandFrame[] {
     this.tracks = this.tracks.filter((track) => now - track.lastSeenAt <= OWNER_LOSS_MS);
@@ -166,7 +173,7 @@ export class HandTrackManager {
   private createTrack(observation: RawHandObservation, handedness: Handedness, now: number): TrackRuntime {
     const filter = new AdaptivePointFilter();
     const pinchFilter = new AdaptivePointFilter();
-    const pinch = new PinchLatch();
+    const pinch = new PinchLatch(this.thresholds.get(handedness));
     const smoothedAnchor = filter.push(observation.palmAnchor);
     const smoothedPinch = pinchFilter.push(observation.pinchPoint);
     const closedFist = observation.recognizedGesture === 'Closed_Fist';

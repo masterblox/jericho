@@ -56,6 +56,7 @@ describe('CommandCenterApp', () => {
 
     expect(screen.getByRole('heading', { name: 'Today' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Communications' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Jarvis memory' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Mission pipeline' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Nucleus' })).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Approvals' })).toBeTruthy();
@@ -91,6 +92,27 @@ describe('CommandCenterApp', () => {
       version: 3,
       reason: 'Approved from Jericho command center',
     });
+  });
+
+  it('renders bounded Jarvis vault results without exposing absolute paths', async () => {
+    const store = new CommandCenterStore();
+    store.replace(populatedSnapshot());
+    const searchVault = vi.fn().mockResolvedValue({
+      available: true, cached: false, count: 1,
+      results: [{ path: 'Projects/Fleet.md', title: 'Fleet', excerpt: 'Mission operating model', score: 0.87 }],
+    });
+    render(<CommandCenterApp
+      store={store}
+      client={{ start: vi.fn(), stop: vi.fn(), decideMission: vi.fn(), searchVault }}
+      autoStart={false}
+    />);
+
+    fireEvent.change(screen.getByLabelText('Search the local Obsidian vault'), { target: { value: 'fleet' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    await screen.findByText('Mission operating model');
+    expect(searchVault).toHaveBeenCalledWith('fleet', 6);
+    expect(screen.getByText('Projects/Fleet.md')).toBeTruthy();
+    expect(document.body.textContent).not.toContain('/Users/');
   });
 
   it('uses a semantic approval gesture once with the displayed plan scope and no second confirmation', async () => {
