@@ -2592,8 +2592,20 @@ async function main(): Promise<void> {
     await runtime.stop();
     store.close();
   };
-  process.once('SIGINT', () => { void shutdown(); });
-  process.once('SIGTERM', () => { void shutdown(); });
+  const shutdownAndExit = () => {
+    void shutdown()
+      .then(() => {
+        process.exitCode = 0;
+        process.exit();
+      })
+      .catch((error) => {
+        console.error('[jericho] shutdown failed', error);
+        process.exitCode = 1;
+        process.exit();
+      });
+  };
+  process.once('SIGINT', shutdownAndExit);
+  process.once('SIGTERM', shutdownAndExit);
   try {
     await runtime.start();
   } catch (error) {
