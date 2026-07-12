@@ -4,6 +4,7 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { IsabellaGuidedTest } from '../src/sphere/IsabellaGuidedTest'
+import { CommandOverlay } from '../src/sphere/CommandOverlay'
 
 beforeEach(() => {
   vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: true }))
@@ -108,5 +109,39 @@ describe('IsabellaGuidedTest', () => {
 
     expect(screen.getByText('Say: Who is Isabella?')).toBeTruthy()
     expect(screen.queryByText('Late result.')).toBeNull()
+  })
+
+  it('preserves evidence and phase when the overlay closes and the same session resumes', async () => {
+    const actions = {
+      openMemory: vi.fn().mockResolvedValue({ relativePath: 'People/Isabella.md' }),
+      proposeNoteReorganization: vi.fn(), decideProposal: vi.fn(), searchMemory: vi.fn(),
+      dispatchDirective: vi.fn(), decide: vi.fn(), cancel: vi.fn(),
+    }
+    const liveData = { missions: [], approvals: [], outcomes: [] }
+    const view = render(<CommandOverlay
+      open liveData={liveData} actions={actions} guidedTestSession={1} guidedTestActive
+      onClose={vi.fn()}
+    />)
+    act(() => document.dispatchEvent(new CustomEvent('jericho:voice-tool-result', { detail: {
+      name: 'search_vault', result: { results: [{
+        path: 'People/Isabella.md', title: 'Isabella', excerpt: 'Persisted source evidence.', score: 1,
+      }] },
+    } })))
+    fireEvent.click(screen.getByRole('button', { name: 'OPEN IN OBSIDIAN' }))
+    await screen.findByText('Drag Isabella here to preview family and Masterblox organization changes.')
+
+    view.rerender(<CommandOverlay
+      open={false} liveData={liveData} actions={actions} guidedTestSession={1} guidedTestActive
+      onClose={vi.fn()}
+    />)
+    expect(screen.getByRole('dialog', { hidden: true }).hidden).toBe(true)
+
+    view.rerender(<CommandOverlay
+      open liveData={liveData} actions={actions} guidedTestSession={1} guidedTestActive
+      onClose={vi.fn()}
+    />)
+    expect(screen.getByText('Persisted source evidence.')).toBeTruthy()
+    expect(screen.getByText('Drag Isabella here to preview family and Masterblox organization changes.')).toBeTruthy()
+    expect(actions.openMemory).toHaveBeenCalledTimes(1)
   })
 })

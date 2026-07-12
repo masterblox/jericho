@@ -31,7 +31,6 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
     else if (!guidedTestActive) setMode(current => current === 'guided' ? 'home' : current)
   }, [guidedTestActive, guidedTestSession])
 
-  if (!open) return null
   const selectedMission = liveData.missions.find(item => item.id === selectedMissionId)
     ?? liveData.missions.find(item => item.active)
     ?? liveData.missions[0]
@@ -59,7 +58,7 @@ export function CommandOverlay({ open, onClose, liveData, actions, guidedTestSes
     }
   }
 
-  return <section className="sphere-command" role="dialog" aria-modal="true" aria-label="Jericho command overlay">
+  return <section className="sphere-command" role="dialog" aria-modal={open ? 'true' : undefined} aria-label="Jericho command overlay" hidden={!open}>
     <header>
       <span className="micro">SPHERE COMMAND / BOUNDED OPERATOR ACTIONS</span>
       <strong>{mode === 'home' ? 'COMMAND' : mode === 'guided' ? 'GUIDED TEST · ISABELLA' : mode.toUpperCase()}</strong>

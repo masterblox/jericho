@@ -6,11 +6,13 @@ const EMPTY = { phase: 'ask', result: null, proposal: null, outcome: null, error
 export function IsabellaGuidedTest({ session, active = true, actions }) {
   const [state, setState] = React.useState(EMPTY)
   const personCard = React.useRef(null)
+  const activeRef = React.useRef(active)
+  activeRef.current = active
 
   React.useEffect(() => setState(EMPTY), [session])
   React.useEffect(() => {
     const receive = event => {
-      if (!active) return
+      if (!activeRef.current) return
       if (event.detail?.name !== 'search_vault') return
       const result = bestIsabellaResult(event.detail.result?.results)
       if (!result) {
@@ -21,7 +23,7 @@ export function IsabellaGuidedTest({ session, active = true, actions }) {
     }
     document.addEventListener('jericho:voice-tool-result', receive)
     return () => document.removeEventListener('jericho:voice-tool-result', receive)
-  }, [active])
+  }, [])
 
   const open = async () => {
     if (!state.result) return
