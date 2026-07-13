@@ -35,6 +35,7 @@ import {
   type IdentityReviewDecisionRequest,
   type IdentityReviewDecisionResponse,
   type GuidedTestPhase,
+  type GroundedResultEvent,
   type IdentityAwareRetrievalResult,
   type JsonValue,
   type MissionDecisionRequest,
@@ -101,7 +102,10 @@ import {
   refreshGuidedExpiry,
   type IsabellaGuidedSession,
 } from './guided/isabella-session.js';
-import { groupIdentityEvidence } from './retrieval/identity-aware.js';
+import {
+  groupIdentityEvidence,
+  buildGroundedResultEvent,
+} from './retrieval/identity-aware.js';
 import {
   VOICE_AUDITION_SENTENCE,
   VOICE_PREVIEW_TIMEOUT_MS,
@@ -1439,6 +1443,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     generation: number;
   } | undefined;
   let retrievalInFlight = false;
+  let naturalRetrievalDone = false;
+  let naturalEvidence: GroundedResultEvent | undefined;
 
   const activeGuidedTest = () => {
     if (isGuidedExpired(guidedTest)) guidedTest = undefined;
@@ -1523,6 +1529,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     if (activeGuidedTest()) send({ type: 'guided_test_end', test: 'isabella' });
     guidedTest = undefined;
     retrievalInFlight = false;
+    naturalRetrievalDone = false;
+    naturalEvidence = undefined;
   };
   const runIsabellaRetrieval = async () => {
     const guided = activeGuidedTest();
@@ -1532,6 +1540,18 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     guided.retrievalCount = 1;
     refreshGuidedExpiry(guided);
     publishPhase(guided);
+    send({
+      type: 'grounded_result',
+      resultId: `retrieving-${randomUUID()}`,
+      phase: 'retrieving',
+      route: 'private_knowledge',
+      subject: 'Isabella',
+      confidence: 'none',
+      provenance: [],
+      actions: {},
+      retrievalCount: guided.retrievalCount,
+      guided: { test: 'isabella' },
+    });
     send({ type: 'interrupt' });
     instructGeminiOnce('retrieving');
 
@@ -1568,12 +1588,85 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         name: 'identity_aware_retrieval',
         result: evidence,
       });
+      const grounded = buildGroundedResultEvent(evidence, 'private_knowledge', { test: 'isabella' });
+      send({ type: 'grounded_result', ...grounded });
+      naturalEvidence = grounded;
+      naturalRetrievalDone = true;
       instructGeminiOnce('presenting', evidence);
     } catch {
       const still = activeGuidedTest();
       if (!still) return;
       send({ type: 'error', message: 'identity retrieval unavailable' });
       publishPhase(still, { error: 'retrieval_unavailable' });
+      send({
+        type: 'grounded_result',
+        resultId: randomUUID(),
+        phase: 'unavailable',
+        route: 'private_knowledge',
+        subject: 'Isabella',
+        confidence: 'none',
+        provenance: [],
+        actions: {},
+        retrievalCount: 1,
+        guided: { test: 'isabella' },
+      });
+    } finally {
+      retrievalInFlight = false;
+    }
+  };
+  const runNaturalRetrieval = async (query: string) => {
+    if (naturalRetrievalDone || retrievalInFlight) return;
+    retrievalInFlight = true;
+    send({
+      type: 'grounded_result',
+      resultId: `retrieving-${randomUUID()}`,
+      phase: 'retrieving',
+      route: 'private_knowledge',
+      subject: query,
+      confidence: 'none',
+      provenance: [],
+      actions: {},
+      retrievalCount: 0,
+    });
+    try {
+      const abort = new AbortController();
+      const timeout = setTimeout(() => abort.abort(), 15_000);
+      let hits: Array<{ path: string; title: string; excerpt: string; score: number }> = [];
+      try {
+        if (options.vaultSearch) {
+          const response = await options.vaultSearch.search(query, 8, abort.signal);
+          hits = response.results;
+        } else if (options.obsidianSearch) {
+          const results = await options.obsidianSearch.search(query, 8) as Array<{
+            path: string; title: string; excerpt: string;
+          }>;
+          hits = results.map((result, index) => ({
+            ...result,
+            score: Math.max(0.1, 1 - index * 0.08),
+          }));
+        }
+      } finally {
+        clearTimeout(timeout);
+      }
+      const evidence = groupIdentityEvidence(query, hits, 1);
+      naturalRetrievalDone = true;
+      const grounded = buildGroundedResultEvent(evidence, 'private_knowledge');
+      naturalEvidence = grounded;
+      send({ type: 'grounded_result', ...grounded });
+    } catch {
+      naturalRetrievalDone = true;
+      naturalEvidence = undefined;
+      send({
+        type: 'grounded_result',
+        resultId: randomUUID(),
+        phase: 'unavailable',
+        route: 'private_knowledge',
+        subject: query,
+        confidence: 'none',
+        provenance: [],
+        actions: {},
+        retrievalCount: 0,
+      });
     } finally {
       retrievalInFlight = false;
     }
@@ -1618,6 +1711,22 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         // One-query guarantee: never re-run or ask the user to ask again.
         refreshGuidedExpiry(guided);
         if (guided.evidence) publishPhase(guided);
+      } else if (naturalRetrievalDone && naturalEvidence) {
+        send({ type: 'grounded_result', ...naturalEvidence });
+      } else if (naturalRetrievalDone) {
+        send({
+          type: 'grounded_result',
+          resultId: randomUUID(),
+          phase: 'unavailable',
+          route: 'private_knowledge',
+          subject: 'Isabella',
+          confidence: 'none',
+          provenance: [],
+          actions: {},
+          retrievalCount: 0,
+        });
+      } else {
+        void runNaturalRetrieval('Isabella');
       }
     } else if (activeGuidedTest()) {
       refreshGuidedExpiry(activeGuidedTest()!);

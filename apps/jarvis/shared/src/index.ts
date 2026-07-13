@@ -377,6 +377,59 @@ export interface IdentityAwareRetrievalResult {
   retrievalCount: number;
 }
 
+/** Bounded route classification for runtime result grounding. */
+export type KnowledgeRoute =
+  | 'private_knowledge'
+  | 'core_operational'
+  | 'general'
+  | 'clarification';
+
+/** Confidence tier for a grounded identity or knowledge result. */
+export type AnswerConfidence = 'strong' | 'partial' | 'ambiguous' | 'none';
+
+/** Lifecycle phase for a grounded-result WebSocket message. */
+export type GroundedResultPhase = 'retrieving' | 'resolved' | 'ambiguous' | 'unavailable';
+
+/** Bounded provenance entry carried in every grounded result. */
+export interface GroundedResultProvenance {
+  relativePath: string;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+/** Actions a frontend may render for a resolved grounded result. */
+export interface GroundedResultAction {
+  open_note?: string;
+  reorganize_notes?: boolean;
+  correct_identity?: boolean;
+}
+
+/**
+ * Unified WebSocket contract emitted as `grounded_result` for both natural
+ * private questions and guided Isabella retrieval.
+ *
+ * The frontend MUST NOT require raw `tool_result` messages to construct
+ * product UI from knowledge-card results.
+ */
+export interface GroundedResultEvent {
+  resultId: string;
+  phase: GroundedResultPhase;
+  route: KnowledgeRoute;
+  subject: string;
+  confidence: AnswerConfidence;
+  canonicalIdentity?: string;
+  fullName?: string;
+  relationship?: string;
+  employment?: string[];
+  provenance: GroundedResultProvenance[];
+  actions: GroundedResultAction;
+  retrievalCount: number;
+  guided?: {
+    test: 'isabella';
+  };
+}
+
 export interface Freshness {
   observedAt: IsoTimestamp;
   validAt?: IsoTimestamp;
@@ -2179,6 +2232,45 @@ export function assertPreferenceChange(value: unknown): asserts value is Prefere
   assertProvenanceList(value.provenance, 'Preference change provenance');
   assertOptionalIntegrityHash(value, 'Preference change integrityHash');
   assertJsonOnly(value, 'Preference change');
+}
+
+export function assertGroundedResultEvent(value: unknown): asserts value is GroundedResultEvent {
+  assertRecord(value, 'GroundedResultEvent');
+  assertNonEmptyString(value.resultId, 'resultId');
+  const validPhases = ['retrieving', 'resolved', 'ambiguous', 'unavailable'];
+  if (!validPhases.includes(String(value.phase))) throw new TypeError('GroundedResultEvent phase is invalid');
+  const validRoutes = ['private_knowledge', 'core_operational', 'general', 'clarification'];
+  if (!validRoutes.includes(String(value.route))) throw new TypeError('GroundedResultEvent route is invalid');
+  assertNonEmptyString(value.subject, 'subject');
+  const validConfidences = ['strong', 'partial', 'ambiguous', 'none'];
+  if (!validConfidences.includes(String(value.confidence))) throw new TypeError('GroundedResultEvent confidence is invalid');
+  for (const key of ['canonicalIdentity', 'fullName', 'relationship']) {
+    if (key in value && typeof value[key] !== 'undefined') assertNonEmptyString(value[key], key);
+  }
+  if (Array.isArray(value.employment)) {
+    value.employment.forEach((item: unknown, index: number) => assertNonEmptyString(item, `employment[${index}]`));
+  } else if ('employment' in value) {
+    throw new TypeError('GroundedResultEvent employment must be an array');
+  }
+  assertGroundedResultProvenanceList(value.provenance, 'provenance');
+  assertRecord(value.actions, 'actions');
+  if (typeof value.retrievalCount !== 'number' || !Number.isInteger(value.retrievalCount) || value.retrievalCount < 0) {
+    throw new TypeError('GroundedResultEvent retrievalCount must be a non-negative integer');
+  }
+  if (value.guided !== undefined) {
+    assertRecord(value.guided, 'guided');
+    if (value.guided.test !== 'isabella') throw new TypeError('GroundedResultEvent guided.test must be isabella');
+  }
+}
+
+function assertGroundedResultProvenanceList(value: unknown, field: string): asserts value is GroundedResultProvenance[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  value.forEach((item: Record<string, unknown>, index: number) => {
+    for (const key of ['relativePath', 'title', 'excerpt']) assertNonEmptyString(item[key], `${field}[${index}].${key}`);
+    if (typeof item.score !== 'number' || !Number.isFinite(item.score)) throw new TypeError(`${field}[${index}].score must be a finite number`);
+  });
 }
 
 export function assertCostRecord(value: unknown): asserts value is CostRecord {
