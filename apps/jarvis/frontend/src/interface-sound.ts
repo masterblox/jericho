@@ -25,6 +25,8 @@ export interface InterfaceSoundStorage {
 
 export interface InterfaceSoundEngineOptions {
   eventTarget?: EventTarget;
+  /** Target that receives trusted pointer/keyboard unlock gestures. Defaults to eventTarget. */
+  unlockTarget?: EventTarget;
   storage?: InterfaceSoundStorage;
   createAudioContext?: () => AudioContext;
   isSpeechPlaying?: () => boolean;
@@ -46,6 +48,7 @@ interface TrackedAudioNode {
  */
 export class InterfaceSoundEngine {
   private readonly eventTarget: EventTarget;
+  private readonly unlockTarget: EventTarget;
   private readonly storage: InterfaceSoundStorage;
   private readonly createAudioContext: () => AudioContext;
   private readonly isSpeechPlaying: () => boolean;
@@ -60,13 +63,17 @@ export class InterfaceSoundEngine {
   private muted = false;
   private speechPlaying = false;
   private disposed = false;
+  private unlocking = false;
+  private unlockAttached = false;
   private duckTimer: ReturnType<typeof setInterval> | null = null;
   private readonly onSound: EventListener = (event) => this.handleSound(event);
   private readonly onToggle: EventListener = (event) => this.handleToggle(event);
   private readonly onSpeech: EventListener = (event) => this.handleSpeech(event);
+  private readonly onUnlock: EventListener = () => { void this.unlockAudio(); };
 
   constructor(options: InterfaceSoundEngineOptions = {}) {
     this.eventTarget = options.eventTarget ?? defaultEventTarget();
+    this.unlockTarget = options.unlockTarget ?? this.eventTarget;
     this.storage = options.storage ?? defaultStorage();
     this.createAudioContext = options.createAudioContext ?? (() => new AudioContext());
     this.isSpeechPlaying = options.isSpeechPlaying ?? (() => false);
@@ -75,6 +82,7 @@ export class InterfaceSoundEngine {
     this.eventTarget.addEventListener(INTERFACE_SOUND_EVENT, this.onSound);
     this.eventTarget.addEventListener(INTERFACE_SOUND_TOGGLE_EVENT, this.onToggle);
     this.eventTarget.addEventListener(SPEECH_PLAYING_EVENT, this.onSpeech);
+    this.attachUnlockListeners();
     this.duckTimer = setInterval(() => this.syncMasterGain(), 100);
   }
 
@@ -104,12 +112,18 @@ export class InterfaceSoundEngine {
     return this.played.has(dedupeKey(resultId, cue));
   }
 
+  /** Test helper: whether trusted unlock listeners are still attached. */
+  hasUnlockListeners(): boolean {
+    return this.unlockAttached;
+  }
+
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
     this.eventTarget.removeEventListener(INTERFACE_SOUND_EVENT, this.onSound);
     this.eventTarget.removeEventListener(INTERFACE_SOUND_TOGGLE_EVENT, this.onToggle);
     this.eventTarget.removeEventListener(SPEECH_PLAYING_EVENT, this.onSpeech);
+    this.detachUnlockListeners();
     if (this.duckTimer) {
       clearInterval(this.duckTimer);
       this.duckTimer = null;
@@ -175,10 +189,13 @@ export class InterfaceSoundEngine {
     try {
       const ctx = this.ensureContext();
       if (!ctx || !this.master) return false;
-      if (ctx.state === 'suspended') {
-        void ctx.resume().catch(() => undefined);
-      }
       if (ctx.state === 'closed') return false;
+      if (ctx.state === 'suspended') {
+        // Never schedule or consume while still suspended — unlock gesture may retry.
+        void this.tryResume(ctx);
+        return false;
+      }
+      if (ctx.state === 'running') this.detachUnlockListeners();
       this.syncMasterGain();
       const start = ctx.currentTime;
       switch (cue) {
@@ -203,6 +220,54 @@ export class InterfaceSoundEngine {
     }
   }
 
+  private attachUnlockListeners(): void {
+    if (this.unlockAttached || this.disposed) return;
+    this.unlockAttached = true;
+    this.unlockTarget.addEventListener('pointerdown', this.onUnlock, true);
+    this.unlockTarget.addEventListener('keydown', this.onUnlock, true);
+  }
+
+  private detachUnlockListeners(): void {
+    if (!this.unlockAttached) return;
+    this.unlockAttached = false;
+    this.unlockTarget.removeEventListener('pointerdown', this.onUnlock, true);
+    this.unlockTarget.removeEventListener('keydown', this.onUnlock, true);
+  }
+
+  private async unlockAudio(): Promise<void> {
+    if (this.disposed || this.unlocking) return;
+    this.unlocking = true;
+    try {
+      const ctx = this.ensureContext();
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        const resumed = await this.tryResume(ctx);
+        if (!resumed) {
+          this.attachUnlockListeners();
+          return;
+        }
+      }
+      if (ctx.state === 'running') this.detachUnlockListeners();
+      else this.attachUnlockListeners();
+    } finally {
+      this.unlocking = false;
+    }
+  }
+
+  private async tryResume(ctx: AudioContext): Promise<boolean> {
+    try {
+      await ctx.resume();
+      if (ctx.state === 'running') {
+        this.detachUnlockListeners();
+        return true;
+      }
+    } catch {
+      /* autoplay policy may reject; keep unlock listeners */
+    }
+    this.attachUnlockListeners();
+    return false;
+  }
+
   private ensureContext(): AudioContext | null {
     if (this.disposed) return null;
     if (this.ctx && this.ctx.state !== 'closed') return this.ctx;
@@ -213,10 +278,12 @@ export class InterfaceSoundEngine {
       master.connect(ctx.destination);
       this.ctx = ctx;
       this.master = master;
+      if (ctx.state !== 'running') this.attachUnlockListeners();
       return ctx;
     } catch {
       this.ctx = null;
       this.master = null;
+      this.attachUnlockListeners();
       return null;
     }
   }

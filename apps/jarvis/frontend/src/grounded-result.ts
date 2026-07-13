@@ -1,3 +1,11 @@
+/**
+ * Temporary frontend-local grounded-result wire parsing.
+ *
+ * The canonical `@jericho/shared` contract is still being repaired by another
+ * worker. Keep this module isolated and replaceable — do not expand the local
+ * protocol here; swap to shared imports once that SHA lands.
+ */
+
 /** DOM event published by JarvisRuntime for a bounded grounded-result payload. */
 export const GROUNDED_RESULT_EVENT = 'jericho:grounded-result';
 
@@ -136,10 +144,10 @@ export function isSafeRelativePath(value: string): boolean {
 export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload | null {
   if (!raw || typeof raw !== 'object') return null;
   const msg = raw as Record<string, unknown>;
-  const resultId = boundString(msg.resultId, MAX_ID);
+  const resultId = exactString(msg.resultId, MAX_ID);
   const phase = allowlisted(msg.phase, GROUNDED_RESULT_PHASES);
   const route = allowlisted(msg.route, GROUNDED_RESULT_ROUTES);
-  const subject = boundString(msg.subject, MAX_SUBJECT);
+  const subject = clipString(msg.subject, MAX_SUBJECT);
   const confidence = allowlisted(msg.confidence, GROUNDED_RESULT_CONFIDENCES);
   if (!resultId || !phase || !route || !subject || !confidence) return null;
   if (typeof msg.retrievalCount !== 'number'
@@ -169,15 +177,15 @@ export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload 
   if (msg.subjectKind !== undefined && !subjectKind) return null;
   if (subjectKind) payload.subjectKind = subjectKind;
 
-  const canonicalIdentity = boundString(msg.canonicalIdentity, MAX_LABEL);
+  const canonicalIdentity = clipString(msg.canonicalIdentity, MAX_LABEL);
   if (msg.canonicalIdentity !== undefined && !canonicalIdentity) return null;
   if (canonicalIdentity) payload.canonicalIdentity = canonicalIdentity;
 
-  const fullName = boundString(msg.fullName, MAX_LABEL);
+  const fullName = clipString(msg.fullName, MAX_LABEL);
   if (msg.fullName !== undefined && !fullName) return null;
   if (fullName) payload.fullName = fullName;
 
-  const relationship = boundString(msg.relationship, MAX_LABEL);
+  const relationship = clipString(msg.relationship, MAX_LABEL);
   if (msg.relationship !== undefined && !relationship) return null;
   if (relationship) payload.relationship = relationship;
 
@@ -198,7 +206,7 @@ export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload 
 export function parseInterfaceSoundDetail(raw: unknown): InterfaceSoundDetail | null {
   if (!raw || typeof raw !== 'object') return null;
   const detail = raw as Record<string, unknown>;
-  const resultId = boundString(detail.resultId, MAX_ID);
+  const resultId = exactString(detail.resultId, MAX_ID);
   if (!resultId || !isInterfaceSoundCue(detail.cue)) return null;
   return { resultId, cue: detail.cue };
 }
@@ -209,12 +217,17 @@ function parseProvenanceList(raw: unknown): GroundedResultProvenance[] | null {
   for (const entry of raw.slice(0, MAX_PROVENANCE)) {
     if (!entry || typeof entry !== 'object') return null;
     const value = entry as Record<string, unknown>;
-    const relativePath = boundString(value.relativePath, MAX_PATH);
-    const title = boundString(value.title, MAX_LABEL);
-    const excerpt = boundString(value.excerpt, MAX_EXCERPT);
+    const relativePath = exactString(value.relativePath, MAX_PATH);
+    const title = clipString(value.title, MAX_LABEL);
+    const excerpt = clipString(value.excerpt, MAX_EXCERPT);
     if (!relativePath || !title || !excerpt) return null;
     if (!isSafeRelativePath(relativePath)) return null;
-    if (typeof value.score !== 'number' || !Number.isFinite(value.score)) return null;
+    if (typeof value.score !== 'number'
+      || !Number.isFinite(value.score)
+      || value.score < 0
+      || value.score > 1) {
+      return null;
+    }
     items.push({
       relativePath,
       title,
@@ -233,7 +246,7 @@ function parseActions(raw: unknown): GroundedResultActions | null {
   }
   const actions: GroundedResultActions = {};
   if ('open_note' in value) {
-    const path = boundString(value.open_note, MAX_PATH);
+    const path = exactString(value.open_note, MAX_PATH);
     if (!path || !isSafeRelativePath(path)) return null;
     actions.open_note = path;
   }
@@ -253,7 +266,7 @@ function parseEmployment(raw: unknown): string[] | null {
   if (!Array.isArray(raw)) return null;
   const items: string[] = [];
   for (const entry of raw.slice(0, MAX_EMPLOYMENT)) {
-    const value = boundString(entry, MAX_LABEL);
+    const value = clipString(entry, MAX_LABEL);
     if (!value) return null;
     items.push(value);
   }
@@ -266,7 +279,16 @@ function allowlisted<T extends string>(value: unknown, allowed: readonly T[]): T
     : undefined;
 }
 
-function boundString(value: unknown, max: number): string | undefined {
+/** Opaque IDs and paths: reject when overlength instead of truncating. */
+function exactString(value: unknown, max: number): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > max) return undefined;
+  return trimmed;
+}
+
+/** Human-facing labels may be clipped pending the shared contract. */
+function clipString(value: unknown, max: number): string | undefined {
   if (typeof value !== 'string') return undefined;
   const trimmed = value.trim();
   if (!trimmed) return undefined;

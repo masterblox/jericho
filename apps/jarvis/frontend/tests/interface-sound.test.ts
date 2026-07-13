@@ -104,6 +104,61 @@ describe('parseGroundedResultMessage', () => {
     })).toBeNull();
   });
 
+  it('rejects overlength result IDs and relative paths instead of truncating', () => {
+    const base = validGroundedResult();
+    const longId = `id-${'x'.repeat(200)}`;
+    expect(parseGroundedResultMessage({ ...base, resultId: longId })).toBeNull();
+
+    const longPath = `People/${'n'.repeat(1_020)}.md`;
+    expect(longPath.length).toBeGreaterThan(1_024);
+    expect(parseGroundedResultMessage({
+      ...base,
+      provenance: [{
+        relativePath: longPath,
+        title: 'Isabella',
+        excerpt: 'excerpt',
+        score: 0.5,
+      }],
+    })).toBeNull();
+    expect(parseGroundedResultMessage({
+      ...base,
+      actions: { open_note: longPath },
+    })).toBeNull();
+  });
+
+  it('requires provenance scores within 0..1', () => {
+    const base = validGroundedResult();
+    for (const score of [-0.1, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(parseGroundedResultMessage({
+        ...base,
+        provenance: [{
+          relativePath: 'People/Isabella Handel.md',
+          title: 'Isabella Handel',
+          excerpt: 'spouse of Carlos',
+          score,
+        }],
+      }), String(score)).toBeNull();
+    }
+    expect(parseGroundedResultMessage({
+      ...base,
+      provenance: [{
+        relativePath: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'spouse of Carlos',
+        score: 0,
+      }],
+    })).not.toBeNull();
+    expect(parseGroundedResultMessage({
+      ...base,
+      provenance: [{
+        relativePath: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'spouse of Carlos',
+        score: 1,
+      }],
+    })).not.toBeNull();
+  });
+
   it('rejects absolute, traversal, backslash, and malformed provenance paths', () => {
     const base = validGroundedResult();
     for (const relativePath of [
@@ -263,7 +318,7 @@ describe('InterfaceSoundEngine', () => {
     engine.dispose();
   });
 
-  it('fails silently when AudioContext construction throws or stays suspended', () => {
+  it('fails silently when AudioContext construction throws', () => {
     const engine = new InterfaceSoundEngine({
       eventTarget: document,
       storage: memoryStorage(),
@@ -273,17 +328,90 @@ describe('InterfaceSoundEngine', () => {
     });
     expect(() => dispatchSound('silent-1', 'retrieve')).not.toThrow();
     expect(engine.hasPlayed('silent-1', 'retrieve')).toBe(false);
+    expect(engine.hasUnlockListeners()).toBe(true);
     engine.dispose();
+  });
 
-    const suspended = installFakeAudio({ state: 'suspended' });
-    const suspendedEngine = new InterfaceSoundEngine({
+  it('does not consume a cue while AudioContext stays suspended after rejected resume', async () => {
+    const audio = installFakeAudio({
+      state: 'suspended',
+      resume: async () => {
+        throw new Error('autoplay blocked');
+      },
+    });
+    const engine = new InterfaceSoundEngine({
       eventTarget: document,
       storage: memoryStorage(),
-      createAudioContext: () => suspended.create(),
+      createAudioContext: () => audio.create(),
     });
-    expect(() => dispatchSound('silent-2', 'summon')).not.toThrow();
-    expect(suspended.resume).toHaveBeenCalled();
-    suspendedEngine.dispose();
+
+    dispatchSound('suspended-1', 'summon');
+    await flushMicrotasks();
+    expect(engine.hasPlayed('suspended-1', 'summon')).toBe(false);
+    expect(audio.oscillators).toHaveLength(0);
+    expect(engine.hasUnlockListeners()).toBe(true);
+
+    document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await flushMicrotasks();
+    expect(engine.hasUnlockListeners()).toBe(true);
+    expect(engine.hasPlayed('suspended-1', 'summon')).toBe(false);
+    engine.dispose();
+  });
+
+  it('unlocks on trusted gesture after a delayed resume, then plays without consuming early', async () => {
+    let releaseResume: (() => void) | undefined;
+    const audio = installFakeAudio({
+      state: 'suspended',
+      resume: () => new Promise<void>((resolve) => {
+        releaseResume = () => {
+          audio.setState('running');
+          resolve();
+        };
+      }),
+    });
+    const engine = new InterfaceSoundEngine({
+      eventTarget: document,
+      storage: memoryStorage(),
+      createAudioContext: () => audio.create(),
+    });
+
+    dispatchSound('delayed-1', 'lock');
+    expect(engine.hasPlayed('delayed-1', 'lock')).toBe(false);
+    expect(audio.oscillators).toHaveLength(0);
+
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(engine.hasPlayed('delayed-1', 'lock')).toBe(false);
+    releaseResume?.();
+    await flushMicrotasks();
+    expect(engine.hasUnlockListeners()).toBe(false);
+
+    dispatchSound('delayed-1', 'lock');
+    expect(engine.hasPlayed('delayed-1', 'lock')).toBe(true);
+    expect(audio.oscillators.length).toBeGreaterThan(0);
+    engine.dispose();
+  });
+
+  it('plays after a successful unlock resume on pointerdown', async () => {
+    const audio = installFakeAudio({
+      state: 'suspended',
+      resume: async () => { audio.setState('running'); },
+    });
+    const engine = new InterfaceSoundEngine({
+      eventTarget: document,
+      storage: memoryStorage(),
+      createAudioContext: () => audio.create(),
+    });
+
+    dispatchSound('unlock-1', 'retrieve');
+    expect(engine.hasPlayed('unlock-1', 'retrieve')).toBe(false);
+
+    document.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    await flushMicrotasks();
+    expect(engine.hasUnlockListeners()).toBe(false);
+
+    dispatchSound('unlock-1', 'retrieve');
+    expect(engine.hasPlayed('unlock-1', 'retrieve')).toBe(true);
+    engine.dispose();
   });
 
   it('disconnects oscillator, gain, and panner for each cue graph', () => {
@@ -339,7 +467,7 @@ describe('InterfaceSoundEngine', () => {
     dispatchSound('remount', 'satellite');
     expect(first.hasPlayed('remount', 'satellite')).toBe(true);
     first.dispose();
-    expect(vi.getTimerCount()).toBe(0);
+    expect(first.hasUnlockListeners()).toBe(false);
 
     const second = new InterfaceSoundEngine({
       eventTarget: document,
@@ -408,19 +536,25 @@ function memoryStorage() {
   };
 }
 
-function installFakeAudio(options: { state?: string } = {}) {
+function installFakeAudio(options: {
+  state?: string;
+  resume?: (ctx: { state: string }) => Promise<void>;
+} = {}) {
   const oscillators: FakeOscillator[] = [];
   const gains: FakeGain[] = [];
   const panners: FakePanner[] = [];
   const masterGains: FakeGain[] = [];
-  const resume = vi.fn().mockResolvedValue(undefined);
+  const contexts: Array<{ state: string }> = [];
   let closed = 0;
 
   class FakeAudioContext {
     currentTime = 0;
     state = options.state ?? 'running';
     destination = {};
-    resume = resume;
+    resume = vi.fn(async () => {
+      if (options.resume) await options.resume(this);
+      else this.state = 'running';
+    });
     close = vi.fn(async () => { closed += 1; this.state = 'closed'; });
     createGain() {
       return new FakeGain();
@@ -444,10 +578,16 @@ function installFakeAudio(options: { state?: string } = {}) {
     gains,
     panners,
     masterGains,
-    resume,
+    get resume() {
+      return contexts[0] ? (contexts[0] as FakeAudioContext).resume : vi.fn();
+    },
+    setState(state: string) {
+      for (const ctx of contexts) ctx.state = state;
+    },
     get closed() { return closed; },
     create() {
       const ctx = new FakeAudioContext();
+      contexts.push(ctx);
       let gainCount = 0;
       ctx.createGain = () => {
         const gain = new FakeGain();
@@ -459,6 +599,12 @@ function installFakeAudio(options: { state?: string } = {}) {
       return ctx as unknown as AudioContext;
     },
   };
+}
+
+async function flushMicrotasks(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
 }
 
 class FakeGain {
