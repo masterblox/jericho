@@ -42,6 +42,10 @@ import {
   type ResolvedGestureTarget,
 } from './gesture-target-registry';
 import { GestureEngine, type GestureFrame } from './gestures';
+import {
+  GROUNDED_RESULT_EVENT,
+  SPEECH_PLAYING_EVENT,
+} from './grounded-result';
 import type { TrackedHandFrame } from './hand-tracks';
 import { pointInsideTarget } from './hit-testing';
 import type { Handedness, Point } from './tracking';
@@ -74,6 +78,7 @@ export interface BridgeRuntimePort {
   cancelVoicePreview?(): void;
   confirmVoice?(voice: string): void;
   completeGuidedPhase?(phase: string): void;
+  isSpeechPlaying?(): boolean;
 }
 
 export interface RuntimeMediaDevices {
@@ -344,6 +349,16 @@ export class JarvisRuntime {
         },
         onGuidedTestPhase: (detail) => {
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-phase', { detail }));
+        },
+        onGroundedResult: (result) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent(GROUNDED_RESULT_EVENT, {
+            detail: result,
+          }));
+        },
+        onSpeechPlaying: (playing) => {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent(SPEECH_PLAYING_EVENT, {
+            detail: { playing },
+          }));
         },
         onModePending: (_mode, name) => {
           this.root.classList.add('jericho-persona--pending');
