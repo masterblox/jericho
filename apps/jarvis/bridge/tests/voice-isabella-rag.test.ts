@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,6 +14,8 @@ import {
 import {
   groupIdentityEvidence,
   buildGroundedResultEvent,
+  validateGroundedResultEvent,
+  isValidRelativePath,
   type VaultEvidenceHit,
   ISABELLA_IDENTITY,
   type GroupIdentityConfig,
@@ -72,6 +75,8 @@ describe('identity-aware Isabella retrieval', () => {
 });
 
 describe('grounded_result contract', () => {
+  const resultId = randomUUID();
+
   const canonicalHit: VaultEvidenceHit = {
     path: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
     title: 'Isabella Handel',
@@ -95,7 +100,7 @@ describe('grounded_result contract', () => {
 
   it('resolved with strong confidence when canonical + relationship evidence exists', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit, ambiguousHit], 1);
-    const event = buildGroundedResultEvent(result, 'private_knowledge', { test: 'isabella' });
+    const event = buildGroundedResultEvent(result, resultId, 'private_knowledge', { test: 'isabella' });
 
     expect(event.phase).toBe('resolved');
     expect(event.confidence).toBe('strong');
@@ -111,7 +116,7 @@ describe('grounded_result contract', () => {
 
   it('resolved with partial confidence when canonical but no relationship', () => {
     const result = groupIdentityEvidence('Isabella', [noRelationshipHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.phase).toBe('resolved');
     expect(event.confidence).toBe('partial');
@@ -122,7 +127,7 @@ describe('grounded_result contract', () => {
 
   it('ambiguous when only first-name evidence exists', () => {
     const result = groupIdentityEvidence('Isabella', [ambiguousHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.phase).toBe('ambiguous');
     expect(event.confidence).toBe('ambiguous');
@@ -135,7 +140,7 @@ describe('grounded_result contract', () => {
     const result = groupIdentityEvidence('Isabella', [
       { path: 'Notes/unrelated.md', title: 'Unrelated', excerpt: 'No match here.', score: 0.1 },
     ], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.phase).toBe('unavailable');
     expect(event.confidence).toBe('none');
@@ -144,7 +149,7 @@ describe('grounded_result contract', () => {
 
   it('bounded excerpts and relative paths', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     for (const item of event.provenance) {
       expect(item.excerpt.length).toBeLessThanOrEqual(480);
@@ -157,22 +162,9 @@ describe('grounded_result contract', () => {
     }
   });
 
-  it('open_note action when resolved with provenance', () => {
+  it('reorganize_notes with one canonical openable note', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
-    const event = buildGroundedResultEvent(result);
-
-    expect(event.actions.open_note).toBe(canonicalHit.path);
-  });
-
-  it('reorganize_notes action when multiple resolved provenance entries', () => {
-    const secondCanonical: VaultEvidenceHit = {
-      path: 'Meetings/Isabella-weekly.md',
-      title: 'Isabella Handel',
-      excerpt: 'Weekly sync with Isabella Handel.',
-      score: 0.72,
-    };
-    const result = groupIdentityEvidence('Isabella', [canonicalHit, secondCanonical], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.actions.open_note).toBe(canonicalHit.path);
     expect(event.actions.reorganize_notes).toBe(true);
@@ -180,35 +172,33 @@ describe('grounded_result contract', () => {
 
   it('correct_identity action when ambiguous evidence exists', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit, ambiguousHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.actions.correct_identity).toBe(true);
   });
 
   it('no correct_identity when only canonical evidence', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
     expect(event.actions.correct_identity).toBeUndefined();
   });
 
-  it('resultId is a non-empty string', () => {
+  it('resultId matches input', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
 
-    expect(typeof event.resultId).toBe('string');
-    expect(event.resultId.length).toBeGreaterThan(0);
+    expect(event.resultId).toBe(resultId);
   });
 
   it('natural questions have same contract as guided (minus guided field)', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit, ambiguousHit], 1);
-    const guidedEvent = buildGroundedResultEvent(result, 'private_knowledge', { test: 'isabella' });
-    const naturalEvent = buildGroundedResultEvent(result, 'private_knowledge');
+    const guidedEvent = buildGroundedResultEvent(result, resultId, 'private_knowledge', { test: 'isabella' });
+    const naturalEvent = buildGroundedResultEvent(result, resultId, 'private_knowledge');
 
     expect(guidedEvent.guided?.test).toBe('isabella');
     expect(naturalEvent.guided).toBeUndefined();
 
-    // Shared fields are identical
     expect(guidedEvent.phase).toBe(naturalEvent.phase);
     expect(guidedEvent.confidence).toBe(naturalEvent.confidence);
     expect(guidedEvent.subject).toBe(naturalEvent.subject);
@@ -220,8 +210,117 @@ describe('grounded_result contract', () => {
 
   it('retrievalCount matches input', () => {
     const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, resultId);
     expect(event.retrievalCount).toBe(1);
+  });
+
+  it('resultId reused across phases produces same id', () => {
+    const sharedId = resultId;
+    const result = groupIdentityEvidence('Isabella', [canonicalHit], 1);
+    const event = buildGroundedResultEvent(result, sharedId);
+    expect(event.resultId).toBe(sharedId);
+    expect(typeof sharedId).toBe('string');
+  });
+});
+
+describe('validateGroundedResultEvent', () => {
+  it('accepts valid events', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/Isabella Handel.md', title: 'Isabella Handel', excerpt: 'Works at MasterBlox.', score: 0.97 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    expect(() => validateGroundedResultEvent(event)).not.toThrow();
+  });
+
+  it('rejects malicious absolute paths', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).provenance = [{ relativePath: '/etc/passwd', title: 'x', excerpt: 'x', score: 0.5 }];
+    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+  });
+
+  it('rejects traversal paths', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).provenance = [{ relativePath: '../../../.ssh/id_rsa', title: 'x', excerpt: 'x', score: 0.5 }];
+    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+  });
+
+  it('rejects backslash paths', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People\\ok.md', title: 'x', excerpt: 'x', score: 0.5 }];
+    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+  });
+
+  it('rejects score out of bounds', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: 1.5 }];
+    expect(() => validateGroundedResultEvent(event)).toThrow(/score/);
+  });
+
+  it('rejects negative score', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: -0.1 }];
+    expect(() => validateGroundedResultEvent(event)).toThrow(/score/);
+  });
+
+  it('rejects oversized provenance', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    const items = Array.from({ length: 51 }, () => ({ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: 0.5 }));
+    (event as unknown as Record<string, unknown>).provenance = items;
+    expect(() => validateGroundedResultEvent(event)).toThrow(/provenance/);
+  });
+
+  it('rejects unknown action keys', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).actions = { open_note: 'People/ok.md', evil_action: true };
+    expect(() => validateGroundedResultEvent(event)).toThrow(/actions/);
+  });
+
+  it('rejects reorganize_notes without open_note', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).actions = { reorganize_notes: true };
+    expect(() => validateGroundedResultEvent(event)).toThrow(/open_note/);
+  });
+
+  it('rejects oversized subject', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).subject = 'x'.repeat(501);
+    expect(() => validateGroundedResultEvent(event)).toThrow(/subject/);
+  });
+
+  it('validates open_note path', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      { path: 'People/ok.md', title: 'ok', excerpt: 'ok.', score: 0.5 },
+    ], 1);
+    const event = buildGroundedResultEvent(result, randomUUID());
+    (event as unknown as Record<string, unknown>).actions = { open_note: '/absolute/path.md', reorganize_notes: true };
+    expect(() => validateGroundedResultEvent(event)).toThrow(/open_note/);
   });
 });
 
@@ -288,15 +387,29 @@ describe('generalized identity grouping', () => {
       },
     ], 1);
 
-    // No canonical hits, so no resolved identity
     expect(result.resolved).toBeUndefined();
     expect(result.excluded).toHaveLength(1);
     expect(result.excluded[0]?.ambiguous).toBe(true);
     expect(result.excluded[0]?.canonical).toBe(false);
 
-    const event = buildGroundedResultEvent(result);
+    const event = buildGroundedResultEvent(result, randomUUID());
     expect(event.phase).toBe('ambiguous');
     expect(event.canonicalIdentity).toBeUndefined();
+  });
+
+  it('carlos prada mention without wife/spouse/married does not infer relationship', () => {
+    const result = groupIdentityEvidence('Isabella', [
+      {
+        path: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'Isabella Handel works with Carlos Prada at MasterBlox.',
+        score: 0.97,
+      },
+    ], 1);
+
+    expect(result.resolved?.fullName).toBe('Isabella Handel');
+    expect(result.resolved?.relationshipToCarlos).toBeUndefined();
+    expect(result.resolved?.employment).toContain('MasterBlox');
   });
 });
 
