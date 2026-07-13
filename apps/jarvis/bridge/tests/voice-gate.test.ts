@@ -203,7 +203,7 @@ describe('voice socket privacy gate', () => {
     expect(session.sendRealtimeInput).toHaveBeenCalledTimes(1);
   });
 
-  it('retains only finished active-turn input transcription as an encrypted spoken capture', async () => {
+  it('finalizes Gemini transcription without a finished field as an encrypted spoken capture', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
       callbacks = request.callbacks;
@@ -224,19 +224,19 @@ describe('voice socket privacy gate', () => {
     });
 
     callbacks?.onmessage({
-      serverContent: { inputTranscription: { text: 'standby private speech', finished: true } },
+      serverContent: { inputTranscription: { text: 'standby private speech' } },
     });
     expect(runtime.store.listEvents({ limit: 10 })).toEqual([]);
 
     socket.send(JSON.stringify({ type: 'wake' }));
     await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'armed', armed: true }));
     callbacks?.onmessage({
-      serverContent: { inputTranscription: { text: 'Build a multi-step project ', finished: false } },
+      serverContent: { inputTranscription: { text: 'Build a multi-step project ' } },
     });
     // Transcription ordering is independent of model turn completion.
     callbacks?.onmessage({ serverContent: { turnComplete: true } });
     callbacks?.onmessage({
-      serverContent: { inputTranscription: { text: 'for Jericho', finished: true } },
+      serverContent: { inputTranscription: { text: 'for Jericho' } },
     });
 
     await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1));
@@ -299,6 +299,9 @@ describe('voice socket privacy gate', () => {
     callbacks?.onmessage({
       serverContent: { inputTranscription: { text: 'Test Isabella', finished: true } },
     });
+    await vi.waitFor(() => expect(messages()).toContainEqual(expect.objectContaining({
+      type: 'guided_test_start', test: 'isabella', phase: 'ready',
+    })));
     callbacks?.onmessage({ serverContent: { turnComplete: true } });
     await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'turn_complete' }));
 
@@ -310,6 +313,79 @@ describe('voice socket privacy gate', () => {
     expect(messages()).toContainEqual({ type: 'greeting_complete' });
     expect(messages()).toContainEqual({ type: 'armed', armed: true });
     expect(session.sendClientContent).toHaveBeenCalledTimes(beforeResume);
+  });
+
+  it('retrieves private identity evidence before allowing a natural voice answer', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const search = vi.fn(async () => ({
+      cached: false,
+      results: [{
+        path: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'Carlos’s wife and a team member at MasterBlox Capital.',
+        score: 1,
+      }],
+    }));
+    const runtime = await startVoiceServer(voiceConnect, 5_000, { vaultSearch: { search } });
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
+
+    callbacks?.onmessage({
+      serverContent: { inputTranscription: { text: "Who's Isabella?" } },
+    });
+    callbacks?.onmessage({
+      serverContent: { modelTurn: { parts: [{ inlineData: { data: 'speculative', mimeType: 'audio/pcm;rate=24000' } }] } },
+    });
+    expect(messages()).not.toContainEqual(expect.objectContaining({ data: 'speculative' }));
+    await vi.waitFor(() => expect(search).toHaveBeenCalledWith('Isabella', 5, expect.any(AbortSignal)));
+    await vi.waitFor(() => expect(messages()).toContainEqual(expect.objectContaining({
+      type: 'tool_result', name: 'grounded_private_memory',
+    })));
+    expect(session.sendClientContent).toHaveBeenCalledWith(expect.objectContaining({
+      turns: [expect.objectContaining({
+        parts: [expect.objectContaining({ text: expect.stringMatching(/verified private evidence/i) })],
+      })],
+      turnComplete: true,
+    }));
+    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1));
+  });
+
+  it('greets at most once per browser voice session', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'turn_complete' }));
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await flushIo();
+    expect(session.sendClientContent).toHaveBeenCalledTimes(1);
+    expect(messages().filter((message) => message.type === 'greeting_started')).toHaveLength(1);
   });
 
   it('runs one identity-aware Isabella retrieval and does not replay the query', async () => {
