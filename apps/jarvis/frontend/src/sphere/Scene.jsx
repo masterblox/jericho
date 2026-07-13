@@ -6,7 +6,7 @@ import { StartupHealthCard } from './StartupHealthCard'
 import { VoiceCalibrationCard } from './VoiceCalibrationCard'
 import { KnowledgeProjection } from './KnowledgeProjection'
 
-export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand, knowledgeActions }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand, knowledgeActions, guidedTest }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
   const gestureOffset = React.useRef({ x: 0, y: 0 })
@@ -45,7 +45,10 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
     })
   }
 
-  const summoned = activeView !== 'CORE'
+  const summoned = activeView !== 'CORE' && activeView !== 'VOICE'
+  // VoiceCalibrationCard only in a manually opened administrative Voice mode
+  const showVoice = activeView === 'VOICE'
+
   return (
     <div
       className={`stage ${summoned ? 'summoned' : ''}`}
@@ -53,6 +56,8 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       data-mode={mode}
       data-agent={selectedAgent}
       data-jericho-nucleus-space="true"
+      data-guided={guidedTest?.active ? guidedTest.test : undefined}
+      data-guided-phase={guidedTest?.phase ?? undefined}
       ref={stage}
       onPointerMove={onPointerMove}
     >
@@ -69,7 +74,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       <div className="layer layer-near">
         <StartupHealthCard health={health} />
         <KnowledgeProjection actions={knowledgeActions} />
-        {!summoned && <VoiceCalibrationCard />}
+        {showVoice && <VoiceCalibrationCard />}
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
         {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
         {activeView === 'BRAIN' && <BrainProjection nucleus={liveData?.nucleus} onSearch={onVaultSearch} />}

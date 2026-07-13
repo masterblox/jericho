@@ -1,296 +1,274 @@
 /**
  * Temporary frontend-local grounded-result wire parsing.
- *
- * The canonical `@jericho/shared` contract is still being repaired by another
- * worker. Keep this module isolated and replaceable — do not expand the local
- * protocol here; swap to shared imports once that SHA lands.
+ * Matches shared @jericho/shared GroundedResultEvent v2 at cf238176.
+ * All over-limit fields are rejected, never truncated.
  */
 
-/** DOM event published by JarvisRuntime for a bounded grounded-result payload. */
 export const GROUNDED_RESULT_EVENT = 'jericho:grounded-result';
-
-/** DOM event that asks the interface-sound engine to play a cinematic cue once. */
 export const INTERFACE_SOUND_EVENT = 'jericho:interface-sound';
-
-/** DOM event that toggles or sets the local interface-sound mute preference. */
 export const INTERFACE_SOUND_TOGGLE_EVENT = 'jericho:interface-sound-toggle';
-
-/** localStorage key for the interface-sound mute preference. */
 export const INTERFACE_SOUND_MUTE_KEY = 'jericho.interfaceSound.muted.v1';
-
-/** DOM event mirroring whether Jarvis speech playback is currently active. */
 export const SPEECH_PLAYING_EVENT = 'jericho:speech-playing';
 
-export const INTERFACE_SOUND_CUES = [
-  'retrieve',
-  'summon',
-  'satellite',
-  'lock',
-  'dismiss',
-] as const;
-
+export const INTERFACE_SOUND_CUES = ['retrieve','summon','satellite','lock','dismiss'] as const;
 export type InterfaceSoundCue = (typeof INTERFACE_SOUND_CUES)[number];
 
-export const GROUNDED_RESULT_PHASES = [
-  'retrieving',
-  'resolved',
-  'ambiguous',
-  'unavailable',
-] as const;
-
+export const GROUNDED_RESULT_PHASES = ['retrieving','resolved','ambiguous','unavailable'] as const;
 export type GroundedResultPhase = (typeof GROUNDED_RESULT_PHASES)[number];
 
-export const GROUNDED_RESULT_ROUTES = [
-  'private_knowledge',
-  'core_operational',
-  'general',
-  'clarification',
-] as const;
-
+export const GROUNDED_RESULT_ROUTES = ['private_knowledge','core_operational','general','clarification'] as const;
 export type GroundedResultRoute = (typeof GROUNDED_RESULT_ROUTES)[number];
 
-export const GROUNDED_RESULT_CONFIDENCES = [
-  'strong',
-  'partial',
-  'ambiguous',
-  'none',
-] as const;
-
+export const GROUNDED_RESULT_CONFIDENCES = ['strong','partial','ambiguous','none'] as const;
 export type GroundedResultConfidence = (typeof GROUNDED_RESULT_CONFIDENCES)[number];
 
-/** Allowlisted subject kinds carried by grounded-result envelopes. */
-export const GROUNDED_SUBJECT_KINDS = [
-  'person',
-  'organization',
-  'project',
-  'decision',
-  'note',
-  'query',
-] as const;
+export const MEMORY_ROOT_AUTHORITIES = ['canonical','supplemental'] as const;
+export type MemoryRootAuthority = (typeof MEMORY_ROOT_AUTHORITIES)[number];
 
-export type GroundedSubjectKind = (typeof GROUNDED_SUBJECT_KINDS)[number];
-
-export const GROUNDED_ACTION_IDS = [
-  'open_note',
-  'reorganize_notes',
-  'correct_identity',
-] as const;
-
-export type GroundedActionId = (typeof GROUNDED_ACTION_IDS)[number];
-
-export interface GroundedResultProvenance {
-  relativePath: string;
-  title: string;
-  excerpt: string;
-  score: number;
+export interface GroundedResultProvenanceV2 {
+  sourceId: string; rootId: string; authority: MemoryRootAuthority;
+  relativePath: string; title: string; excerpt: string; score: number;
 }
-
-export interface GroundedResultActions {
-  open_note?: string;
-  reorganize_notes?: boolean;
-  correct_identity?: boolean;
+export interface GroundedResultClaim { id: string; text: string; supportSourceIds: string[]; }
+export interface GroundedResultConflict { id: string; claim: string; reason: string; sourceIds: string[]; }
+export interface GroundedResultActionsV2 {
+  openSourceIds?: string[]; reorganizeSourceIds?: string[]; correctConflictIds?: string[];
 }
-
-/**
- * Bounded grounded-result envelope accepted from the voice bridge WebSocket
- * and re-published as `jericho:grounded-result`.
- */
 export interface GroundedResultPayload {
-  resultId: string;
-  phase: GroundedResultPhase;
-  route: GroundedResultRoute;
-  subject: string;
-  subjectKind?: GroundedSubjectKind;
-  confidence: GroundedResultConfidence;
-  canonicalIdentity?: string;
-  fullName?: string;
-  relationship?: string;
-  employment?: string[];
-  provenance: GroundedResultProvenance[];
-  actions: GroundedResultActions;
-  retrievalCount: number;
-  guided?: { test: 'isabella' };
+  schemaVersion: 2; resultId: string; phase: GroundedResultPhase; route: GroundedResultRoute;
+  subject: string; confidence: GroundedResultConfidence;
+  canonicalIdentity?: string; fullName?: string; relationship?: string; employment?: string[];
+  summary?: string; claims?: GroundedResultClaim[]; conflicts?: GroundedResultConflict[];
+  indexRevision?: string;
+  provenance: GroundedResultProvenanceV2[]; actions: GroundedResultActionsV2;
+  retrievalCount: number; guided?: { test: 'isabella' };
 }
+export interface InterfaceSoundDetail { resultId: string; cue: InterfaceSoundCue; }
+export interface GroundedParseError { field: string; message: string; value: unknown; }
 
-export interface InterfaceSoundDetail {
-  resultId: string;
-  cue: InterfaceSoundCue;
-}
-
-const MAX_ID = 128;
-const MAX_SUBJECT = 256;
-const MAX_LABEL = 256;
+const MAX_ID = 1_024;
+const MAX_STR = 500;
 const MAX_EXCERPT = 480;
 const MAX_PATH = 1_024;
-const MAX_PROVENANCE = 16;
-const MAX_EMPLOYMENT = 8;
+const MAX_PROVENANCE = 50;
+const MAX_CLAIMS = 50;
+const MAX_CONFLICTS = 50;
+const MAX_ACTION_IDS = 50;
+const MAX_EMPLOYMENT = 10;
+const MAX_EMP_ITEM = 200;
+const MAX_RETRIEVAL = 100;
 
-export function isInterfaceSoundCue(value: unknown): value is InterfaceSoundCue {
-  return typeof value === 'string' && (INTERFACE_SOUND_CUES as readonly string[]).includes(value);
+export function isInterfaceSoundCue(v: unknown): v is InterfaceSoundCue {
+  return typeof v === 'string' && (INTERFACE_SOUND_CUES as readonly string[]).includes(v);
 }
-
-/** True when a vault-relative path is safe to surface in the UI. */
 export function isSafeRelativePath(value: string): boolean {
-  if (!value || value.length > MAX_PATH) return false;
-  if (value.includes('\\') || value.includes('\0')) return false;
-  if (value.startsWith('/') || value.startsWith('~/')) return false;
-  if (/^[a-zA-Z]:/.test(value)) return false;
-  const segments = value.split('/');
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return false;
-  return true;
+  if (!value || value.length > MAX_PATH || value.includes('\\') || value.includes('\0')) return false;
+  if (value.startsWith('/') || value.startsWith('~/') || /^[a-zA-Z]:/.test(value)) return false;
+  return !value.split('/').some((s) => !s || s === '.' || s === '..');
 }
-
-/** Parse and bound an untrusted bridge `grounded_result` message body. */
-export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const msg = raw as Record<string, unknown>;
-  const resultId = exactString(msg.resultId, MAX_ID);
-  const phase = allowlisted(msg.phase, GROUNDED_RESULT_PHASES);
-  const route = allowlisted(msg.route, GROUNDED_RESULT_ROUTES);
-  const subject = clipString(msg.subject, MAX_SUBJECT);
-  const confidence = allowlisted(msg.confidence, GROUNDED_RESULT_CONFIDENCES);
-  if (!resultId || !phase || !route || !subject || !confidence) return null;
-  if (typeof msg.retrievalCount !== 'number'
-    || !Number.isInteger(msg.retrievalCount)
-    || msg.retrievalCount < 0
-    || msg.retrievalCount > 10_000) {
-    return null;
-  }
-
-  const provenance = parseProvenanceList(msg.provenance);
-  if (!provenance) return null;
-  const actions = parseActions(msg.actions);
-  if (!actions) return null;
-
-  const payload: GroundedResultPayload = {
-    resultId,
-    phase,
-    route,
-    subject,
-    confidence,
-    provenance,
-    actions,
-    retrievalCount: msg.retrievalCount,
-  };
-
-  const subjectKind = allowlisted(msg.subjectKind, GROUNDED_SUBJECT_KINDS);
-  if (msg.subjectKind !== undefined && !subjectKind) return null;
-  if (subjectKind) payload.subjectKind = subjectKind;
-
-  const canonicalIdentity = clipString(msg.canonicalIdentity, MAX_LABEL);
-  if (msg.canonicalIdentity !== undefined && !canonicalIdentity) return null;
-  if (canonicalIdentity) payload.canonicalIdentity = canonicalIdentity;
-
-  const fullName = clipString(msg.fullName, MAX_LABEL);
-  if (msg.fullName !== undefined && !fullName) return null;
-  if (fullName) payload.fullName = fullName;
-
-  const relationship = clipString(msg.relationship, MAX_LABEL);
-  if (msg.relationship !== undefined && !relationship) return null;
-  if (relationship) payload.relationship = relationship;
-
-  const employment = parseEmployment(msg.employment);
-  if (msg.employment !== undefined && !employment) return null;
-  if (employment) payload.employment = employment;
-
-  if (msg.guided !== undefined) {
-    if (!msg.guided || typeof msg.guided !== 'object') return null;
-    const guided = msg.guided as Record<string, unknown>;
-    if (guided.test !== 'isabella') return null;
-    payload.guided = { test: 'isabella' };
-  }
-
-  return payload;
-}
-
 export function parseInterfaceSoundDetail(raw: unknown): InterfaceSoundDetail | null {
   if (!raw || typeof raw !== 'object') return null;
-  const detail = raw as Record<string, unknown>;
-  const resultId = exactString(detail.resultId, MAX_ID);
-  if (!resultId || !isInterfaceSoundCue(detail.cue)) return null;
-  return { resultId, cue: detail.cue };
+  const d = raw as Record<string, unknown>;
+  const resultId = exactString(d.resultId, MAX_ID);
+  return resultId && isInterfaceSoundCue(d.cue) ? { resultId, cue: d.cue } : null;
 }
 
-function parseProvenanceList(raw: unknown): GroundedResultProvenance[] | null {
-  if (!Array.isArray(raw)) return null;
-  const items: GroundedResultProvenance[] = [];
-  for (const entry of raw.slice(0, MAX_PROVENANCE)) {
-    if (!entry || typeof entry !== 'object') return null;
-    const value = entry as Record<string, unknown>;
-    const relativePath = exactString(value.relativePath, MAX_PATH);
-    const title = clipString(value.title, MAX_LABEL);
-    const excerpt = clipString(value.excerpt, MAX_EXCERPT);
-    if (!relativePath || !title || !excerpt) return null;
-    if (!isSafeRelativePath(relativePath)) return null;
-    if (typeof value.score !== 'number'
-      || !Number.isFinite(value.score)
-      || value.score < 0
-      || value.score > 1) {
-      return null;
+export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload | null {
+  const r = parseGroundedResult(raw); return r.success ? r.payload : null;
+}
+
+export function parseGroundedResult(raw: unknown): { success: true; payload: GroundedResultPayload } | { success: false; errors: GroundedParseError[] } {
+  const errors: GroundedParseError[] = [];
+  if (!raw || typeof raw !== 'object') return { success: false, errors: [{ field: 'root', message: 'Expected non-null object', value: raw }] };
+  const msg = raw as Record<string, unknown>;
+
+  if (msg.schemaVersion !== 2) errors.push({ field: 'schemaVersion', message: 'Required: 2', value: msg.schemaVersion });
+
+  const ALLOWED = new Set(['schemaVersion','resultId','phase','route','subject','confidence','canonicalIdentity','fullName','relationship','employment','summary','claims','conflicts','indexRevision','provenance','actions','retrievalCount','guided']);
+  for (const k of Object.keys(msg)) { if (!ALLOWED.has(k)) errors.push({ field: k, message: 'Unknown field rejected', value: msg[k] }); }
+
+  const resultId = exactString(msg.resultId, MAX_ID);
+  if (!resultId) errors.push({ field: 'resultId', message: `Non-empty <= ${MAX_ID}`, value: msg.resultId });
+  const phase = allowlisted(msg.phase, GROUNDED_RESULT_PHASES);
+  if (!phase) errors.push({ field: 'phase', message: `One of ${GROUNDED_RESULT_PHASES}`, value: msg.phase });
+  const route = allowlisted(msg.route, GROUNDED_RESULT_ROUTES);
+  if (!route) errors.push({ field: 'route', message: `One of ${GROUNDED_RESULT_ROUTES}`, value: msg.route });
+  // subject: exactString, NOT clipString — rejects over-limit
+  const subject = exactString(msg.subject, MAX_STR);
+  if (!subject) errors.push({ field: 'subject', message: `Non-empty string 1-${MAX_STR}`, value: msg.subject });
+  const confidence = allowlisted(msg.confidence, GROUNDED_RESULT_CONFIDENCES);
+  if (!confidence) errors.push({ field: 'confidence', message: `One of ${GROUNDED_RESULT_CONFIDENCES}`, value: msg.confidence });
+
+  if (typeof msg.retrievalCount !== 'number' || !Number.isInteger(msg.retrievalCount) || msg.retrievalCount < 0 || msg.retrievalCount > MAX_RETRIEVAL)
+    errors.push({ field: 'retrievalCount', message: `Integer 0-${MAX_RETRIEVAL}`, value: msg.retrievalCount });
+
+  // optional strings: exactString rejects over-limit
+  const opt = new Map<string, string>();
+  for (const key of ['canonicalIdentity','fullName','relationship','summary','indexRevision']) {
+    if (key in msg && msg[key] !== undefined) {
+      const v = exactString(msg[key], MAX_STR);
+      if (!v) errors.push({ field: key, message: `Optional string 1-${MAX_STR}`, value: msg[key] });
+      else opt.set(key, v);
     }
-    items.push({
-      relativePath,
-      title,
-      excerpt,
-      score: value.score,
-    });
   }
-  return items;
+
+  // employment: exactString per item
+  let employment: string[] | undefined;
+  if ('employment' in msg && msg.employment !== undefined) {
+    if (!Array.isArray(msg.employment)) errors.push({ field: 'employment', message: 'Must be array of strings', value: msg.employment });
+    else {
+      const emp = msg.employment as unknown[];
+      if (emp.length > MAX_EMPLOYMENT) errors.push({ field: 'employment', message: `Max ${MAX_EMPLOYMENT} entries`, value: emp.length });
+      else {
+        employment = [];
+        for (const item of emp) {
+          const s = exactString(item, MAX_EMP_ITEM);
+          if (!s) { errors.push({ field: `employment[${employment.length}]`, message: `Non-empty 1-${MAX_EMP_ITEM}`, value: item }); break; }
+          employment.push(s);
+        }
+      }
+    }
+  }
+
+  const claims = parseClaims(msg.claims); if (!claims.success) errors.push(...claims.errors);
+  const conflicts = parseConflicts(msg.conflicts); if (!conflicts.success) errors.push(...conflicts.errors);
+  const provenance = parseProvenanceV2(msg.provenance); if (!provenance.success) errors.push(...provenance.errors);
+  const actions = parseActionsV2(msg.actions); if (!actions.success) errors.push(...actions.errors);
+
+  if (errors.length > 0) return { success: false, errors };
+
+  const p: GroundedResultPayload = {
+    schemaVersion: 2, resultId: resultId!, phase: phase!, route: route!, subject: subject!, confidence: confidence!,
+    provenance: (provenance as { success: true; payload: GroundedResultProvenanceV2[] }).payload,
+    actions: (actions as { success: true; payload: GroundedResultActionsV2 }).payload,
+    retrievalCount: msg.retrievalCount as number,
+  };
+  if (employment) p.employment = employment;
+  for (const [k, v] of opt) (p as unknown as Record<string, unknown>)[k] = v;
+  if (msg.claims !== undefined) p.claims = (claims as { success: true; payload: GroundedResultClaim[] }).payload;
+  if (msg.conflicts !== undefined) p.conflicts = (conflicts as { success: true; payload: GroundedResultConflict[] }).payload;
+
+  if (msg.guided !== undefined) {
+    if (!msg.guided || typeof msg.guided !== 'object') { errors.push({ field: 'guided', message: '{test:"isabella"}', value: msg.guided }); return { success: false, errors }; }
+    const g = msg.guided as Record<string, unknown>;
+    if (g.test !== 'isabella') { errors.push({ field: 'guided.test', message: 'Must be isabella', value: g.test }); return { success: false, errors }; }
+    if (Object.keys(g).some(k => k !== 'test')) { errors.push({ field: 'guided', message: 'Only test allowed', value: g }); return { success: false, errors }; }
+    p.guided = { test: 'isabella' };
+  }
+  return { success: true, payload: p };
 }
 
-function parseActions(raw: unknown): GroundedResultActions | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const value = raw as Record<string, unknown>;
-  for (const key of Object.keys(value)) {
-    if (!(GROUNDED_ACTION_IDS as readonly string[]).includes(key)) return null;
+function parseClaims(raw: unknown): { success: true; payload: GroundedResultClaim[] } | { success: false; errors: GroundedParseError[] } {
+  if (raw === undefined) return { success: true, payload: [] };
+  if (!Array.isArray(raw) || isSparse(raw)) return { success: false, errors: [{ field: 'claims', message: 'Must be dense array', value: raw }] };
+  if (raw.length > MAX_CLAIMS) return { success: false, errors: [{ field: 'claims', message: `Max ${MAX_CLAIMS}`, value: raw.length }] };
+  const errors: GroundedParseError[] = [];
+  const out: GroundedResultClaim[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') { errors.push({ field: `claims[${out.length}]`, message: 'Non-null object', value: entry }); break; }
+    const c = entry as Record<string, unknown>;
+    const id = exactString(c.id, MAX_ID);
+    const text = exactString(c.text, MAX_STR);
+    if (!id) errors.push({ field: `claims[${out.length}].id`, message: 'Required 1-1024', value: c.id });
+    if (!text) errors.push({ field: `claims[${out.length}].text`, message: `Required 1-${MAX_STR}`, value: c.text });
+    const srcRes = parseIdList(c.supportSourceIds, `claims[${out.length}].supportSourceIds`);
+    if (!srcRes.success) errors.push(...srcRes.errors);
+    if (id && text && srcRes.success) out.push({ id, text, supportSourceIds: srcRes.payload });
+    if (errors.length) break;
   }
-  const actions: GroundedResultActions = {};
-  if ('open_note' in value) {
-    const path = exactString(value.open_note, MAX_PATH);
-    if (!path || !isSafeRelativePath(path)) return null;
-    actions.open_note = path;
-  }
-  if ('reorganize_notes' in value) {
-    if (typeof value.reorganize_notes !== 'boolean') return null;
-    actions.reorganize_notes = value.reorganize_notes;
-  }
-  if ('correct_identity' in value) {
-    if (typeof value.correct_identity !== 'boolean') return null;
-    actions.correct_identity = value.correct_identity;
-  }
-  return actions;
+  return errors.length > 0 ? { success: false, errors } : { success: true, payload: out };
 }
 
-function parseEmployment(raw: unknown): string[] | null {
-  if (raw === undefined) return null;
-  if (!Array.isArray(raw)) return null;
-  const items: string[] = [];
-  for (const entry of raw.slice(0, MAX_EMPLOYMENT)) {
-    const value = clipString(entry, MAX_LABEL);
-    if (!value) return null;
-    items.push(value);
+function parseConflicts(raw: unknown): { success: true; payload: GroundedResultConflict[] } | { success: false; errors: GroundedParseError[] } {
+  if (raw === undefined) return { success: true, payload: [] };
+  if (!Array.isArray(raw) || isSparse(raw)) return { success: false, errors: [{ field: 'conflicts', message: 'Must be dense array', value: raw }] };
+  if (raw.length > MAX_CONFLICTS) return { success: false, errors: [{ field: 'conflicts', message: `Max ${MAX_CONFLICTS}`, value: raw.length }] };
+  const errors: GroundedParseError[] = [];
+  const out: GroundedResultConflict[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') { errors.push({ field: `conflicts[${out.length}]`, message: 'Non-null object', value: entry }); break; }
+    const c = entry as Record<string, unknown>;
+    const id = exactString(c.id, MAX_ID);
+    const claim = exactString(c.claim, MAX_STR);
+    const reason = exactString(c.reason, MAX_STR);
+    if (!id) errors.push({ field: `conflicts[${out.length}].id`, message: 'Required 1-1024', value: c.id });
+    if (!claim) errors.push({ field: `conflicts[${out.length}].claim`, message: `Required 1-${MAX_STR}`, value: c.claim });
+    if (!reason) errors.push({ field: `conflicts[${out.length}].reason`, message: `Required 1-${MAX_STR}`, value: c.reason });
+    const srcRes = parseIdList(c.sourceIds, `conflicts[${out.length}].sourceIds`);
+    if (!srcRes.success) errors.push(...srcRes.errors);
+    if (id && claim && reason && srcRes.success) out.push({ id, claim, reason, sourceIds: srcRes.payload });
+    if (errors.length) break;
   }
-  return items;
+  return errors.length > 0 ? { success: false, errors } : { success: true, payload: out };
 }
 
-function allowlisted<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
-  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
-    ? value as T
-    : undefined;
+function parseProvenanceV2(raw: unknown): { success: true; payload: GroundedResultProvenanceV2[] } | { success: false; errors: GroundedParseError[] } {
+  if (!Array.isArray(raw) || isSparse(raw)) return { success: false, errors: [{ field: 'provenance', message: 'Must be dense array', value: raw }] };
+  if (raw.length > MAX_PROVENANCE) return { success: false, errors: [{ field: 'provenance', message: `Max ${MAX_PROVENANCE}`, value: raw.length }] };
+  const errors: GroundedParseError[] = [];
+  const out: GroundedResultProvenanceV2[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') { errors.push({ field: `prov[${out.length}]`, message: 'Non-null object', value: entry }); break; }
+    const v = entry as Record<string, unknown>;
+    const sourceId = exactString(v.sourceId, MAX_ID);
+    const rootId = exactString(v.rootId, MAX_ID);
+    const authority = allowlisted(v.authority, MEMORY_ROOT_AUTHORITIES);
+    const relativePath = exactString(v.relativePath, MAX_PATH);
+    const title = exactString(v.title, MAX_STR);
+    const excerpt = exactString(v.excerpt, MAX_EXCERPT);
+    if (!sourceId) errors.push({ field: `prov[${out.length}].sourceId`, message: 'Required', value: v.sourceId });
+    if (!rootId) errors.push({ field: `prov[${out.length}].rootId`, message: 'Required', value: v.rootId });
+    if (!authority) errors.push({ field: `prov[${out.length}].authority`, message: 'canonical|supplemental', value: v.authority });
+    if (!relativePath) errors.push({ field: `prov[${out.length}].relativePath`, message: 'Required safe path', value: v.relativePath });
+    else if (!isSafeRelativePath(relativePath)) errors.push({ field: `prov[${out.length}].relativePath`, message: 'Unsafe', value: relativePath });
+    if (!title) errors.push({ field: `prov[${out.length}].title`, message: `Required 1-${MAX_STR}`, value: v.title });
+    if (!excerpt) errors.push({ field: `prov[${out.length}].excerpt`, message: `Required 1-${MAX_EXCERPT}`, value: v.excerpt });
+    if (typeof v.score !== 'number' || !Number.isFinite(v.score) || v.score < 0 || v.score > 1)
+      errors.push({ field: `prov[${out.length}].score`, message: '0-1', value: v.score });
+    if (errors.length) break;
+    out.push({ sourceId: sourceId!, rootId: rootId!, authority: authority as MemoryRootAuthority, relativePath: relativePath!, title: title!, excerpt: excerpt!, score: v.score as number });
+  }
+  return errors.length > 0 ? { success: false, errors } : { success: true, payload: out };
 }
 
-/** Opaque IDs and paths: reject when overlength instead of truncating. */
-function exactString(value: unknown, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > max) return undefined;
-  return trimmed;
+function parseActionsV2(raw: unknown): { success: true; payload: GroundedResultActionsV2 } | { success: false; errors: GroundedParseError[] } {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { success: false, errors: [{ field: 'actions', message: 'Non-null non-array object', value: raw }] };
+  const v = raw as Record<string, unknown>;
+  const errors: GroundedParseError[] = [];
+  const ak = new Set(['openSourceIds','reorganizeSourceIds','correctConflictIds']);
+  for (const k of Object.keys(v)) { if (!ak.has(k)) errors.push({ field: `actions.${k}`, message: 'Unknown', value: k }); }
+  if (errors.length > 0) return { success: false, errors };
+  const a: GroundedResultActionsV2 = {};
+  for (const key of ['openSourceIds','reorganizeSourceIds','correctConflictIds'] as const) {
+    if (v[key] !== undefined) {
+      const r = parseIdList(v[key], `actions.${key}`);
+      if (!r.success) errors.push(...r.errors);
+      else if (r.payload.length > 0) (a as Record<string, string[]>)[key] = r.payload;
+    }
+  }
+  return errors.length > 0 ? { success: false, errors } : { success: true, payload: a };
 }
 
-/** Human-facing labels may be clipped pending the shared contract. */
-function clipString(value: unknown, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
+function parseIdList(raw: unknown, field: string): { success: true; payload: string[] } | { success: false; errors: GroundedParseError[] } {
+  if (raw === undefined) return { success: true, payload: [] };
+  if (!Array.isArray(raw) || isSparse(raw)) return { success: false, errors: [{ field, message: 'Must be dense array', value: raw }] };
+  if (raw.length > MAX_ACTION_IDS) return { success: false, errors: [{ field, message: `Max ${MAX_ACTION_IDS}`, value: raw.length }] };
+  const errors: GroundedParseError[] = [];
+  const out: string[] = [];
+  for (const e of raw) {
+    const s = exactString(e, MAX_ID);
+    if (!s) { errors.push({ field: `${field}[${out.length}]`, message: `Non-empty 1-${MAX_ID}`, value: e }); break; }
+    out.push(s);
+  }
+  return errors.length > 0 ? { success: false, errors } : { success: true, payload: out };
 }
+
+function allowlisted<T extends string>(v: unknown, allowed: readonly T[]): T | undefined {
+  return typeof v === 'string' && (allowed as readonly string[]).includes(v) ? v as T : undefined;
+}
+function exactString(v: unknown, max: number): string | undefined {
+  if (typeof v !== 'string') return undefined;
+  const t = v.trim();
+  return t && t.length <= max ? t : undefined;
+}
+function isSparse(arr: unknown[]): boolean { return Object.keys(arr).length !== arr.length; }

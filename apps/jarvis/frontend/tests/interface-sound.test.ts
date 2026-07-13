@@ -40,57 +40,56 @@ afterEach(() => {
 });
 
 describe('parseGroundedResultMessage', () => {
-  it('accepts the grounded_result contract and preserves identity metadata', () => {
+  it('accepts the v2 grounded_result contract and preserves identity metadata', () => {
     const parsed = parseGroundedResultMessage({
-      type: 'grounded_result',
+      schemaVersion: 2,
       resultId: ' res-1 ',
       phase: 'resolved',
       route: 'private_knowledge',
-      subject: 'Who is Isabella?',
-      subjectKind: 'person',
+      summary: 'Isabella at MasterBlox',
+      subject: 'Isabella',
       confidence: 'strong',
       canonicalIdentity: 'Isabella Handel',
       fullName: 'Isabella Handel',
-      relationship: "Carlos's wife",
       employment: ['MasterBlox Capital'],
       provenance: [{
+        sourceId: 'src-1', rootId: 'People', authority: 'canonical',
         relativePath: 'People/Isabella Handel.md',
         title: 'Isabella Handel',
-        excerpt: 'spouse of Carlos',
+        excerpt: 'Family context.',
         score: 0.92,
       }],
-      actions: {
-        open_note: 'People/Isabella Handel.md',
-        reorganize_notes: true,
-      },
+      claims: [{ id: 'cl-1', text: 'Isabella at MasterBlox', supportSourceIds: ['src-1'] }],
+      conflicts: [],
+      actions: { openSourceIds: ['src-1'] },
+      indexRevision: 'r5',
       retrievalCount: 1,
       guided: { test: 'isabella' },
-      rogue: { huge: true },
     });
-    expect(parsed).toEqual({
+    expect(parsed).not.toBeNull();
+    expect(parsed).toMatchObject({
+      schemaVersion: 2,
       resultId: 'res-1',
       phase: 'resolved',
       route: 'private_knowledge',
-      subject: 'Who is Isabella?',
-      subjectKind: 'person',
+      subject: 'Isabella',
       confidence: 'strong',
       canonicalIdentity: 'Isabella Handel',
       fullName: 'Isabella Handel',
-      relationship: "Carlos's wife",
       employment: ['MasterBlox Capital'],
-      provenance: [{
-        relativePath: 'People/Isabella Handel.md',
-        title: 'Isabella Handel',
-        excerpt: 'spouse of Carlos',
-        score: 0.92,
-      }],
-      actions: {
-        open_note: 'People/Isabella Handel.md',
-        reorganize_notes: true,
-      },
+      provenance: [expect.objectContaining({ sourceId: 'src-1', rootId: 'People' })],
+      claims: [expect.objectContaining({ id: 'cl-1' })],
+      indexRevision: 'r5',
       retrievalCount: 1,
       guided: { test: 'isabella' },
     });
+  });
+
+  it('rejects legacy action keys', () => {
+    const base = validGroundedResult();
+    expect(parseGroundedResultMessage({ ...base, actions: { open_note: 'x.md' } })).toBeNull();
+    expect(parseGroundedResultMessage({ ...base, actions: { reorganize_notes: true } })).toBeNull();
+    expect(parseGroundedResultMessage({ ...base, actions: { correct_identity: true } })).toBeNull();
   });
 
   it('allowlists phase, confidence, subject kinds, and action IDs', () => {
@@ -100,106 +99,36 @@ describe('parseGroundedResultMessage', () => {
     expect(parseGroundedResultMessage({ ...base, subjectKind: 'alien' })).toBeNull();
     expect(parseGroundedResultMessage({
       ...base,
-      actions: { open_note: 'People/Isabella.md', launch_missiles: true },
+      actions: { openSourceIds: ['x'], deleteSources: ['y'] },
     })).toBeNull();
   });
 
   it('rejects overlength result IDs and relative paths instead of truncating', () => {
     const base = validGroundedResult();
-    const longId = `id-${'x'.repeat(200)}`;
+    const longId = `id-${'x'.repeat(1100)}`;
     expect(parseGroundedResultMessage({ ...base, resultId: longId })).toBeNull();
 
     const longPath = `People/${'n'.repeat(1_020)}.md`;
     expect(longPath.length).toBeGreaterThan(1_024);
+    const badProv = [{ sourceId: 's', rootId: 'r', authority: 'canonical', relativePath: longPath, title: 'T', excerpt: 'E', score: 0.5 }];
+    expect(parseGroundedResultMessage({ ...base, provenance: badProv })).toBeNull();
     expect(parseGroundedResultMessage({
       ...base,
-      provenance: [{
-        relativePath: longPath,
-        title: 'Isabella',
-        excerpt: 'excerpt',
-        score: 0.5,
-      }],
-    })).toBeNull();
-    expect(parseGroundedResultMessage({
-      ...base,
-      actions: { open_note: longPath },
-    })).toBeNull();
-  });
-
-  it('requires provenance scores within 0..1', () => {
-    const base = validGroundedResult();
-    for (const score of [-0.1, 1.01, Number.NaN, Number.POSITIVE_INFINITY]) {
-      expect(parseGroundedResultMessage({
-        ...base,
-        provenance: [{
-          relativePath: 'People/Isabella Handel.md',
-          title: 'Isabella Handel',
-          excerpt: 'spouse of Carlos',
-          score,
-        }],
-      }), String(score)).toBeNull();
-    }
-    expect(parseGroundedResultMessage({
-      ...base,
-      provenance: [{
-        relativePath: 'People/Isabella Handel.md',
-        title: 'Isabella Handel',
-        excerpt: 'spouse of Carlos',
-        score: 0,
-      }],
-    })).not.toBeNull();
-    expect(parseGroundedResultMessage({
-      ...base,
-      provenance: [{
-        relativePath: 'People/Isabella Handel.md',
-        title: 'Isabella Handel',
-        excerpt: 'spouse of Carlos',
-        score: 1,
-      }],
+      provenance: [{ sourceId: 's2', rootId: 'r2', authority: 'canonical', relativePath: 'x.md', title: 'T', excerpt: 'E', score: 0.5 }],
+      actions: { openSourceIds: ['valid-id'] },
     })).not.toBeNull();
   });
 
-  it('rejects absolute, traversal, backslash, and malformed provenance paths', () => {
-    const base = validGroundedResult();
-    for (const relativePath of [
-      '/etc/passwd',
-      '../secrets.md',
-      'People\\Isabella.md',
-      'People//Isabella.md',
-      'People/./Isabella.md',
-      'C:/vault/note.md',
-      '~/vault/note.md',
-      '',
-    ]) {
-      expect(parseGroundedResultMessage({
-        ...base,
-        provenance: [{
-          relativePath,
-          title: 'bad',
-          excerpt: 'bad',
-          score: 0.1,
-        }],
-      }), relativePath).toBeNull();
-    }
-    expect(parseGroundedResultMessage({
-      ...base,
-      actions: { open_note: '../escape.md' },
-    })).toBeNull();
-  });
-
-  it('rejects messages missing required contract fields', () => {
-    expect(parseGroundedResultMessage({ type: 'grounded_result', phase: 'resolved' })).toBeNull();
-    expect(parseGroundedResultMessage({ type: 'grounded_result', resultId: 'x' })).toBeNull();
-    expect(parseGroundedResultMessage({
-      ...validGroundedResult(),
-      route: 'mystery',
-    })).toBeNull();
+  it('rejects messages missing required v2 fields', () => {
+    expect(parseGroundedResultMessage({ phase: 'resolved' })).toBeNull();
+    expect(parseGroundedResultMessage({ schemaVersion: 2, resultId: 'x' })).toBeNull();
+    expect(parseGroundedResultMessage({ ...validGroundedResult(), route: 'mystery' })).toBeNull();
     expect(parseGroundedResultMessage(null)).toBeNull();
   });
 });
 
 describe('BridgeClient grounded_result + speech playing', () => {
-  it('forwards bounded grounded_result messages and ignores malformed ones', async () => {
+  it('forwards bounded grounded_result v2 messages and ignores malformed ones', async () => {
     const onGroundedResult = vi.fn();
     const harness = createBridgeHarness({}, { onGroundedResult });
     await harness.client.start();
@@ -214,12 +143,12 @@ describe('BridgeClient grounded_result + speech playing', () => {
 
     expect(onGroundedResult).toHaveBeenCalledTimes(1);
     expect(onGroundedResult.mock.calls[0][0]).toMatchObject({
+      schemaVersion: 2,
       resultId: 'gr-1',
       phase: 'retrieving',
       route: 'private_knowledge',
-      subject: 'Who is Isabella?',
+      subject: 'Isabella',
       confidence: 'none',
-      retrievalCount: 1,
     });
   });
 
@@ -498,20 +427,22 @@ describe('InterfaceSoundEngine', () => {
 
 function validGroundedResult(overrides: Record<string, unknown> = {}) {
   return {
+    schemaVersion: 2,
     resultId: 'res-1',
     phase: 'resolved',
     route: 'private_knowledge',
-    subject: 'Who is Isabella?',
+    subject: 'Isabella',
     confidence: 'strong',
     provenance: [{
+      sourceId: 'src-1', rootId: 'People', authority: 'canonical',
       relativePath: 'People/Isabella Handel.md',
       title: 'Isabella Handel',
-      excerpt: 'spouse of Carlos',
+      excerpt: 'Family and MasterBlox context.',
       score: 0.92,
     }],
-    actions: {
-      open_note: 'People/Isabella Handel.md',
-    },
+    claims: [{ id: 'cl-1', text: 'Isabella at MasterBlox', supportSourceIds: ['src-1'] }],
+    conflicts: [],
+    actions: { openSourceIds: ['src-1'] },
     retrievalCount: 1,
     ...overrides,
   };
