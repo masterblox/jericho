@@ -846,13 +846,17 @@ export interface CorrectionPreviewInput {
   entityId: string;
   claimPattern: string;
   sourceProvenance: Provenance[];
-  proposedFromEntityId: string;
-  proposedToEntityId: string;
-  proposedRelationType: RelationType;
+  /** When omitted together with to/type, preview is exclusion-only. */
+  proposedFromEntityId?: string;
+  proposedToEntityId?: string;
+  proposedRelationType?: RelationType;
   canonicalNotePath: string;
   canonicalNoteHash: string;
   obsidianFieldsToAdd: Record<string, string>;
   obsidianFieldsToRemove: string[];
+  /** Opaque grounded binding for result-bound confirmation. */
+  groundedResultId?: string;
+  groundedConflictId?: string;
 }
 
 export interface CorrectionConfirmInput {
@@ -861,9 +865,10 @@ export interface CorrectionConfirmInput {
   previewVersion: number;
   entityId: string;
   claimPattern: string;
-  fromEntityId: string;
-  toEntityId: string;
-  relationType: RelationType;
+  /** Required only when the stored preview plans relation creation. */
+  fromEntityId?: string;
+  toEntityId?: string;
+  relationType?: RelationType;
   canonicalNoteHash: string;
   canonicalNotePath: string;
   obsidianFieldsToAdd: Record<string, string>;
@@ -1426,11 +1431,16 @@ export class JerichoStore {
     if (!input.canonicalNoteHash || !/^[a-f0-9]{64}$/.test(input.canonicalNoteHash)) {
       throw new Error('Canonical note hash must be a lowercase SHA-256 digest');
     }
-    if (!input.proposedFromEntityId.trim() || !input.proposedToEntityId.trim()) {
-      throw new Error('Proposed relation entities are required');
+    const hasFrom = Boolean(input.proposedFromEntityId?.trim());
+    const hasTo = Boolean(input.proposedToEntityId?.trim());
+    const hasType = input.proposedRelationType !== undefined;
+    if (hasFrom || hasTo || hasType) {
+      if (!hasFrom || !hasTo || !hasType) {
+        throw new Error('Proposed relation entities and type are required together');
+      }
+      if (!this.getEntity(input.proposedFromEntityId!)) throw new Error(`Entity ${input.proposedFromEntityId} does not exist`);
+      if (!this.getEntity(input.proposedToEntityId!)) throw new Error(`Entity ${input.proposedToEntityId} does not exist`);
     }
-    if (!this.getEntity(input.proposedFromEntityId)) throw new Error(`Entity ${input.proposedFromEntityId} does not exist`);
-    if (!this.getEntity(input.proposedToEntityId)) throw new Error(`Entity ${input.proposedToEntityId} does not exist`);
 
     const previewHash = correctionPreviewHash({
       entityId: input.entityId,
@@ -1449,6 +1459,14 @@ export class JerichoStore {
         .digest('hex'),
     };
 
+    const relationsToCreate = hasFrom && hasTo && hasType
+      ? [{
+          fromEntityId: input.proposedFromEntityId!,
+          toEntityId: input.proposedToEntityId!,
+          type: input.proposedRelationType!,
+        }]
+      : [];
+
     const preview: CorrectionPreview = {
       id: `correction-preview-${previewHash.slice(0, 32)}`,
       version: 1,
@@ -1462,11 +1480,7 @@ export class JerichoStore {
       },
       proposedExclusion: exclusion,
       coreEffects: {
-        relationsToCreate: [{
-          fromEntityId: input.proposedFromEntityId,
-          toEntityId: input.proposedToEntityId,
-          type: input.proposedRelationType,
-        }],
+        relationsToCreate,
         relationsToRemove: [],
         exclusionsToApply: [exclusion],
       },
@@ -1491,6 +1505,10 @@ export class JerichoStore {
       'identity_exclusions', String(row.id), row,
       (value) => assertIdentityExclusion(value), (value) => value.id,
     ));
+  }
+
+  getCorrectionPreview(previewId: string): { preview: CorrectionPreview; input: CorrectionPreviewInput } | undefined {
+    return this.#retrieveCorrectionPreview(previewId);
   }
 
   confirmCorrection(input: CorrectionConfirmInput): CorrectionConfirmResult {
@@ -1582,31 +1600,55 @@ export class JerichoStore {
       const relationsCreated: string[] = [];
       const exclusionsApplied: string[] = [];
 
-      const fromEntity = this.getEntity(input.fromEntityId);
-      const toEntity = this.getEntity(input.toEntityId);
-      if (fromEntity && toEntity) {
-        for (const [from, to] of [[fromEntity.id, toEntity.id], [toEntity.id, fromEntity.id]] as const) {
-          const existing = this.listRelations({ fromEntityId: from, toEntityId: to, type: RelationType.SpouseOf })[0];
-          if (!existing) {
-            const spouseId = `relation-spouse-${correctionId.slice(0, 40)}-${from.slice(0, 8)}-${to.slice(0, 8)}`;
-            const spouseRelation: Relation = {
-              id: spouseId,
-              fromEntityId: from,
-              toEntityId: to,
-              type: RelationType.SpouseOf,
-              attributes: { verified: true, correctionId },
-              status: LifecycleStatus.Active,
-              risk: RiskLevel.Low,
-              confidence: 1,
-              freshness: { observedAt: completedAt },
-              provenance: correction.provenance,
-              createdAt: completedAt,
-              updatedAt: completedAt,
-            };
-            this.#writeRelationRecord(spouseRelation, false);
-            relationsCreated.push(spouseId);
+      const plannedRelations = storedPreview.preview.coreEffects.relationsToCreate;
+      if (plannedRelations.length > 0) {
+        for (const planned of plannedRelations) {
+          if (
+            input.fromEntityId && input.toEntityId && input.relationType
+            && (
+              input.fromEntityId !== planned.fromEntityId
+              || input.toEntityId !== planned.toEntityId
+              || input.relationType !== planned.type
+            )
+          ) {
+            throw new CorrectionDecisionConflictError(correctionId, 'relation binding does not match the exact preview');
+          }
+          const fromEntity = this.getEntity(planned.fromEntityId);
+          const toEntity = this.getEntity(planned.toEntityId);
+          if (!fromEntity || !toEntity) {
+            throw new CorrectionDecisionConflictError(correctionId, 'relation entities are unavailable');
+          }
+          // Symmetric spouse_of (and same-type mirrors) when the preview plans a relation.
+          const pairs: Array<readonly [string, string]> = planned.type === RelationType.SpouseOf
+            ? [[fromEntity.id, toEntity.id], [toEntity.id, fromEntity.id]]
+            : [[fromEntity.id, toEntity.id]];
+          for (const [from, to] of pairs) {
+            const existing = this.listRelations({ fromEntityId: from, toEntityId: to, type: planned.type })[0];
+            if (!existing) {
+              const relationId = planned.type === RelationType.SpouseOf
+                ? `relation-spouse-${correctionId.slice(0, 40)}-${from.slice(0, 8)}-${to.slice(0, 8)}`
+                : `relation-${planned.type}-${correctionId.slice(0, 40)}-${from.slice(0, 8)}-${to.slice(0, 8)}`;
+              const relation: Relation = {
+                id: relationId,
+                fromEntityId: from,
+                toEntityId: to,
+                type: planned.type,
+                attributes: { verified: true, correctionId },
+                status: LifecycleStatus.Active,
+                risk: RiskLevel.Low,
+                confidence: 1,
+                freshness: { observedAt: completedAt },
+                provenance: correction.provenance,
+                createdAt: completedAt,
+                updatedAt: completedAt,
+              };
+              this.#writeRelationRecord(relation, false);
+              relationsCreated.push(relationId);
+            }
           }
         }
+      } else if (input.fromEntityId || input.toEntityId || input.relationType) {
+        throw new CorrectionDecisionConflictError(correctionId, 'exclusion-only preview cannot create relations');
       }
 
       const exclusionId = `identity-exclusion-${correctionId.slice(0, 56)}`;

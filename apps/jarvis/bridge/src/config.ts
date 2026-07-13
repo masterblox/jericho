@@ -1,10 +1,11 @@
 import dotenv from 'dotenv';
 import { randomBytes } from 'node:crypto';
+import { existsSync, lstatSync, realpathSync } from 'node:fs';
 import { userInfo } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MutationClass, type RepositoryGrant } from '@jericho/shared';
+import { MutationClass, type MemoryRootAuthority, type RepositoryGrant } from '@jericho/shared';
 
 import type { PersonaMode } from './personas.js';
 import { readKeychainSecret, writeKeychainSecret } from './platform/keychain.js';
@@ -39,6 +40,7 @@ export interface JerichoConfig {
   githubRepositories: string[];
   conductorRoots: NamedPath[];
   obsidianVaultPath?: string;
+  memoryRoots: MemoryRootConfig[];
   vaultGatewayUrl?: string;
   vaultGatewayToken?: string;
   vaultGatewayTimeoutMs: number;
@@ -63,6 +65,12 @@ export interface JerichoConfig {
 export interface NamedPath {
   id: string;
   path: string;
+}
+
+export interface MemoryRootConfig {
+  id: string;
+  path: string;
+  authority: MemoryRootAuthority;
 }
 
 export interface ApiTokenOptions {
@@ -208,7 +216,13 @@ export function loadConfig(
       environment.JERICHO_CONDUCTOR_ROOTS,
       'JERICHO_CONDUCTOR_ROOTS',
     ),
-    obsidianVaultPath: optionalString(environment.JERICHO_OBSIDIAN_VAULT),
+    ...(() => {
+      const memory = resolveMemoryRoots(environment);
+      return {
+        memoryRoots: memory.roots,
+        ...(memory.obsidianVaultPath ? { obsidianVaultPath: memory.obsidianVaultPath } : {}),
+      };
+    })(),
     ...(vaultGatewayUrl ? { vaultGatewayUrl } : {}),
     ...(vaultGatewayToken ? { vaultGatewayToken } : {}),
     vaultGatewayTimeoutMs: parsePositiveInteger(
@@ -362,6 +376,100 @@ function parseNamedPaths(value: string | undefined, variable: string): NamedPath
     throw new Error(`${variable} contains duplicate ids`);
   }
   return paths;
+}
+
+function resolveMemoryRoots(
+  environment: Record<string, string | undefined>,
+): { roots: MemoryRootConfig[]; obsidianVaultPath?: string } {
+  const memoryRootsRaw = optionalString(environment.JERICHO_MEMORY_ROOTS);
+  const obsidianVault = optionalString(environment.JERICHO_OBSIDIAN_VAULT);
+  if (memoryRootsRaw && obsidianVault) {
+    throw new Error('JERICHO_MEMORY_ROOTS and JERICHO_OBSIDIAN_VAULT cannot both be configured');
+  }
+  if (!memoryRootsRaw) {
+    if (!obsidianVault) return { roots: [] };
+    const root = validateMemoryRoot({
+      id: 'obsidian',
+      path: obsidianVault,
+      authority: 'canonical',
+    }, 'JERICHO_OBSIDIAN_VAULT');
+    return { roots: [root], obsidianVaultPath: root.path };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(memoryRootsRaw);
+  } catch {
+    throw new Error('JERICHO_MEMORY_ROOTS must be a JSON array of {id,path,authority} objects');
+  }
+  if (!Array.isArray(parsed) || parsed.length < 1) {
+    throw new Error('JERICHO_MEMORY_ROOTS must be a non-empty JSON array');
+  }
+  const roots = parsed.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('JERICHO_MEMORY_ROOTS must be a JSON array of {id,path,authority} objects');
+    }
+    const record = item as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id.trim() : '';
+    const configuredPath = typeof record.path === 'string' ? record.path.trim() : '';
+    const authority = record.authority;
+    if (!id || !configuredPath || (authority !== 'canonical' && authority !== 'supplemental')) {
+      throw new Error('JERICHO_MEMORY_ROOTS entries require id, absolute path, and authority');
+    }
+    return validateMemoryRoot({ id, path: configuredPath, authority }, `JERICHO_MEMORY_ROOTS[${index}]`);
+  });
+  if (new Set(roots.map((root) => root.id)).size !== roots.length) {
+    throw new Error('JERICHO_MEMORY_ROOTS contains duplicate ids');
+  }
+  assertNoNestedOrDuplicateRoots(roots);
+  const canonical = roots.find((root) => root.authority === 'canonical');
+  return {
+    roots,
+    ...(canonical ? { obsidianVaultPath: canonical.path } : {}),
+  };
+}
+
+function validateMemoryRoot(
+  root: MemoryRootConfig,
+  label: string,
+): MemoryRootConfig {
+  if (!path.isAbsolute(root.path)) {
+    throw new Error(`${label} path must be absolute`);
+  }
+  if (!existsSync(root.path)) {
+    throw new Error(`${label} path does not exist`);
+  }
+  let realPath: string;
+  try {
+    const stat = lstatSync(root.path);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`${label} path must not be a symlink`);
+    }
+    if (!stat.isDirectory()) {
+      throw new Error(`${label} path must be a directory`);
+    }
+    realPath = realpathSync(root.path);
+  } catch (error) {
+    if (error instanceof Error && /symlink|directory|exist/u.test(error.message)) throw error;
+    throw new Error(`${label} path is unavailable`, { cause: error });
+  }
+  return { id: root.id, path: realPath, authority: root.authority };
+}
+
+function assertNoNestedOrDuplicateRoots(roots: readonly MemoryRootConfig[]): void {
+  const resolved = roots.map((root) => ({ ...root, path: root.path }));
+  for (let index = 0; index < resolved.length; index += 1) {
+    for (let other = index + 1; other < resolved.length; other += 1) {
+      const left = resolved[index]!.path;
+      const right = resolved[other]!.path;
+      if (left === right) {
+        throw new Error('JERICHO_MEMORY_ROOTS contains duplicate paths');
+      }
+      const sep = path.sep;
+      if (left.startsWith(`${right}${sep}`) || right.startsWith(`${left}${sep}`)) {
+        throw new Error('JERICHO_MEMORY_ROOTS must not nest roots inside each other');
+      }
+    }
+  }
 }
 
 function parseRepositoryGrants(value: string | undefined): RepositoryGrant[] {
