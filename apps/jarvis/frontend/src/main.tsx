@@ -7,6 +7,7 @@ import { CoreClient } from './core-client';
 import { EngageGate } from './engage-gate';
 import { GestureTargetRegistry } from './gesture-target-registry';
 import { GestureLab } from './gesture-lab';
+import { startInterfaceSoundEngine } from './interface-sound';
 import { JarvisRuntime } from './jarvis-runtime';
 
 const rootElement = document.getElementById('app');
@@ -15,6 +16,10 @@ if (!rootElement) throw new Error('Jericho root is unavailable');
 const store = new CommandCenterStore();
 const client = new CoreClient(store);
 const gestureTargets = new GestureTargetRegistry(document);
+const interfaceSounds = startInterfaceSoundEngine({
+  eventTarget: document,
+  storage: localStorage,
+});
 
 const gestureLab = new URLSearchParams(window.location.search).get('lab') === 'gestures';
 const SphereShell = lazy(async () => {
@@ -32,3 +37,7 @@ createRoot(rootElement).render(
     </>}
   </StrictMode>,
 );
+
+window.addEventListener('pagehide', () => {
+  interfaceSounds.dispose();
+}, { once: true });

@@ -1,4 +1,10 @@
 import { MicCapture, SpeakerPlayback } from './audio';
+import {
+  parseGroundedResultMessage,
+  type GroundedResultPayload,
+} from './grounded-result';
+
+export type { GroundedResultPayload } from './grounded-result';
 
 export interface BridgeWebSocketPort {
   readyState: number;
@@ -55,6 +61,8 @@ export interface BridgeEvents {
   onGuidedTestResume?: (test: 'isabella', phase?: string) => void;
   onGuidedTestEnd?: (test: 'isabella') => void;
   onGuidedTestPhase?: (detail: { test: 'isabella'; phase: string; evidence?: Record<string, unknown> }) => void;
+  onGroundedResult?: (result: GroundedResultPayload) => void;
+  onSpeechPlaying?: (playing: boolean) => void;
   onStatus?: (status: string) => void;
   onError?: (msg: string) => void;
   onWake?: (source: 'clap' | 'manual') => void;
@@ -76,6 +84,7 @@ export class BridgeClient {
   private turnTimer: ReturnType<typeof setTimeout> | null = null;
   private turnState: VoiceTurnState = 'standby';
   private previewPlaying = false;
+  private speechPlaying = false;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
@@ -133,6 +142,7 @@ export class BridgeClient {
       this.vadTimer = null;
     }
     this.enterStandby({ interrupt: true });
+    this.publishSpeechPlaying(false);
     const socket = this.ws;
     this.ws = null;
     if (socket) {
@@ -196,6 +206,11 @@ export class BridgeClient {
     }
   }
 
+  /** True while Jarvis speech chunks are scheduled or actively playing. */
+  isSpeechPlaying(): boolean {
+    return this.spk.isPlaying();
+  }
+
   /** Manual wake fallback. Clap detection enters through this same local gate. */
   wake(source: 'clap' | 'manual' = 'manual') {
     const socket = this.ws;
@@ -255,10 +270,12 @@ export class BridgeClient {
     if (this.vadTimer) return;
     this.vadTimer = setInterval(() => {
       const rms = this.mic.getRms();
+      this.publishSpeechPlaying(this.spk.isPlaying());
       if (this.turnState === 'active' && this.spk.isPlaying()) {
         if (rms > this.noiseFloor * 3 + 0.012 && Date.now() - this.bargeCooldown > 700) {
           this.bargeCooldown = Date.now();
           this.spk.interrupt();
+          this.publishSpeechPlaying(false);
         }
       } else if (this.mic.live) {
         // learn background noise while nobody is speaking (mic must be live)
@@ -320,6 +337,7 @@ export class BridgeClient {
       case 'voice_switching':
         this.enterStandby({ interrupt: true });
         this.spk.interrupt();
+        this.publishSpeechPlaying(false);
         this.events.onVoiceSwitching?.(msg.voice);
         break;
       case 'voice_failed':
@@ -327,7 +345,10 @@ export class BridgeClient {
         break;
       case 'voice_preview':
         this.previewPlaying = msg.status === 'playing';
-        if (msg.status !== 'playing') this.spk.interrupt();
+        if (msg.status !== 'playing') {
+          this.spk.interrupt();
+          this.publishSpeechPlaying(false);
+        }
         this.events.onVoicePreview?.({
           previewId: msg.previewId,
           voice: msg.voice,
@@ -351,6 +372,7 @@ export class BridgeClient {
       case 'audio':
         if (this.turnState === 'greeting' || this.turnState === 'active' || this.previewPlaying) {
           this.spk.enqueue(msg.data);
+          this.publishSpeechPlaying(true);
         }
         break;
       case 'greeting_started':
@@ -361,10 +383,16 @@ export class BridgeClient {
         break;
       case 'interrupt':
         this.spk.interrupt();
+        this.publishSpeechPlaying(false);
         break;
       case 'turn_complete':
         this.enterStandby();
         break;
+      case 'grounded_result': {
+        const result = parseGroundedResultMessage(msg);
+        if (result) this.events.onGroundedResult?.(result);
+        break;
+      }
       case 'text':
         this.events.onText?.(msg.text);
         break;
@@ -418,9 +446,16 @@ export class BridgeClient {
     }
     this.mic.setMuted(true);
     if (options.interrupt) this.spk.interrupt();
+    if (options.interrupt || !this.spk.isPlaying()) this.publishSpeechPlaying(false);
     if (changed) {
       this.events.onArmed?.(false);
       this.events.onStatus?.('standby');
     }
+  }
+
+  private publishSpeechPlaying(playing: boolean): void {
+    if (this.speechPlaying === playing) return;
+    this.speechPlaying = playing;
+    this.events.onSpeechPlaying?.(playing);
   }
 }

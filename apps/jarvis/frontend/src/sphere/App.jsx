@@ -9,8 +9,6 @@ const VIEW_KEYS = { '1': 'CORE', '2': 'AGENTS', '3': 'TASKS', '4': 'BRAIN' }
 export default function App({ liveData, health, onDirective, onVaultSearch, commandActions }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [commandOpen, setCommandOpen] = React.useState(false)
-  const [guidedTestSession, setGuidedTestSession] = React.useState(0)
-  const [guidedTestActive, setGuidedTestActive] = React.useState(false)
 
   React.useEffect(() => installJerichoApi(), [])
   React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
@@ -25,32 +23,8 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
     document.addEventListener('jericho:context', open)
     return () => document.removeEventListener('jericho:context', open)
   }, [])
-  React.useEffect(() => {
-    const start = event => {
-      if (event.detail?.test !== 'isabella') return
-      setGuidedTestSession(current => current + 1)
-      setGuidedTestActive(true)
-      setCommandOpen(true)
-    }
-    const resume = event => {
-      if (event.detail?.test !== 'isabella') return
-      setGuidedTestActive(true)
-      setCommandOpen(true)
-    }
-    const end = event => {
-      if (event.detail?.test !== 'isabella') return
-      setGuidedTestActive(false)
-      setCommandOpen(false)
-    }
-    document.addEventListener('jericho:guided-test-start', start)
-    document.addEventListener('jericho:guided-test-resume', resume)
-    document.addEventListener('jericho:guided-test-end', end)
-    return () => {
-      document.removeEventListener('jericho:guided-test-start', start)
-      document.removeEventListener('jericho:guided-test-resume', resume)
-      document.removeEventListener('jericho:guided-test-end', end)
-    }
-  }, [])
+  // Guided and natural grounded results render natively in the Scene's
+  // KnowledgeProjection. The command overlay is never opened for them.
 
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
   React.useEffect(() => {
@@ -88,8 +62,9 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
         health={health}
         onVaultSearch={onVaultSearch}
         onOpenCommand={() => setCommandOpen(true)}
+        knowledgeActions={commandActions}
       />
-      <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} guidedTestSession={guidedTestSession} guidedTestActive={guidedTestActive} actions={{
+      <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} actions={{
         ...commandActions,
         dispatchDirective: api.dispatch,
       }} />

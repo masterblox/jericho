@@ -377,6 +377,59 @@ export interface IdentityAwareRetrievalResult {
   retrievalCount: number;
 }
 
+/** Bounded route classification for runtime result grounding. */
+export type KnowledgeRoute =
+  | 'private_knowledge'
+  | 'core_operational'
+  | 'general'
+  | 'clarification';
+
+/** Confidence tier for a grounded identity or knowledge result. */
+export type AnswerConfidence = 'strong' | 'partial' | 'ambiguous' | 'none';
+
+/** Lifecycle phase for a grounded-result WebSocket message. */
+export type GroundedResultPhase = 'retrieving' | 'resolved' | 'ambiguous' | 'unavailable';
+
+/** Bounded provenance entry carried in every grounded result. */
+export interface GroundedResultProvenance {
+  relativePath: string;
+  title: string;
+  excerpt: string;
+  score: number;
+}
+
+/** Actions a frontend may render for a resolved grounded result. */
+export interface GroundedResultAction {
+  open_note?: string;
+  reorganize_notes?: boolean;
+  correct_identity?: boolean;
+}
+
+/**
+ * Unified WebSocket contract emitted as `grounded_result` for both natural
+ * private questions and guided Isabella retrieval.
+ *
+ * The frontend MUST NOT require raw `tool_result` messages to construct
+ * product UI from knowledge-card results.
+ */
+export interface GroundedResultEvent {
+  resultId: string;
+  phase: GroundedResultPhase;
+  route: KnowledgeRoute;
+  subject: string;
+  confidence: AnswerConfidence;
+  canonicalIdentity?: string;
+  fullName?: string;
+  relationship?: string;
+  employment?: string[];
+  provenance: GroundedResultProvenance[];
+  actions: GroundedResultAction;
+  retrievalCount: number;
+  guided?: {
+    test: 'isabella';
+  };
+}
+
 export interface Freshness {
   observedAt: IsoTimestamp;
   validAt?: IsoTimestamp;
@@ -2179,6 +2232,99 @@ export function assertPreferenceChange(value: unknown): asserts value is Prefere
   assertProvenanceList(value.provenance, 'Preference change provenance');
   assertOptionalIntegrityHash(value, 'Preference change integrityHash');
   assertJsonOnly(value, 'Preference change');
+}
+
+export function assertGroundedResultEvent(value: unknown): asserts value is GroundedResultEvent {
+  assertRecord(value, 'GroundedResultEvent');
+  const allowed = new Set([
+    'resultId', 'phase', 'route', 'subject', 'confidence',
+    'canonicalIdentity', 'fullName', 'relationship', 'employment',
+    'provenance', 'actions', 'retrievalCount', 'guided',
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new TypeError(`GroundedResultEvent: unknown field "${key}"`);
+  }
+  assertNonEmptyString(value.resultId, 'resultId');
+  if ((value.resultId as string).length > 1_024) throw new TypeError('resultId exceeds 1024 chars');
+  const validPhases = new Set(['retrieving', 'resolved', 'ambiguous', 'unavailable']);
+  if (!validPhases.has(String(value.phase))) throw new TypeError('GroundedResultEvent phase is invalid');
+  const validRoutes = new Set(['private_knowledge', 'core_operational', 'general', 'clarification']);
+  if (!validRoutes.has(String(value.route))) throw new TypeError('GroundedResultEvent route is invalid');
+  if (typeof value.subject !== 'string' || !value.subject.trim() || value.subject.length > 500) {
+    throw new TypeError('GroundedResultEvent subject must be 1..500 chars');
+  }
+  const validConfidences = new Set(['strong', 'partial', 'ambiguous', 'none']);
+  if (!validConfidences.has(String(value.confidence))) throw new TypeError('GroundedResultEvent confidence is invalid');
+  for (const key of ['canonicalIdentity', 'fullName', 'relationship']) {
+    if (key in value && value[key] !== undefined) {
+      assertNonEmptyString(value[key], key);
+      if ((value[key] as string).length > 500) throw new TypeError(`GroundedResultEvent ${key} exceeds 500 chars`);
+    }
+  }
+  if (Array.isArray(value.employment)) {
+    if (value.employment.length > 10) throw new TypeError('GroundedResultEvent employment exceeds 10 entries');
+    value.employment.forEach((item: unknown, index: number) => {
+      assertNonEmptyString(item, `employment[${index}]`);
+      if ((item as string).length > 200) throw new TypeError(`employment[${index}] exceeds 200 chars`);
+    });
+  } else if ('employment' in value) {
+    throw new TypeError('GroundedResultEvent employment must be an array');
+  }
+  assertGroundedResultProvenanceList(value.provenance, 'provenance');
+  assertRecord(value.actions, 'actions');
+  const actionKeys = new Set(['open_note', 'reorganize_notes', 'correct_identity']);
+  for (const key of Object.keys(value.actions)) {
+    if (!actionKeys.has(key)) throw new TypeError(`GroundedResultEvent actions: unknown key "${key}"`);
+  }
+  if (typeof value.actions.open_note === 'string') {
+    assertValidRelativePath(value.actions.open_note, 'actions.open_note');
+  } else if ('open_note' in value.actions) {
+    throw new TypeError('actions.open_note must be a string');
+  }
+  for (const key of ['reorganize_notes', 'correct_identity']) {
+    if (key in value.actions && typeof value.actions[key] !== 'boolean') {
+      throw new TypeError(`actions.${key} must be boolean`);
+    }
+  }
+  if (value.actions.reorganize_notes === true && typeof value.actions.open_note !== 'string') {
+    throw new TypeError('actions.reorganize_notes requires actions.open_note');
+  }
+  if (typeof value.retrievalCount !== 'number' || !Number.isInteger(value.retrievalCount) || value.retrievalCount < 0 || value.retrievalCount > 100) {
+    throw new TypeError('GroundedResultEvent retrievalCount must be 0..100');
+  }
+  if (value.guided !== undefined) {
+    assertRecord(value.guided, 'guided');
+    if (value.guided.test !== 'isabella') throw new TypeError('GroundedResultEvent guided.test must be isabella');
+    for (const k of Object.keys(value.guided)) {
+      if (k !== 'test') throw new TypeError(`guided: unknown field "${k}"`);
+    }
+  }
+}
+
+function assertValidRelativePath(value: string, field: string): void {
+  if (typeof value !== 'string' || !value || value.includes('\0')) throw new TypeError(`${field} is invalid`);
+  if (!/^[\p{L}\p{N}][\p{L}\p{N}'’&_,.;:\-()\[\]\/\s]*$/u.test(value)) throw new TypeError(`${field} contains invalid characters`);
+  if (value.length > 1_024) throw new TypeError(`${field} exceeds 1024 chars`);
+  if (value.startsWith('/') || value.includes('\\') || /^[A-Za-z]:/u.test(value)) throw new TypeError(`${field} must be relative`);
+  if (value.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+    throw new TypeError(`${field} contains invalid path segment`);
+  }
+}
+
+function assertGroundedResultProvenanceList(value: unknown, field: string): asserts value is GroundedResultProvenance[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  value.forEach((item: Record<string, unknown>, index: number) => {
+    assertValidRelativePath(String(item.relativePath ?? ''), `${field}[${index}].relativePath`);
+    assertNonEmptyString(item.title, `${field}[${index}].title`);
+    if ((item.title as string).length > 500) throw new TypeError(`${field}[${index}].title exceeds 500 chars`);
+    if (typeof item.excerpt !== 'string' || item.excerpt.length > 480) throw new TypeError(`${field}[${index}].excerpt must be a string <= 480 chars`);
+    if (typeof item.score !== 'number' || !Number.isFinite(item.score) || item.score < 0 || item.score > 1) {
+      throw new TypeError(`${field}[${index}].score must be 0..1`);
+    }
+  });
 }
 
 export function assertCostRecord(value: unknown): asserts value is CostRecord {

@@ -257,6 +257,8 @@
   animation: summon 180ms ease-out both;
   color: var(--text);
 }
+/* the explicit display: grid above beats the UA [hidden] rule — restate it */
+.sphere-command[hidden] { display: none; }
 .sphere-command > header { grid-column: 1 / -1; display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 18px; padding: 12px 16px; border-bottom: 1px solid var(--stroke); }
 .sphere-command > header strong { font: 600 13px var(--cond); letter-spacing: .2em; color: var(--cyan); }
 .sphere-command > header button { width: 34px; height: 34px; color: var(--muted); font-size: 20px; }
@@ -304,32 +306,105 @@
 .sphere-outcomes article { display: grid; grid-template-columns: auto 1fr auto; gap: 12px; }
 .sphere-outcomes code { color: var(--faint); }
 
-.isabella-test { display: grid; gap: 14px; }
-.isabella-test__progress { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); border: 1px solid var(--stroke-dim); }
-.isabella-test__progress > span { display: grid; grid-template-columns: auto 1fr auto; gap: 7px; align-items: center; padding: 7px 9px; border-right: 1px solid var(--stroke-dim); color: var(--faint); font: 8px var(--mono); letter-spacing: .12em; }
-.isabella-test__progress > span:last-child { border-right: 0; }
-.isabella-test__progress b { color: var(--cyan); font-weight: 500; }
-.isabella-test__progress i { font-style: normal; }
-.isabella-test__progress [data-status="LIVE"] { color: var(--cyan); background: rgba(var(--hud), .05); }
-.isabella-test__progress [data-status="PASS"] i { color: var(--ok); }
-.isabella-test > .jcard, .isabella-test__workspace > .jcard { position: relative; width: auto; padding: 15px; }
-.isabella-test .jcard p { color: var(--muted); line-height: 1.55; }
-.isabella-test__workspace { display: grid; grid-template-columns: minmax(300px, 1.15fr) minmax(240px, .85fr); gap: 14px; }
-.isabella-test__chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
-.isabella-test__chips .chip { margin-left: 0; }
-.isabella-test button { border: 1px solid var(--stroke); padding: 10px 13px; color: var(--cyan); font: 600 9px var(--cond); letter-spacing: .1em; }
-.isabella-test__person[data-gesture-draggable="true"] { cursor: grab; border-color: var(--stroke); }
-.isabella-test__person[data-gesture-draggable="true"]:active { cursor: grabbing; }
-.isabella-test__drop { border-style: dashed; min-height: 220px; }
-.isabella-test__drop::after { content: 'DROP ZONE'; position: absolute; right: 12px; bottom: 10px; color: var(--cyan); font: 8px var(--mono); letter-spacing: .15em; }
-.isabella-test__changes { display: grid; gap: 5px; margin: 12px 0; padding: 0; list-style: none; }
-.isabella-test__changes li { display: grid; grid-template-columns: 1fr auto; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--stroke-dim); }
-.isabella-test__changes strong { color: var(--text); font: 9px var(--cond); letter-spacing: .08em; text-transform: uppercase; }
-.isabella-test__changes span { color: var(--cyan); font: 9px var(--mono); }
-.isabella-test__actions { display: flex; gap: 7px; }
-.isabella-test__actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
-.isabella-test__verdict { color: var(--ok) !important; font: 9px var(--mono); letter-spacing: .1em; }
-.isabella-test__ambiguous { color: var(--faint) !important; font: 9px var(--mono) !important; letter-spacing: .06em; }
+/* =========================================================
+   KNOWLEDGE PROJECTION — grounded results materialize as a
+   constellation around the reactor. No dialog, no backdrop.
+   ========================================================= */
+.knowledge-projection { position: absolute; inset: 0; pointer-events: none; }
+.knowledge-projection .k-card, .knowledge-projection .k-sound-toggle { pointer-events: auto; }
+
+/* retrieving: the sphere alone answers — pulse only, no cards */
+.stage:has(.knowledge-projection[data-phase="retrieving"]) { --halo-gain: 2.4; --bar-floor: .24; }
+.stage:has(.knowledge-projection[data-phase="retrieving"]) .halo { animation-duration: 1.6s; }
+.stage:has(.knowledge-projection[data-phase="retrieving"]) .halo-hot { animation-duration: 1.2s; }
+.stage:has(.knowledge-projection[data-phase="resolved"]) :is(.voice-calibration, .startup-health),
+.stage:has(.knowledge-projection[data-phase="ambiguous"]) :is(.voice-calibration, .startup-health),
+.stage:has(.knowledge-projection[data-phase="unavailable"]) :is(.voice-calibration, .startup-health) { display: none; }
+
+.k-card {
+  position: absolute; left: 50%; top: 50%;
+  width: min(300px, 44vw);
+  touch-action: none;
+  cursor: grab;
+  transform: translate(
+    calc(-50% + var(--kx, 0px) + var(--dx, 0px)),
+    calc(-50% + var(--ky, 0px) + var(--dy, 0px)));
+  animation: k-eject 380ms cubic-bezier(.22, 1, .36, 1) both;
+}
+.k-card:active { cursor: grabbing; }
+.k-card:focus-visible { outline: 1px solid rgba(var(--hud), .6); outline-offset: 3px; }
+.k-card--primary { --kx: -36vmin; --ky: -4vmin; }
+.k-card--provenance { --kx: 34vmin; --ky: -4vmin; }
+.k-card--actions { --kx: 0px; --ky: 30vmin; }
+@keyframes k-eject {
+  from {
+    opacity: 0;
+    transform: translate(
+      calc(-50% + (var(--kx, 0px) + var(--dx, 0px)) * .18),
+      calc(-50% + (var(--ky, 0px) + var(--dy, 0px)) * .18)) scale(.62);
+  }
+}
+.k-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
+.k-chips .chip { margin-left: 0; }
+.k-excerpt { color: var(--muted); line-height: 1.55; font: 12px/1.55 var(--sans); }
+.k-evidence { color: var(--faint); letter-spacing: .1em; }
+.k-provenance, .k-candidates { display: grid; gap: 5px; margin: 6px 0 0; padding: 0; list-style: none; }
+.k-provenance li, .k-candidates li { display: grid; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--stroke-dim); }
+.k-provenance li:last-child, .k-candidates li:last-child { border-bottom: 0; }
+.k-provenance code { color: var(--cyan); overflow-wrap: anywhere; font-size: 9px; }
+.k-provenance span { color: var(--faint); }
+.k-candidates strong { color: var(--text); font: 11px var(--sans); }
+.k-candidates span { color: var(--faint); font: 8px var(--mono); overflow-wrap: anywhere; }
+.k-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
+.k-actions button { border: 1px solid var(--stroke); padding: 10px 13px; color: var(--cyan); font: 600 9px var(--cond); letter-spacing: .1em; }
+.k-actions button:hover, .k-actions button:focus-visible { border-color: var(--cyan); background: rgba(var(--hud), .08); }
+.k-actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
+.k-review { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--stroke-dim); }
+.k-review > p { margin: 0 0 9px; color: var(--muted); font: 11px/1.45 var(--sans); }
+.k-status { color: var(--cyan); letter-spacing: .12em; }
+
+.k-sound-toggle {
+  position: absolute; top: 22px; right: 26px; z-index: 6;
+  border: 1px solid var(--stroke-dim);
+  padding: 7px 11px;
+  color: var(--muted);
+  letter-spacing: .12em;
+  background: rgba(3, 6, 8, .5);
+}
+.k-sound-toggle:hover, .k-sound-toggle:focus-visible { border-color: var(--stroke); color: var(--text); }
+.k-sound-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--stroke); }
+
+/* narrow screens: cards stack below the still-visible sphere */
+@media (max-width: 900px) {
+  .knowledge-projection[data-phase="resolved"],
+  .knowledge-projection[data-phase="ambiguous"],
+  .knowledge-projection[data-phase="unavailable"] {
+    position: absolute; inset: auto auto 16px 50%; top: 58vh;
+    width: min(420px, calc(100vw - 32px));
+    transform: translateX(-50%);
+    display: grid; gap: 12px; align-content: start;
+    overflow-y: auto; pointer-events: auto;
+  }
+  .k-card { position: static; width: auto; transform: none; animation-name: k-fade; }
+}
+
+/* reduced motion: fade/scale in place — no spatial ejection */
+@media (prefers-reduced-motion: reduce) {
+  .k-card { --kx: 0px; --ky: 0px; animation: k-fade 220ms ease-out both; }
+  .knowledge-projection[data-phase="resolved"],
+  .knowledge-projection[data-phase="ambiguous"],
+  .knowledge-projection[data-phase="unavailable"] {
+    position: absolute; inset: auto auto 16px 50%; top: 58vh;
+    width: min(420px, calc(100vw - 32px));
+    transform: translateX(-50%);
+    display: grid; gap: 12px; align-content: start;
+    overflow-y: auto; pointer-events: auto;
+  }
+  .knowledge-projection .k-card { position: static; width: auto; transform: none; }
+  .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo,
+  .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo-hot { animation-duration: 5.2s; }
+}
+@keyframes k-fade { from { opacity: 0; transform: scale(.96); } }
 
 .voice-calibration {
   position: absolute;
