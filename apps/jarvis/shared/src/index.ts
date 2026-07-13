@@ -2245,6 +2245,7 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
     if (!allowed.has(key)) throw new TypeError(`GroundedResultEvent: unknown field "${key}"`);
   }
   assertNonEmptyString(value.resultId, 'resultId');
+  if ((value.resultId as string).length > 1_024) throw new TypeError('resultId exceeds 1024 chars');
   const validPhases = new Set(['retrieving', 'resolved', 'ambiguous', 'unavailable']);
   if (!validPhases.has(String(value.phase))) throw new TypeError('GroundedResultEvent phase is invalid');
   const validRoutes = new Set(['private_knowledge', 'core_operational', 'general', 'clarification']);
@@ -2280,11 +2281,13 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
   } else if ('open_note' in value.actions) {
     throw new TypeError('actions.open_note must be a string');
   }
-  if ('reorganize_notes' in value.actions && value.actions.reorganize_notes === true && typeof value.actions.open_note !== 'string') {
-    throw new TypeError('actions.reorganize_notes requires actions.open_note');
+  for (const key of ['reorganize_notes', 'correct_identity']) {
+    if (key in value.actions && typeof value.actions[key] !== 'boolean') {
+      throw new TypeError(`actions.${key} must be boolean`);
+    }
   }
-  if ('correct_identity' in value.actions && typeof value.actions.correct_identity !== 'boolean') {
-    throw new TypeError('actions.correct_identity must be boolean');
+  if (value.actions.reorganize_notes === true && typeof value.actions.open_note !== 'string') {
+    throw new TypeError('actions.reorganize_notes requires actions.open_note');
   }
   if (typeof value.retrievalCount !== 'number' || !Number.isInteger(value.retrievalCount) || value.retrievalCount < 0 || value.retrievalCount > 100) {
     throw new TypeError('GroundedResultEvent retrievalCount must be 0..100');
@@ -2292,14 +2295,17 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
   if (value.guided !== undefined) {
     assertRecord(value.guided, 'guided');
     if (value.guided.test !== 'isabella') throw new TypeError('GroundedResultEvent guided.test must be isabella');
-    if (Object.keys(value.guided).length !== 1) throw new TypeError('guided must have exactly one key');
+    for (const k of Object.keys(value.guided)) {
+      if (k !== 'test') throw new TypeError(`guided: unknown field "${k}"`);
+    }
   }
 }
 
 function assertValidRelativePath(value: string, field: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9_./\s()-]*$/u.test(value)) throw new TypeError(`${field} contains invalid characters`);
+  if (typeof value !== 'string' || !value || value.includes('\0')) throw new TypeError(`${field} is invalid`);
+  if (!/^[\p{L}\p{N}][\p{L}\p{N}'’&_,.;:\-()\[\]\/\s]*$/u.test(value)) throw new TypeError(`${field} contains invalid characters`);
   if (value.length > 1_024) throw new TypeError(`${field} exceeds 1024 chars`);
-  if (value.startsWith('/') || value.includes('\\')) throw new TypeError(`${field} must be relative`);
+  if (value.startsWith('/') || value.includes('\\') || /^[A-Za-z]:/u.test(value)) throw new TypeError(`${field} must be relative`);
   if (value.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
     throw new TypeError(`${field} contains invalid path segment`);
   }

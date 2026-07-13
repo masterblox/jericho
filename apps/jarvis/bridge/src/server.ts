@@ -23,6 +23,7 @@ import {
   RiskLevel,
   SourceType,
   RouteType,
+  assertGroundedResultEvent,
   type CorrectionConfirmRequest,
   type CorrectionConfirmResponse,
   type CorrectionPreviewRequest,
@@ -35,6 +36,8 @@ import {
   type IdentityReviewDecisionRequest,
   type IdentityReviewDecisionResponse,
   type GuidedTestPhase,
+  type GroundedResultEvent,
+  type GroundedResultPhase,
   type IdentityAwareRetrievalResult,
   type JsonValue,
   type MissionDecisionRequest,
@@ -104,7 +107,6 @@ import {
 import {
   groupIdentityEvidence,
   buildGroundedResultEvent,
-  validateGroundedResultEvent,
 } from './retrieval/identity-aware.js';
 import {
   VOICE_AUDITION_SENTENCE,
@@ -1435,7 +1437,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   let greetingActive = false;
   let greetingPending = false;
   let hasGreeted = false;
-  let captureTurn: { id: string; transcript: string } | undefined;
+  let captureTurn: { id: string; transcript: string; resultId?: string; groundingState: 'idle' | 'retrieving' | 'answering'; groundedAudioSeen: boolean } | undefined;
   let guidedTest: IsabellaGuidedSession | undefined;
   let preview: {
     id: string;
@@ -1444,11 +1446,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     generation: number;
   } | undefined;
   let retrievalInFlight = false;
-  let groundingState: 'idle' | 'retrieving' | 'answering' = 'idle';
-  let groundedAudioSeen = false;
-  let turnResultId: string | undefined;
-  const evidenceCache = new Map<string, { result: Record<string, unknown>; expiresAt: number }>();
-  const EVIDENCE_CACHE_TTL_MS = 30_000;
+  let pendingResultId: string | undefined;
 
   const activeGuidedTest = () => {
     if (isGuidedExpired(guidedTest)) guidedTest = undefined;
@@ -1457,6 +1455,28 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
+  };
+  const turnResultId = (): string | undefined => captureTurn?.resultId;
+  const turnGroundingState = (): 'idle' | 'retrieving' | 'answering' => captureTurn?.groundingState ?? 'idle';
+  const turnGroundedAudioSeen = (): boolean => captureTurn?.groundedAudioSeen ?? false;
+  const startCaptureTurn = () => {
+    captureTurn = { id: randomUUID(), transcript: '', groundingState: 'idle', groundedAudioSeen: false };
+  };
+  const publishGroundedResult = (phase: GroundedResultPhase, extra: Partial<GroundedResultEvent>) => {
+    const rid = pendingResultId ?? turnResultId() ?? randomUUID();
+    const event = {
+      ...extra,
+      resultId: rid,
+      phase,
+      route: 'private_knowledge' as const,
+      subject: extra.subject ?? '',
+      confidence: extra.confidence ?? 'none',
+      provenance: extra.provenance ?? [],
+      actions: extra.actions ?? {} as GroundedResultEvent['actions'],
+      retrievalCount: extra.retrievalCount ?? 0,
+    };
+    assertGroundedResultEvent(event);
+    send({ type: 'grounded_result', ...event as unknown as Record<string, unknown> });
   };
   const publishPhase = (sessionState: IsabellaGuidedSession, extras: Record<string, unknown> = {}) => {
     send({
@@ -1497,18 +1517,12 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const activate = () => {
     active = true;
-    if (captureTurn?.transcript.trim()) {
-      if (!activeGuidedTest()) finalizeCapturedTurn();
-      else {
-        if (transcriptTimer) clearTimeout(transcriptTimer);
-        transcriptTimer = undefined;
-        captureTurn = undefined;
-      }
-    } else {
+    if (captureTurn?.transcript.trim() && !activeGuidedTest()) finalizeCapturedTurn();
+    else {
       if (transcriptTimer) clearTimeout(transcriptTimer);
       transcriptTimer = undefined;
     }
-    captureTurn = { id: randomUUID(), transcript: '' };
+    startCaptureTurn();
     if (activeTimer) clearTimeout(activeTimer);
     send({ type: 'armed', armed: true });
     activeTimer = setTimeout(() => {
@@ -1552,37 +1566,25 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const endGuidedTest = () => {
     if (activeGuidedTest()) send({ type: 'guided_test_end', test: 'isabella' });
+    if (captureTurn?.groundingState === 'retrieving') {
+      publishGroundedResult('unavailable', { subject: 'Isabella', guided: { test: 'isabella' } });
+    }
     guidedTest = undefined;
     retrievalInFlight = false;
-    if (groundingState === 'retrieving') {
-      if (turnResultId) send({ type: 'grounded_result', resultId: turnResultId, phase: 'unavailable', route: 'private_knowledge', subject: 'Isabella', confidence: 'none', provenance: [], actions: {}, retrievalCount: 0, guided: { test: 'isabella' } });
-      groundingState = 'idle';
-      turnResultId = undefined;
-    }
+    captureTurn?.groundingState === 'retrieving' && (captureTurn.groundingState = 'idle');
   };
   const runIsabellaRetrieval = async () => {
     const guided = activeGuidedTest();
     if (!guided || guided.phase !== 'ready' || guided.retrievalCount > 0 || retrievalInFlight) return;
     retrievalInFlight = true;
-    groundingState = 'retrieving';
-    groundedAudioSeen = false;
-    turnResultId = randomUUID();
+    startCaptureTurn();
+    captureTurn!.groundingState = 'retrieving';
+    captureTurn!.resultId = randomUUID();
     advancePhase(guided, 'retrieving');
     guided.retrievalCount = 1;
     refreshGuidedExpiry(guided);
     publishPhase(guided);
-    send({
-      type: 'grounded_result',
-      resultId: turnResultId,
-      phase: 'retrieving',
-      route: 'private_knowledge',
-      subject: 'Isabella',
-      confidence: 'none',
-      provenance: [],
-      actions: {},
-      retrievalCount: 0,
-      guided: { test: 'isabella' },
-    });
+    publishGroundedResult('retrieving', { subject: 'Isabella', guided: { test: 'isabella' } });
     send({ type: 'interrupt' });
     instructGeminiOnce('retrieving');
 
@@ -1619,73 +1621,35 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         name: 'identity_aware_retrieval',
         result: evidence,
       });
-      const grounded = buildGroundedResultEvent(evidence, turnResultId!, 'private_knowledge', { test: 'isabella' });
-      validateGroundedResultEvent(grounded);
-      send({ type: 'grounded_result', ...grounded });
-      cacheEvidence('Isabella', grounded);
+      const grounded = buildGroundedResultEvent(evidence, turnResultId()!, 'private_knowledge', { test: 'isabella' });
+      assertGroundedResultEvent(grounded);
+      send({ type: 'grounded_result', ...grounded as unknown as Record<string, unknown> });
       instructGeminiOnce('presenting', evidence);
-      groundingState = 'answering';
-      groundedAudioSeen = false;
+      if (captureTurn) captureTurn.groundingState = 'answering';
     } catch {
       const still = activeGuidedTest();
       if (!still) return;
       send({ type: 'error', message: 'identity retrieval unavailable' });
       publishPhase(still, { error: 'retrieval_unavailable' });
-      if (turnResultId) {
-        send({ type: 'grounded_result', resultId: turnResultId, phase: 'unavailable', route: 'private_knowledge', subject: 'Isabella', confidence: 'none', provenance: [], actions: {}, retrievalCount: 0, guided: { test: 'isabella' } });
-      }
-      groundingState = 'idle';
+      publishGroundedResult('unavailable', { subject: 'Isabella', guided: { test: 'isabella' } });
+      if (captureTurn) captureTurn.groundingState = 'idle';
     } finally {
       retrievalInFlight = false;
-      if (groundingState !== 'retrieving') turnResultId = undefined;
+      if (captureTurn && captureTurn.groundingState !== 'retrieving') captureTurn.resultId = undefined;
     }
   };
   const beginGrounding = () => {
-    if (groundingState !== 'idle') return;
-    groundingState = 'retrieving';
-    groundedAudioSeen = false;
-    turnResultId = randomUUID();
+    if (!captureTurn || turnGroundingState() !== 'idle') return;
+    captureTurn.groundingState = 'retrieving';
+    captureTurn.groundedAudioSeen = false;
+    pendingResultId = randomUUID();
+    captureTurn.resultId = pendingResultId;
     send({ type: 'interrupt' });
-  };
-  const cacheEvidence = (subject: string, result: unknown) => {
-    const key = normalizeSubject(subject);
-    evidenceCache.set(key, { result: result as Record<string, unknown>, expiresAt: Date.now() + EVIDENCE_CACHE_TTL_MS });
-    pruneEvidenceCache();
-  };
-  const getCacheEvidence = (subject: string): Record<string, unknown> | undefined => {
-    const key = normalizeSubject(subject);
-    const entry = evidenceCache.get(key);
-    if (entry && entry.expiresAt > Date.now()) return entry.result;
-    if (entry) evidenceCache.delete(key);
-    return undefined;
-  };
-  const pruneEvidenceCache = () => {
-    const now = Date.now();
-    for (const [key, entry] of evidenceCache) {
-      if (entry.expiresAt <= now) evidenceCache.delete(key);
-    }
-  };
-  const evidenceForTurn = (transcript: string): Record<string, unknown> | undefined => {
-    const subject = privateIdentitySubject(transcript);
-    if (!subject) return undefined;
-    return getCacheEvidence(subject);
   };
   const runGroundedPrivateRetrieval = async (transcript: string) => {
     beginGrounding();
     const subject = privateIdentitySubject(transcript) ?? transcript.replace(/\s+/gu, ' ').trim();
-    if (turnResultId) {
-      send({
-        type: 'grounded_result',
-        resultId: turnResultId,
-        phase: 'retrieving',
-        route: 'private_knowledge',
-        subject,
-        confidence: 'none',
-        provenance: [],
-        actions: {},
-        retrievalCount: 0,
-      });
-    }
+    publishGroundedResult('retrieving', { subject });
     try {
       const abort = new AbortController();
       const timeout = setTimeout(() => abort.abort(), 15_000);
@@ -1708,14 +1672,15 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       }
 
       const evidence = groupIdentityEvidence(subject, hits, 1);
-      if (!turnResultId) {
-        groundingState = 'idle';
+      const rid = pendingResultId;
+      if (!rid) {
+        if (captureTurn) captureTurn.groundingState = 'idle';
         return;
       }
-      const grounded = buildGroundedResultEvent(evidence, turnResultId, 'private_knowledge');
-      validateGroundedResultEvent(grounded);
-      send({ type: 'grounded_result', ...grounded });
-      cacheEvidence(subject, grounded);
+      const grounded = buildGroundedResultEvent(evidence, rid, 'private_knowledge');
+      assertGroundedResultEvent(grounded);
+      send({ type: 'grounded_result', ...grounded as unknown as Record<string, unknown> });
+      pendingResultId = undefined;
 
       if (session) {
         const available = evidence.resolved !== undefined || evidence.excluded.length > 0;
@@ -1749,24 +1714,11 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
           turnComplete: true,
         });
       }
-      groundingState = 'answering';
-      groundedAudioSeen = false;
+      if (captureTurn) captureTurn.groundingState = 'answering';
     } catch {
-      if (turnResultId) {
-        send({
-          type: 'grounded_result',
-          resultId: turnResultId,
-          phase: 'unavailable',
-          route: 'private_knowledge',
-          subject,
-          confidence: 'none',
-          provenance: [],
-          actions: {},
-          retrievalCount: 0,
-        });
-      }
-      groundingState = 'answering';
-      groundedAudioSeen = false;
+      publishGroundedResult('unavailable', { subject });
+      pendingResultId = undefined;
+      if (captureTurn) captureTurn.groundingState = 'answering';
       session?.sendClientContent({
         turns: [{
           role: 'user',
@@ -1775,7 +1727,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         turnComplete: true,
       });
     } finally {
-      if (groundingState !== 'retrieving') turnResultId = undefined;
+      if (captureTurn && captureTurn.groundingState !== 'retrieving') captureTurn.resultId = undefined;
     }
   };
   const processCapturedTurn = (turn: { id: string; transcript: string }) => {
@@ -1789,7 +1741,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     } else if (/^(?:stop|end|cancel)(?: the)? isabella test[.!?]?$/iu.test(transcript)
       || /^(?:stop|end|cancel) test[.!?]?$/iu.test(transcript)) {
       endGuidedTest();
-    } else if (/^who(?:\s+is|['']s)\s+isabella(?:\s+handel)?[.!?]?$/iu.test(transcript)) {
+    } else if (/^who(?:\s+is|['’]s)\s+isabella(?:\s+handel)?[.!?]?$/iu.test(transcript)) {
       const guided = activeGuidedTest();
       if (guided?.phase === 'ready' && guided.retrievalCount === 0) {
         void runIsabellaRetrieval();
@@ -1797,47 +1749,10 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         refreshGuidedExpiry(guided);
         if (guided.evidence) publishPhase(guided);
       } else {
-        const cached = getCacheEvidence('Isabella');
-        if (cached) {
-          turnResultId = randomUUID();
-          send({
-            type: 'grounded_result',
-            resultId: turnResultId,
-            phase: 'retrieving',
-            route: 'private_knowledge',
-            subject: 'Isabella',
-            confidence: 'none',
-            provenance: [],
-            actions: {},
-            retrievalCount: 0,
-          });
-          send({ type: 'grounded_result', ...cached, resultId: turnResultId });
-          turnResultId = undefined;
-        } else {
-          void runGroundedPrivateRetrieval(transcript);
-        }
-      }
-    } else if (privateIdentityQuestion(transcript)) {
-      const subject = privateIdentitySubject(transcript)!;
-      const cached = getCacheEvidence(subject);
-      if (cached) {
-        turnResultId = randomUUID();
-        send({
-          type: 'grounded_result',
-          resultId: turnResultId,
-          phase: 'retrieving',
-          route: 'private_knowledge',
-          subject,
-          confidence: 'none',
-          provenance: [],
-          actions: {},
-          retrievalCount: 0,
-        });
-        send({ type: 'grounded_result', ...cached, resultId: turnResultId });
-        turnResultId = undefined;
-      } else {
         void runGroundedPrivateRetrieval(transcript);
       }
+    } else if (privateIdentityQuestion(transcript)) {
+      void runGroundedPrivateRetrieval(transcript);
     } else if (activeGuidedTest()) {
       refreshGuidedExpiry(activeGuidedTest()!);
     }
@@ -1870,10 +1785,10 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     if (!isRecord(value)) return;
     if (!captureTurn) {
       if (!active || greetingActive || greetingPending || preview) return;
-      captureTurn = { id: randomUUID(), transcript: '' };
+      startCaptureTurn();
     }
     if (typeof value.text === 'string') {
-      const combined = mergeTranscription(captureTurn.transcript, value.text);
+      const combined = mergeTranscription(captureTurn!.transcript, value.text);
       if (combined.length > 64 * 1024) {
         captureTurn = undefined;
         if (transcriptTimer) clearTimeout(transcriptTimer);
@@ -1881,7 +1796,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
         send({ type: 'error', message: 'spoken capture exceeded the local limit' });
         return;
       }
-      captureTurn.transcript = combined;
+      captureTurn!.transcript = combined;
       if (privateIdentityQuestion(combined)) beginGrounding();
       scheduleCapturedTurn();
     }
@@ -1968,8 +1883,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
           if (message.serverContent?.interrupted) send({ type: 'interrupt' });
           for (const part of message.serverContent?.modelTurn?.parts ?? []) {
             if (part.inlineData?.data) {
-              if (groundingState !== 'retrieving') {
-                if (groundingState === 'answering') groundedAudioSeen = true;
+              if (turnGroundingState() !== 'retrieving') {
+                if (captureTurn && turnGroundingState() === 'answering') captureTurn.groundedAudioSeen = true;
                 send({
                   type: 'audio',
                   mimeType: part.inlineData.mimeType ?? 'audio/pcm;rate=24000',
@@ -1977,8 +1892,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
                 });
               }
             }
-            if (part.text && groundingState !== 'retrieving') {
-              if (groundingState === 'answering') groundedAudioSeen = true;
+            if (part.text && turnGroundingState() !== 'retrieving') {
+              if (captureTurn && turnGroundingState() === 'answering') captureTurn.groundedAudioSeen = true;
               send({ type: 'text', text: part.text });
             }
           }
@@ -2005,14 +1920,13 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
               activeTimer = setTimeout(() => deactivate(), activeTurnMs);
               send({ type: 'greeting_complete' });
               send({ type: 'armed', armed: true });
-            } else if (groundingState === 'retrieving') {
+            } else if (turnGroundingState() === 'retrieving') {
               // The speculative turn was interrupted; wait for the grounded prompt.
-            } else if (groundingState === 'answering' && !groundedAudioSeen) {
+            } else if (turnGroundingState() === 'answering' && !turnGroundedAudioSeen()) {
               // Transcription and interrupted turn completion are unordered.
               // Do not mistake the discarded speculative turn for the grounded answer.
             } else {
-              groundingState = 'idle';
-              groundedAudioSeen = false;
+              if (captureTurn) { captureTurn.groundingState = 'idle'; captureTurn.groundedAudioSeen = false; }
               deactivate(true);
             }
           }
@@ -2725,10 +2639,6 @@ function mergeTranscription(current: string, incoming: string): string {
 
 function privateIdentityQuestion(transcript: string): boolean {
   return privateIdentitySubject(transcript) !== undefined;
-}
-
-function normalizeSubject(subject: string): string {
-  return subject.replace(/\s+/gu, ' ').trim().toLocaleLowerCase();
 }
 
 function privateIdentitySubject(transcript: string): string | undefined {

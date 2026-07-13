@@ -14,12 +14,12 @@ import {
 import {
   groupIdentityEvidence,
   buildGroundedResultEvent,
-  validateGroundedResultEvent,
-  isValidRelativePath,
+  deduceCanonicalFullName,
   type VaultEvidenceHit,
   ISABELLA_IDENTITY,
   type GroupIdentityConfig,
 } from '../src/retrieval/identity-aware.js';
+import { assertGroundedResultEvent } from '@jericho/shared';
 import {
   advancePhase,
   canEnterPhase,
@@ -223,13 +223,13 @@ describe('grounded_result contract', () => {
   });
 });
 
-describe('validateGroundedResultEvent', () => {
+describe('assertGroundedResultEvent', () => {
   it('accepts valid events', () => {
     const result = groupIdentityEvidence('Isabella', [
       { path: 'People/Isabella Handel.md', title: 'Isabella Handel', excerpt: 'Works at MasterBlox.', score: 0.97 },
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
-    expect(() => validateGroundedResultEvent(event)).not.toThrow();
+    expect(() => assertGroundedResultEvent(event)).not.toThrow();
   });
 
   it('rejects malicious absolute paths', () => {
@@ -238,7 +238,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).provenance = [{ relativePath: '/etc/passwd', title: 'x', excerpt: 'x', score: 0.5 }];
-    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/relativePath/);
   });
 
   it('rejects traversal paths', () => {
@@ -247,7 +247,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).provenance = [{ relativePath: '../../../.ssh/id_rsa', title: 'x', excerpt: 'x', score: 0.5 }];
-    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/relativePath/);
   });
 
   it('rejects backslash paths', () => {
@@ -256,7 +256,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People\\ok.md', title: 'x', excerpt: 'x', score: 0.5 }];
-    expect(() => validateGroundedResultEvent(event)).toThrow(/relativePath/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/relativePath/);
   });
 
   it('rejects score out of bounds', () => {
@@ -265,7 +265,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: 1.5 }];
-    expect(() => validateGroundedResultEvent(event)).toThrow(/score/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/score/);
   });
 
   it('rejects negative score', () => {
@@ -274,7 +274,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).provenance = [{ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: -0.1 }];
-    expect(() => validateGroundedResultEvent(event)).toThrow(/score/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/score/);
   });
 
   it('rejects oversized provenance', () => {
@@ -284,7 +284,7 @@ describe('validateGroundedResultEvent', () => {
     const event = buildGroundedResultEvent(result, randomUUID());
     const items = Array.from({ length: 51 }, () => ({ relativePath: 'People/ok.md', title: 'x', excerpt: 'x', score: 0.5 }));
     (event as unknown as Record<string, unknown>).provenance = items;
-    expect(() => validateGroundedResultEvent(event)).toThrow(/provenance/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/provenance/);
   });
 
   it('rejects unknown action keys', () => {
@@ -293,7 +293,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).actions = { open_note: 'People/ok.md', evil_action: true };
-    expect(() => validateGroundedResultEvent(event)).toThrow(/actions/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/actions/);
   });
 
   it('rejects reorganize_notes without open_note', () => {
@@ -302,7 +302,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).actions = { reorganize_notes: true };
-    expect(() => validateGroundedResultEvent(event)).toThrow(/open_note/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/open_note/);
   });
 
   it('rejects oversized subject', () => {
@@ -311,7 +311,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).subject = 'x'.repeat(501);
-    expect(() => validateGroundedResultEvent(event)).toThrow(/subject/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/subject/);
   });
 
   it('validates open_note path', () => {
@@ -320,7 +320,7 @@ describe('validateGroundedResultEvent', () => {
     ], 1);
     const event = buildGroundedResultEvent(result, randomUUID());
     (event as unknown as Record<string, unknown>).actions = { open_note: '/absolute/path.md', reorganize_notes: true };
-    expect(() => validateGroundedResultEvent(event)).toThrow(/open_note/);
+    expect(() => assertGroundedResultEvent(event)).toThrow(/open_note/);
   });
 });
 
