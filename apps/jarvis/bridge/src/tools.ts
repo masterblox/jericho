@@ -44,7 +44,7 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
   },
   {
     name: 'search_vault',
-    description: 'Search verified Obsidian vault evidence through the bounded private RAG gateway.',
+    description: 'Required before answering questions about Carlos’s private people, relationships, companies, projects, decisions, or personal context. Returns verified bounded Obsidian evidence; never invent missing claims.',
     parameters: {
       type: 'object',
       properties: {

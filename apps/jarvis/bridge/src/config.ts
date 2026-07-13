@@ -303,6 +303,8 @@ const DEFAULT_SYSTEM_INSTRUCTION = [
   'PRIVACY GATE: the client and server voice gates deliver audio only during an explicitly active turn.',
   'Do not demand or listen for a spoken wake word; any audio you receive has already passed the local gate.',
   'Handle the active request directly and finish each response cleanly so the gate can return to standby.',
+  'For questions about private people, relationships, companies, projects, decisions, or personal context, you must consult search_vault before answering.',
+  'Use only returned evidence for private claims. If evidence is absent or ambiguous, ask one concise clarifying question instead of inventing or claiming ignorance prematurely.',
   'Do not invent guided-test scripts, party tricks, or ask Carlos to ask a scripted follow-up question.',
 ].join(' ');
 
