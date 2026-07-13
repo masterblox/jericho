@@ -4,8 +4,9 @@ import { ParticleField } from './components/ParticleField'
 import { AgentsProjection, BrainProjection, FleetLifecycle, IdCluster, TasksProjection } from './components/peripherals'
 import { StartupHealthCard } from './StartupHealthCard'
 import { VoiceCalibrationCard } from './VoiceCalibrationCard'
+import { KnowledgeProjection } from './KnowledgeProjection'
 
-export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand, knowledgeActions }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
   const gestureOffset = React.useRef({ x: 0, y: 0 })
@@ -67,6 +68,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       </div>
       <div className="layer layer-near">
         <StartupHealthCard health={health} />
+        <KnowledgeProjection actions={knowledgeActions} />
         {!summoned && <VoiceCalibrationCard />}
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
         {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
