@@ -40,32 +40,105 @@ afterEach(() => {
 });
 
 describe('parseGroundedResultMessage', () => {
-  it('accepts a bounded grounded_result envelope and drops oversized fields', () => {
+  it('accepts the grounded_result contract and preserves identity metadata', () => {
     const parsed = parseGroundedResultMessage({
       type: 'grounded_result',
       resultId: ' res-1 ',
       phase: 'resolved',
-      confidence: 'high',
-      subject: { kind: 'person', label: 'Isabella Handel', id: 'isabella' },
-      evidence: [{ label: 'Spouse', excerpt: 'wife', source: 'PA' }],
-      provenance: [{ label: 'Obsidian', path: '/notes/isabella.md' }],
-      actions: [{ id: 'open', label: 'Open Note' }],
+      route: 'private_knowledge',
+      subject: 'Who is Isabella?',
+      subjectKind: 'person',
+      confidence: 'strong',
+      canonicalIdentity: 'Isabella Handel',
+      fullName: 'Isabella Handel',
+      relationship: "Carlos's wife",
+      employment: ['MasterBlox Capital'],
+      provenance: [{
+        relativePath: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'spouse of Carlos',
+        score: 0.92,
+      }],
+      actions: {
+        open_note: 'People/Isabella Handel.md',
+        reorganize_notes: true,
+      },
+      retrievalCount: 1,
+      guided: { test: 'isabella' },
       rogue: { huge: true },
     });
     expect(parsed).toEqual({
       resultId: 'res-1',
       phase: 'resolved',
-      confidence: 'high',
-      subject: { kind: 'person', label: 'Isabella Handel', id: 'isabella' },
-      evidence: [{ label: 'Spouse', excerpt: 'wife', source: 'PA' }],
-      provenance: [{ label: 'Obsidian', path: '/notes/isabella.md' }],
-      actions: [{ id: 'open', label: 'Open Note' }],
+      route: 'private_knowledge',
+      subject: 'Who is Isabella?',
+      subjectKind: 'person',
+      confidence: 'strong',
+      canonicalIdentity: 'Isabella Handel',
+      fullName: 'Isabella Handel',
+      relationship: "Carlos's wife",
+      employment: ['MasterBlox Capital'],
+      provenance: [{
+        relativePath: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'spouse of Carlos',
+        score: 0.92,
+      }],
+      actions: {
+        open_note: 'People/Isabella Handel.md',
+        reorganize_notes: true,
+      },
+      retrievalCount: 1,
+      guided: { test: 'isabella' },
     });
   });
 
-  it('rejects messages missing resultId or phase', () => {
+  it('allowlists phase, confidence, subject kinds, and action IDs', () => {
+    const base = validGroundedResult();
+    expect(parseGroundedResultMessage({ ...base, phase: 'presenting' })).toBeNull();
+    expect(parseGroundedResultMessage({ ...base, confidence: 'high' })).toBeNull();
+    expect(parseGroundedResultMessage({ ...base, subjectKind: 'alien' })).toBeNull();
+    expect(parseGroundedResultMessage({
+      ...base,
+      actions: { open_note: 'People/Isabella.md', launch_missiles: true },
+    })).toBeNull();
+  });
+
+  it('rejects absolute, traversal, backslash, and malformed provenance paths', () => {
+    const base = validGroundedResult();
+    for (const relativePath of [
+      '/etc/passwd',
+      '../secrets.md',
+      'People\\Isabella.md',
+      'People//Isabella.md',
+      'People/./Isabella.md',
+      'C:/vault/note.md',
+      '~/vault/note.md',
+      '',
+    ]) {
+      expect(parseGroundedResultMessage({
+        ...base,
+        provenance: [{
+          relativePath,
+          title: 'bad',
+          excerpt: 'bad',
+          score: 0.1,
+        }],
+      }), relativePath).toBeNull();
+    }
+    expect(parseGroundedResultMessage({
+      ...base,
+      actions: { open_note: '../escape.md' },
+    })).toBeNull();
+  });
+
+  it('rejects messages missing required contract fields', () => {
     expect(parseGroundedResultMessage({ type: 'grounded_result', phase: 'resolved' })).toBeNull();
     expect(parseGroundedResultMessage({ type: 'grounded_result', resultId: 'x' })).toBeNull();
+    expect(parseGroundedResultMessage({
+      ...validGroundedResult(),
+      route: 'mystery',
+    })).toBeNull();
     expect(parseGroundedResultMessage(null)).toBeNull();
   });
 });
@@ -79,18 +152,19 @@ describe('BridgeClient grounded_result + speech playing', () => {
 
     harness.socket.message({
       type: 'grounded_result',
-      resultId: 'gr-1',
-      phase: 'retrieving',
-      subject: { kind: 'person', label: 'Isabella' },
+      ...validGroundedResult({ resultId: 'gr-1', phase: 'retrieving', confidence: 'none' }),
     });
     harness.socket.message({ type: 'grounded_result', phase: 'resolved' });
     harness.socket.message({ type: 'grounded_result', resultId: 'bad' });
 
     expect(onGroundedResult).toHaveBeenCalledTimes(1);
-    expect(onGroundedResult).toHaveBeenCalledWith({
+    expect(onGroundedResult.mock.calls[0][0]).toMatchObject({
       resultId: 'gr-1',
       phase: 'retrieving',
-      subject: { kind: 'person', label: 'Isabella' },
+      route: 'private_knowledge',
+      subject: 'Who is Isabella?',
+      confidence: 'none',
+      retrievalCount: 1,
     });
   });
 
@@ -117,21 +191,12 @@ describe('JarvisRuntime grounded-result projection', () => {
     document.addEventListener(GROUNDED_RESULT_EVENT, listener);
     await harness.runtime.engage();
     const events = harness.createBridge.mock.calls[0][0] as BridgeEvents;
+    const detail = validGroundedResult({ resultId: 'gr-42' });
 
-    events.onGroundedResult?.({
-      resultId: 'gr-42',
-      phase: 'resolved',
-      subject: { kind: 'person', label: 'Isabella Handel' },
-    });
+    events.onGroundedResult?.(detail);
 
     expect(listener).toHaveBeenCalledOnce();
-    expect(listener.mock.calls[0][0]).toMatchObject({
-      detail: {
-        resultId: 'gr-42',
-        phase: 'resolved',
-        subject: { kind: 'person', label: 'Isabella Handel' },
-      },
-    });
+    expect(listener.mock.calls[0][0]).toMatchObject({ detail });
     await harness.runtime.dispose();
   });
 
@@ -207,6 +272,7 @@ describe('InterfaceSoundEngine', () => {
       },
     });
     expect(() => dispatchSound('silent-1', 'retrieve')).not.toThrow();
+    expect(engine.hasPlayed('silent-1', 'retrieve')).toBe(false);
     engine.dispose();
 
     const suspended = installFakeAudio({ state: 'suspended' });
@@ -218,6 +284,48 @@ describe('InterfaceSoundEngine', () => {
     expect(() => dispatchSound('silent-2', 'summon')).not.toThrow();
     expect(suspended.resume).toHaveBeenCalled();
     suspendedEngine.dispose();
+  });
+
+  it('disconnects oscillator, gain, and panner for each cue graph', () => {
+    const audio = installFakeAudio();
+    const engine = new InterfaceSoundEngine({
+      eventTarget: document,
+      storage: memoryStorage(),
+      createAudioContext: () => audio.create(),
+    });
+    dispatchSound('graph-1', 'satellite');
+    expect(audio.oscillators).toHaveLength(1);
+    expect(audio.gains.length).toBeGreaterThan(1); // master + cue gain
+    expect(audio.panners).toHaveLength(1);
+
+    audio.oscillators[0]?.stop();
+    expect(audio.oscillators[0]?.disconnect).toHaveBeenCalled();
+    expect(audio.gains.at(-1)?.disconnect).toHaveBeenCalled();
+    expect(audio.panners[0]?.disconnect).toHaveBeenCalled();
+    engine.dispose();
+  });
+
+  it('does not consume the dedupe key when playback fails to schedule', () => {
+    let shouldFail = true;
+    const audio = installFakeAudio();
+    const engine = new InterfaceSoundEngine({
+      eventTarget: document,
+      storage: memoryStorage(),
+      createAudioContext: () => {
+        if (shouldFail) throw new Error('AudioContext blocked');
+        return audio.create();
+      },
+    });
+
+    dispatchSound('retry-1', 'lock');
+    expect(engine.hasPlayed('retry-1', 'lock')).toBe(false);
+    expect(audio.oscillators).toHaveLength(0);
+
+    shouldFail = false;
+    dispatchSound('retry-1', 'lock');
+    expect(engine.hasPlayed('retry-1', 'lock')).toBe(true);
+    expect(audio.oscillators.length).toBeGreaterThan(0);
+    engine.dispose();
   });
 
   it('cleans listeners, timers, and nodes so remount can play again', () => {
@@ -260,6 +368,27 @@ describe('InterfaceSoundEngine', () => {
   });
 });
 
+function validGroundedResult(overrides: Record<string, unknown> = {}) {
+  return {
+    resultId: 'res-1',
+    phase: 'resolved',
+    route: 'private_knowledge',
+    subject: 'Who is Isabella?',
+    confidence: 'strong',
+    provenance: [{
+      relativePath: 'People/Isabella Handel.md',
+      title: 'Isabella Handel',
+      excerpt: 'spouse of Carlos',
+      score: 0.92,
+    }],
+    actions: {
+      open_note: 'People/Isabella Handel.md',
+    },
+    retrievalCount: 1,
+    ...overrides,
+  };
+}
+
 function countExpectedOscillators(): number {
   // retrieve 1, summon 2, satellite 1, lock 2, dismiss 1
   return 1 + 2 + 1 + 2 + 1;
@@ -281,6 +410,8 @@ function memoryStorage() {
 
 function installFakeAudio(options: { state?: string } = {}) {
   const oscillators: FakeOscillator[] = [];
+  const gains: FakeGain[] = [];
+  const panners: FakePanner[] = [];
   const masterGains: FakeGain[] = [];
   const resume = vi.fn().mockResolvedValue(undefined);
   let closed = 0;
@@ -300,7 +431,9 @@ function installFakeAudio(options: { state?: string } = {}) {
       return osc;
     }
     createStereoPanner() {
-      return new FakePanner();
+      const pan = new FakePanner();
+      panners.push(pan);
+      return pan;
     }
   }
 
@@ -308,16 +441,19 @@ function installFakeAudio(options: { state?: string } = {}) {
 
   return {
     oscillators,
+    gains,
+    panners,
     masterGains,
     resume,
     get closed() { return closed; },
     create() {
       const ctx = new FakeAudioContext();
-      let gains = 0;
+      let gainCount = 0;
       ctx.createGain = () => {
         const gain = new FakeGain();
-        if (gains === 0) masterGains.push(gain);
-        gains += 1;
+        gains.push(gain);
+        if (gainCount === 0) masterGains.push(gain);
+        gainCount += 1;
         return gain;
       };
       return ctx as unknown as AudioContext;

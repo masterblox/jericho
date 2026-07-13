@@ -33,8 +33,9 @@ export interface InterfaceSoundEngineOptions {
 
 type OscillatorKind = OscillatorType;
 
-interface ScheduledNode {
-  stop(): void;
+/** Oscillator, gain, or optional panner tracked for cleanup. */
+interface TrackedAudioNode {
+  stop?: () => void;
   disconnect(): void;
 }
 
@@ -51,7 +52,7 @@ export class InterfaceSoundEngine {
   private readonly now: () => number;
   private readonly played = new Set<string>();
   private readonly playedOrder: string[] = [];
-  private readonly activeNodes = new Set<ScheduledNode>();
+  private readonly activeNodes = new Set<TrackedAudioNode>();
   private readonly timers = new Set<ReturnType<typeof setTimeout>>();
 
   private ctx: AudioContext | null = null;
@@ -117,7 +118,7 @@ export class InterfaceSoundEngine {
     this.timers.clear();
     for (const node of this.activeNodes) {
       try {
-        node.stop();
+        node.stop?.();
       } catch {
         /* already stopped */
       }
@@ -144,8 +145,9 @@ export class InterfaceSoundEngine {
     if (!detail) return;
     const key = dedupeKey(detail.resultId, detail.cue);
     if (this.played.has(key)) return;
+    // Only consume the dedupe key after a cue actually schedules.
+    if (!this.playCue(detail.cue)) return;
     this.remember(key);
-    this.playCue(detail.cue);
   }
 
   private handleToggle(event: Event): void {
@@ -169,32 +171,27 @@ export class InterfaceSoundEngine {
     }
   }
 
-  private playCue(cue: InterfaceSoundCue): void {
+  private playCue(cue: InterfaceSoundCue): boolean {
     try {
       const ctx = this.ensureContext();
-      if (!ctx || !this.master) return;
+      if (!ctx || !this.master) return false;
       if (ctx.state === 'suspended') {
         void ctx.resume().catch(() => undefined);
       }
-      if (ctx.state === 'closed') return;
+      if (ctx.state === 'closed') return false;
       this.syncMasterGain();
       const start = ctx.currentTime;
       switch (cue) {
         case 'retrieve':
-          this.pulse(ctx, start, 96, 0.42, 'sine', 0.55);
-          break;
+          return this.pulse(ctx, start, 96, 0.42, 'sine', 0.55);
         case 'summon':
-          this.glassyScan(ctx, start);
-          break;
+          return this.glassyScan(ctx, start);
         case 'satellite':
-          this.positionalTick(ctx, start);
-          break;
+          return this.positionalTick(ctx, start);
         case 'lock':
-          this.confirmation(ctx, start);
-          break;
+          return this.confirmation(ctx, start);
         case 'dismiss':
-          this.reverseScan(ctx, start);
-          break;
+          return this.reverseScan(ctx, start);
         default: {
           const _exhaustive: never = cue;
           return _exhaustive;
@@ -202,6 +199,7 @@ export class InterfaceSoundEngine {
       }
     } catch {
       /* AudioContext unavailable or not yet permitted */
+      return false;
     }
   }
 
@@ -254,8 +252,8 @@ export class InterfaceSoundEngine {
     duration: number,
     type: OscillatorKind,
     peak = 0.7,
-  ): void {
-    if (!this.master) return;
+  ): boolean {
+    if (!this.master) return false;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = type;
@@ -265,11 +263,11 @@ export class InterfaceSoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, start + duration);
     osc.connect(gain);
     gain.connect(this.master);
-    this.trackAndStart(osc, start, duration);
+    return this.trackAndStart(osc, [gain], start, duration);
   }
 
-  private glassyScan(ctx: AudioContext, start: number): void {
-    if (!this.master) return;
+  private glassyScan(ctx: AudioContext, start: number): boolean {
+    if (!this.master) return false;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';
@@ -280,7 +278,7 @@ export class InterfaceSoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.36);
     osc.connect(gain);
     gain.connect(this.master);
-    this.trackAndStart(osc, start, 0.4);
+    const primary = this.trackAndStart(osc, [gain], start, 0.4);
 
     const shimmer = ctx.createOscillator();
     const shimmerGain = ctx.createGain();
@@ -292,11 +290,12 @@ export class InterfaceSoundEngine {
     shimmerGain.gain.exponentialRampToValueAtTime(0.0001, start + 0.28);
     shimmer.connect(shimmerGain);
     shimmerGain.connect(this.master);
-    this.trackAndStart(shimmer, start + 0.05, 0.28);
+    const secondary = this.trackAndStart(shimmer, [shimmerGain], start + 0.05, 0.28);
+    return primary || secondary;
   }
 
-  private positionalTick(ctx: AudioContext, start: number): void {
-    if (!this.master) return;
+  private positionalTick(ctx: AudioContext, start: number): boolean {
+    if (!this.master) return false;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     const pan = 'createStereoPanner' in ctx ? ctx.createStereoPanner() : null;
@@ -306,23 +305,26 @@ export class InterfaceSoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.28, start + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.07);
     osc.connect(gain);
+    const extras: TrackedAudioNode[] = [gain];
     if (pan) {
       pan.pan.setValueAtTime(0.35, start);
       gain.connect(pan);
       pan.connect(this.master);
+      extras.push(pan);
     } else {
       gain.connect(this.master);
     }
-    this.trackAndStart(osc, start, 0.09);
+    return this.trackAndStart(osc, extras, start, 0.09);
   }
 
-  private confirmation(ctx: AudioContext, start: number): void {
-    this.pulse(ctx, start, 440, 0.22, 'sine', 0.4);
-    this.pulse(ctx, start + 0.05, 660, 0.2, 'sine', 0.28);
+  private confirmation(ctx: AudioContext, start: number): boolean {
+    const low = this.pulse(ctx, start, 440, 0.22, 'sine', 0.4);
+    const high = this.pulse(ctx, start + 0.05, 660, 0.2, 'sine', 0.28);
+    return low || high;
   }
 
-  private reverseScan(ctx: AudioContext, start: number): void {
-    if (!this.master) return;
+  private reverseScan(ctx: AudioContext, start: number): boolean {
+    if (!this.master) return false;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'triangle';
@@ -333,33 +335,68 @@ export class InterfaceSoundEngine {
     gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.3);
     osc.connect(gain);
     gain.connect(this.master);
-    this.trackAndStart(osc, start, 0.34);
+    return this.trackAndStart(osc, [gain], start, 0.34);
   }
 
-  private trackAndStart(osc: OscillatorNode, start: number, duration: number): void {
+  private trackAndStart(
+    osc: OscillatorNode,
+    extras: TrackedAudioNode[],
+    start: number,
+    duration: number,
+  ): boolean {
     const bounded = Math.min(duration, MAX_CUE_MS / 1_000);
-    if (this.activeNodes.size >= MAX_OSCILLATORS_PER_CUE * INTERFACE_SOUND_CUES.length) {
-      try {
-        osc.disconnect();
-      } catch {
-        /* ignore */
+    const graph: TrackedAudioNode[] = [
+      {
+        stop: () => {
+          try {
+            osc.stop();
+          } catch {
+            /* already stopped */
+          }
+        },
+        disconnect: () => {
+          try {
+            osc.disconnect();
+          } catch {
+            /* already disconnected */
+          }
+        },
+      },
+      ...extras,
+    ];
+    if (this.activeNodes.size + graph.length > MAX_OSCILLATORS_PER_CUE * INTERFACE_SOUND_CUES.length * 3) {
+      for (const node of graph) {
+        try {
+          node.disconnect();
+        } catch {
+          /* ignore */
+        }
       }
-      return;
+      return false;
     }
-    this.activeNodes.add(osc);
+    for (const node of graph) this.activeNodes.add(node);
     try {
       osc.start(start);
       osc.stop(start + bounded);
     } catch {
-      this.activeNodes.delete(osc);
-      return;
+      for (const node of graph) {
+        this.activeNodes.delete(node);
+        try {
+          node.disconnect();
+        } catch {
+          /* ignore */
+        }
+      }
+      return false;
     }
     const finish = () => {
-      this.activeNodes.delete(osc);
-      try {
-        osc.disconnect();
-      } catch {
-        /* ignore */
+      for (const node of graph) {
+        this.activeNodes.delete(node);
+        try {
+          node.disconnect();
+        } catch {
+          /* ignore */
+        }
       }
     };
     osc.onended = finish;
@@ -368,6 +405,7 @@ export class InterfaceSoundEngine {
       finish();
     }, Math.ceil(bounded * 1_000) + 50);
     this.timers.add(timer);
+    return true;
   }
 }
 
