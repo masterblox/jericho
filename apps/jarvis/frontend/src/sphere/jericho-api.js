@@ -4,7 +4,7 @@
 // subscribers and emits `jericho:state` for non-React listeners.
 
 const CORE_STATES = ['idle', 'listening', 'thinking', 'speaking', 'alert']
-const VIEWS = ['CORE', 'AGENTS', 'TASKS', 'BRAIN']
+const VIEWS = ['CORE', 'AGENTS', 'TASKS', 'BRAIN', 'VOICE']
 const MODES = ['jarvis', 'megatron']
 
 // Live agent order comes from persisted Core missions via api.setAgents.
@@ -18,6 +18,8 @@ let snapshot = {
   activeView: 'CORE',
   directive: '',
   toast: '',
+  /** Guided test lifecycle — null means no guided test is active. */
+  guidedTest: null,
 }
 
 const listeners = new Set()
@@ -80,6 +82,22 @@ export const api = {
     }
   },
   cancelDispatch() { commit({ directive: '' }) },
+  // --- guided test lifecycle ---
+  startGuidedTest(test) {
+    commit({ guidedTest: { test, active: true } })
+  },
+  resumeGuidedTest(test) {
+    commit({ guidedTest: { test, active: true } })
+  },
+  updateGuidedPhase(phase) {
+    const existing = snapshot.guidedTest
+    if (!existing) return
+    commit({ guidedTest: { ...existing, phase } })
+  },
+  endGuidedTest() {
+    commit({ guidedTest: null, activeView: 'CORE' })
+  },
+  // ---
   toast(message) {
     clearTimeout(toastTimer)
     commit({ toast: message })

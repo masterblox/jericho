@@ -57,6 +57,14 @@
   width: min(74vmin, 660px); aspect-ratio: 1;
   transform: translate(-50%, -52%);
   animation: assembly-in 700ms 200ms ease-out both;
+  transition: transform 400ms ease-out, width 400ms ease-out;
+}
+/* Shrink sphere significantly when terminal projection is active */
+.stage:has(.knowledge-projection[data-phase="resolved"]) .core-wrap,
+.stage:has(.knowledge-projection[data-phase="ambiguous"]) .core-wrap,
+.stage:has(.knowledge-projection[data-phase="unavailable"]) .core-wrap {
+  width: min(20vmin, 160px);
+  transform: translate(-50%, -45%);
 }
 @keyframes assembly-in { from { opacity: 0; transform: translate(-50%, -52%) scale(.94); } }
 
@@ -307,13 +315,16 @@
 .sphere-outcomes code { color: var(--faint); }
 
 /* =========================================================
-   KNOWLEDGE PROJECTION — grounded results materialize as a
-   constellation around the reactor. No dialog, no backdrop.
+   KNOWLEDGE PROJECTION — cards around reactor.
+   Wide: primary left, evidence right, actions below (absolute).
+   Narrow: scrollable column beneath visible sphere.
+   Card coordinates are top-left; no center transforms applied.
    ========================================================= */
-.knowledge-projection { position: absolute; inset: 0; pointer-events: none; }
+.knowledge-projection { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .knowledge-projection .k-card, .knowledge-projection .k-sound-toggle { pointer-events: auto; }
 
-/* retrieving: the sphere alone answers — pulse only, no cards */
+.k-column-flow { overflow-y: auto; pointer-events: auto; }
+
 .stage:has(.knowledge-projection[data-phase="retrieving"]) { --halo-gain: 2.4; --bar-floor: .24; }
 .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo { animation-duration: 1.6s; }
 .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo-hot { animation-duration: 1.2s; }
@@ -322,89 +333,38 @@
 .stage:has(.knowledge-projection[data-phase="unavailable"]) :is(.voice-calibration, .startup-health) { display: none; }
 
 .k-card {
-  position: absolute; left: 50%; top: 50%;
-  width: min(300px, 44vw);
-  touch-action: none;
-  cursor: grab;
-  transform: translate(
-    calc(-50% + var(--kx, 0px) + var(--dx, 0px)),
-    calc(-50% + var(--ky, 0px) + var(--dy, 0px)));
-  animation: k-eject 380ms cubic-bezier(.22, 1, .36, 1) both;
+  position: absolute;
+  width: var(--kw, 300px);
+  max-width: calc(100% - 48px);
+  overflow: hidden;
+  left: calc(var(--kx, 0px));
+  top: calc(var(--ky, 0px));
+  animation: k-enter 280ms var(--kdelay, 0ms) ease-out both;
 }
-.k-card:active { cursor: grabbing; }
+[data-reduced-motion="true"] .k-card { animation: k-fade 220ms ease-out both; }
 .k-card:focus-visible { outline: 1px solid rgba(var(--hud), .6); outline-offset: 3px; }
-.k-card--primary { --kx: -36vmin; --ky: -4vmin; }
-.k-card--provenance { --kx: 34vmin; --ky: -4vmin; }
-.k-card--actions { --kx: 0px; --ky: 30vmin; }
-@keyframes k-eject {
-  from {
-    opacity: 0;
-    transform: translate(
-      calc(-50% + (var(--kx, 0px) + var(--dx, 0px)) * .18),
-      calc(-50% + (var(--ky, 0px) + var(--dy, 0px)) * .18)) scale(.62);
-  }
-}
-.k-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 0; }
-.k-chips .chip { margin-left: 0; }
-.k-excerpt { color: var(--muted); line-height: 1.55; font: 12px/1.55 var(--sans); }
-.k-evidence { color: var(--faint); letter-spacing: .1em; }
-.k-provenance, .k-candidates { display: grid; gap: 5px; margin: 6px 0 0; padding: 0; list-style: none; }
-.k-provenance li, .k-candidates li { display: grid; gap: 2px; padding: 6px 0; border-bottom: 1px solid var(--stroke-dim); }
-.k-provenance li:last-child, .k-candidates li:last-child { border-bottom: 0; }
-.k-provenance code { color: var(--cyan); overflow-wrap: anywhere; font-size: 9px; }
-.k-provenance span { color: var(--faint); }
-.k-candidates strong { color: var(--text); font: 11px var(--sans); }
-.k-candidates span { color: var(--faint); font: 8px var(--mono); overflow-wrap: anywhere; }
-.k-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 6px; }
-.k-actions button { border: 1px solid var(--stroke); padding: 10px 13px; color: var(--cyan); font: 600 9px var(--cond); letter-spacing: .1em; }
-.k-actions button:hover, .k-actions button:focus-visible { border-color: var(--cyan); background: rgba(var(--hud), .08); }
-.k-actions .ok { border-color: rgba(180, 227, 255, .5); color: var(--ok); }
-.k-review { margin-top: 10px; padding-top: 9px; border-top: 1px solid var(--stroke-dim); }
-.k-review > p { margin: 0 0 9px; color: var(--muted); font: 11px/1.45 var(--sans); }
-.k-status { color: var(--cyan); letter-spacing: .12em; }
 
-.k-sound-toggle {
-  position: absolute; top: 22px; right: 26px; z-index: 6;
-  border: 1px solid var(--stroke-dim);
-  padding: 7px 11px;
-  color: var(--muted);
-  letter-spacing: .12em;
-  background: rgba(3, 6, 8, .5);
-}
-.k-sound-toggle:hover, .k-sound-toggle:focus-visible { border-color: var(--stroke); color: var(--text); }
-.k-sound-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--stroke); }
-
-/* narrow screens: cards stack below the still-visible sphere */
-@media (max-width: 900px) {
-  .knowledge-projection[data-phase="resolved"],
-  .knowledge-projection[data-phase="ambiguous"],
-  .knowledge-projection[data-phase="unavailable"] {
-    position: absolute; inset: auto auto 16px 50%; top: 58vh;
-    width: min(420px, calc(100vw - 32px));
-    transform: translateX(-50%);
-    display: grid; gap: 12px; align-content: start;
-    overflow-y: auto; pointer-events: auto;
-  }
-  .k-card { position: static; width: auto; transform: none; animation-name: k-fade; }
+/* Column cards: relative inside flow wrapper */
+.k-card--column {
+  position: relative !important;
+  left: auto !important; top: auto !important;
+  transform: none !important;
+  flex-shrink: 0;
+  width: var(--kw, 300px);
+  max-width: calc(100% - 48px);
+  max-height: calc(var(--kmaxh, 100%) - 48px);
+  overflow-y: auto;
 }
 
-/* reduced motion: fade/scale in place — no spatial ejection */
-@media (prefers-reduced-motion: reduce) {
-  .k-card { --kx: 0px; --ky: 0px; animation: k-fade 220ms ease-out both; }
-  .knowledge-projection[data-phase="resolved"],
-  .knowledge-projection[data-phase="ambiguous"],
-  .knowledge-projection[data-phase="unavailable"] {
-    position: absolute; inset: auto auto 16px 50%; top: 58vh;
-    width: min(420px, calc(100vw - 32px));
-    transform: translateX(-50%);
-    display: grid; gap: 12px; align-content: start;
-    overflow-y: auto; pointer-events: auto;
-  }
-  .knowledge-projection .k-card { position: static; width: auto; transform: none; }
-  .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo,
-  .stage:has(.knowledge-projection[data-phase="retrieving"]) .halo-hot { animation-duration: 5.2s; }
-}
+@keyframes k-enter { from { opacity: 0; transform: scale(.92); } to { opacity: 1; } }
 @keyframes k-fade { from { opacity: 0; transform: scale(.96); } }
+
+/* Narrow: all absolute cards become relative, stacked */
+@media (max-width: 900px) {
+  .k-card--left,
+  .k-card--right,
+  .k-card--bottom-center { left: auto !important; top: auto !important; position: relative !important; }
+}
 
 .voice-calibration {
   position: absolute;

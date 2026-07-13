@@ -389,7 +389,8 @@ export class BridgeClient {
         this.enterStandby();
         break;
       case 'grounded_result': {
-        const result = parseGroundedResultMessage(msg);
+        const { type: _, ...payload } = msg;
+        const result = parseGroundedResultMessage(payload);
         if (result) this.events.onGroundedResult?.(result);
         break;
       }
