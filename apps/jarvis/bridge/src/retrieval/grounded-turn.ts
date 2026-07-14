@@ -27,6 +27,9 @@ import {
   IdentityResolutionCache,
   buildGroundedResultEvent,
   groupIdentityEvidence,
+  selectPersonEvidenceHits,
+  PERSON_SEARCH_CANDIDATE_LIMIT,
+  PERSON_EVIDENCE_HIT_LIMIT,
   type CachedGroundedRetrieval,
   type CoreIdentityOverride,
   type VaultEvidenceHit,
@@ -337,9 +340,10 @@ export class GroundedTurnController {
         evidence = cached.evidence;
         hits = cached.hits;
       } else {
-        const memoryHits = index.search(subject, 12);
+        const memoryHits = index.search(subject, PERSON_SEARCH_CANDIDATE_LIMIT);
         const coreHits = searchCoreEvidence(this.#ports.store, subject, 8);
-        hits = [...coreHits, ...memoryHits.map(toVaultHit)];
+        const candidates = [...coreHits, ...memoryHits.map(toVaultHit)];
+        hits = selectPersonEvidenceHits(subject, candidates, PERSON_EVIDENCE_HIT_LIMIT);
         const overrides = coreOverrides(this.#ports.store, subject);
         evidence = groupIdentityEvidence(subject, hits, 1, undefined, overrides);
       }

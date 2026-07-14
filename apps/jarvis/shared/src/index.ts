@@ -2278,8 +2278,7 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
     if (!allowed.has(key)) throw new TypeError(`GroundedResultEvent: unknown field "${key}"`);
   }
   if (value.schemaVersion !== 2) throw new TypeError('GroundedResultEvent schemaVersion must be 2');
-  assertNonEmptyString(value.resultId, 'resultId');
-  if ((value.resultId as string).length > 1_024) throw new TypeError('resultId exceeds 1024 chars');
+  assertOpaqueId(value.resultId, 'resultId');
   const validPhases = new Set(['retrieving', 'resolved', 'ambiguous', 'unavailable']);
   if (!validPhases.has(String(value.phase))) throw new TypeError('GroundedResultEvent phase is invalid');
   const validRoutes = new Set(['private_knowledge', 'core_operational', 'general', 'clarification']);
@@ -2316,7 +2315,7 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
   }
   for (const key of ['openSourceIds', 'reorganizeSourceIds', 'correctConflictIds'] as const) {
     if (key in value.actions && value.actions[key] !== undefined) {
-      assertIdList(value.actions[key], `actions.${key}`);
+      assertOpaqueIdList(value.actions[key], `actions.${key}`);
     }
   }
   if (typeof value.retrievalCount !== 'number' || !Number.isInteger(value.retrievalCount) || value.retrievalCount < 0 || value.retrievalCount > 100) {
@@ -2352,17 +2351,48 @@ function assertIdList(value: unknown, field: string): asserts value is string[] 
   });
 }
 
+/** Opaque contract IDs: reject empty/whitespace-only without trimming accepted values. */
+function assertOpaqueId(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`${field} must be a non-empty string`);
+  }
+  if (!value.trim()) {
+    throw new TypeError(`${field} must not be whitespace-only`);
+  }
+  if (value.length > 1_024) throw new TypeError(`${field} exceeds 1024 chars`);
+}
+
+function assertOpaqueIdList(value: unknown, field: string): asserts value is string[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seen = new Set<string>();
+  value.forEach((item: unknown, index: number) => {
+    assertOpaqueId(item, `${field}[${index}]`);
+    if (seen.has(item as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seen.add(item as string);
+  });
+}
+
 function assertGroundedResultClaimList(value: unknown, field: string): void {
   if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
     throw new TypeError(`${field} must be a dense array`);
   }
   if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenIds = new Set<string>();
   value.forEach((item: unknown, index: number) => {
     assertRecord(item, `${field}[${index}]`);
-    assertNonEmptyString(item.id, `${field}[${index}].id`);
+    assertOpaqueId(item.id, `${field}[${index}].id`);
+    if (seenIds.has(item.id as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seenIds.add(item.id as string);
     assertNonEmptyString(item.text, `${field}[${index}].text`);
     if ((item.text as string).length > 500) throw new TypeError(`${field}[${index}].text exceeds 500 chars`);
-    assertIdList(item.supportSourceIds, `${field}[${index}].supportSourceIds`);
+    assertOpaqueIdList(item.supportSourceIds, `${field}[${index}].supportSourceIds`);
   });
 }
 
@@ -2371,14 +2401,19 @@ function assertGroundedResultConflictList(value: unknown, field: string): void {
     throw new TypeError(`${field} must be a dense array`);
   }
   if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenIds = new Set<string>();
   value.forEach((item: unknown, index: number) => {
     assertRecord(item, `${field}[${index}]`);
-    assertNonEmptyString(item.id, `${field}[${index}].id`);
+    assertOpaqueId(item.id, `${field}[${index}].id`);
+    if (seenIds.has(item.id as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seenIds.add(item.id as string);
     assertNonEmptyString(item.claim, `${field}[${index}].claim`);
     assertNonEmptyString(item.reason, `${field}[${index}].reason`);
     if ((item.claim as string).length > 500) throw new TypeError(`${field}[${index}].claim exceeds 500 chars`);
     if ((item.reason as string).length > 500) throw new TypeError(`${field}[${index}].reason exceeds 500 chars`);
-    assertIdList(item.sourceIds, `${field}[${index}].sourceIds`);
+    assertOpaqueIdList(item.sourceIds, `${field}[${index}].sourceIds`);
   });
 }
 
@@ -2387,9 +2422,14 @@ function assertGroundedResultProvenanceList(value: unknown, field: string): asse
     throw new TypeError(`${field} must be a dense array`);
   }
   if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenSourceIds = new Set<string>();
   value.forEach((item: Record<string, unknown>, index: number) => {
     assertRecord(item, `${field}[${index}]`);
-    assertNonEmptyString(item.sourceId, `${field}[${index}].sourceId`);
+    assertOpaqueId(item.sourceId, `${field}[${index}].sourceId`);
+    if (seenSourceIds.has(item.sourceId as string)) {
+      throw new TypeError(`${field} contains duplicate sourceId`);
+    }
+    seenSourceIds.add(item.sourceId as string);
     assertNonEmptyString(item.rootId, `${field}[${index}].rootId`);
     if (item.authority !== 'canonical' && item.authority !== 'supplemental') {
       throw new TypeError(`${field}[${index}].authority is invalid`);

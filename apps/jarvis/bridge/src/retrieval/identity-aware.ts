@@ -311,13 +311,13 @@ export function buildGroundedResultEvent(
       .filter((hit) => hit.sourceId)
       .map((hit) => [hit.sourceId!, hit]),
   );
-  const provenance: GroundedResultProvenance[] = [];
+  const provenanceRaw: GroundedResultProvenance[] = [];
   const allGroups = [...result.groups, ...result.excluded];
   for (const group of allGroups) {
     for (const item of group.provenance) {
       const hit = item.sourceId ? hitBySourceId.get(item.sourceId) : undefined;
       const sourceId = item.sourceId ?? hit?.sourceId ?? stableSourceId(item.rootId ?? 'legacy', item.relativePath);
-      provenance.push({
+      provenanceRaw.push({
         sourceId,
         rootId: item.rootId ?? hit?.rootId ?? 'memory',
         authority: item.authority ?? hit?.authority ?? 'canonical',
@@ -328,13 +328,17 @@ export function buildGroundedResultEvent(
       });
     }
   }
+  const provenance = uniqueByKey(provenanceRaw, (item) => item.sourceId);
 
   const { phase, confidence } = resolvePhaseAndConfidence(result);
-  const conflicts = [
+  const conflicts = uniqueConflicts([
     ...buildConflicts(result, provenance),
-    ...spouseFileConflicts(options.hits ?? [], provenance),
-  ];
-  const claims = buildClaims(result, provenance);
+    ...relationshipFileConflicts(options.hits ?? [], provenance),
+  ]);
+  const claims = uniqueByKey(buildClaims(result, provenance), (claim) => claim.id).map((claim) => ({
+    ...claim,
+    supportSourceIds: uniqueIds(claim.supportSourceIds),
+  }));
   const actions = resolveActions(result, provenance, conflicts);
 
   return {
@@ -452,12 +456,12 @@ function resolveActions(
           ? true
           : !entry.sourceId && entry.relativePath === item.relativePath));
     if (openable.length) {
-      actions.openSourceIds = openable.map((item) => item.sourceId);
-      actions.reorganizeSourceIds = openable.map((item) => item.sourceId);
+      actions.openSourceIds = uniqueIds(openable.map((item) => item.sourceId));
+      actions.reorganizeSourceIds = uniqueIds(openable.map((item) => item.sourceId));
     }
   }
   if (conflicts.length) {
-    actions.correctConflictIds = conflicts.map((conflict) => conflict.id);
+    actions.correctConflictIds = uniqueIds(conflicts.map((conflict) => conflict.id));
   }
   return actions;
 }
@@ -492,15 +496,69 @@ function inferRelationship(
   return undefined;
 }
 
-/** Collect spouse-like file claims that must surface as conflicts until Core confirms them. */
-export function spouseFileConflicts(
+/**
+ * From a larger BM25/Core candidate pool, keep a bounded set that prefers
+ * canonical full-name and relationship-bearing evidence. No person-specific hard-coding.
+ */
+export const PERSON_SEARCH_CANDIDATE_LIMIT = 48;
+export const PERSON_EVIDENCE_HIT_LIMIT = 16;
+
+const RELATIONSHIP_BEARING_PATTERN =
+  /\b(?:wife|wives|spouse|husband|married|partner|ex-wife|ex-husband|girlfriend|boyfriend|sister|brother|colleague|relationship)\b/iu;
+const UNCONFIRMED_SPOUSE_PATTERN =
+  /(?:wife|spouse|married).{0,40}carlos|carlos.{0,40}(?:wife|spouse|married)/iu;
+
+export function selectPersonEvidenceHits(
+  subject: string,
+  candidates: readonly VaultEvidenceHit[],
+  limit = PERSON_EVIDENCE_HIT_LIMIT,
+): VaultEvidenceHit[] {
+  const unique = uniqueByKey(
+    candidates.filter((hit) => hit.sourceId || hit.path),
+    (hit) => hit.sourceId ?? `${hit.rootId ?? ''}:${hit.path}`,
+  );
+  const queryName = extractQueryPersonName(subject) ?? subject.replace(/\s+/gu, ' ').trim();
+  const firstToken = queryName.split(/\s+/u)[0] ?? queryName;
+  const firstPattern = new RegExp(`(?:^|[^\\p{L}])${escapeRegExp(firstToken)}(?:[^\\p{L}]|$)`, 'iu');
+  const fullNamePattern = queryName.split(/\s+/u).length >= 2
+    ? new RegExp(escapeRegExp(queryName), 'iu')
+    : undefined;
+
+  const ranked = unique
+    .map((hit, index) => {
+      const text = `${hit.title} ${hit.path} ${hit.excerpt} ${hit.content ?? ''}`;
+      const deduced = deduceCanonicalFullName(hit);
+      const fullName = Boolean(
+        (fullNamePattern && fullNamePattern.test(text))
+        || (deduced && firstPattern.test(text) && new RegExp(escapeRegExp(deduced), 'iu').test(text)),
+      );
+      const relationshipBearing = RELATIONSHIP_BEARING_PATTERN.test(text);
+      const mentionsSubject = firstPattern.test(text);
+      let tier = 4;
+      if (fullName && relationshipBearing) tier = 0;
+      else if (fullName) tier = 1;
+      else if (relationshipBearing && mentionsSubject) tier = 2;
+      else if (mentionsSubject) tier = 3;
+      return { hit, tier, index };
+    })
+    .sort((left, right) =>
+      left.tier - right.tier
+      || evidenceAuthorityRank(left.hit) - evidenceAuthorityRank(right.hit)
+      || right.hit.score - left.hit.score
+      || left.index - right.index);
+
+  return ranked.slice(0, Math.max(1, limit)).map((entry) => entry.hit);
+}
+
+/** Collect unconfirmed relationship claims that must surface as conflicts until Core confirms them. */
+export function relationshipFileConflicts(
   hits: readonly VaultEvidenceHit[],
   provenance: readonly GroundedResultProvenance[],
 ): GroundedResultConflict[] {
   const conflicts: GroundedResultConflict[] = [];
   for (const hit of hits) {
-    const text = `${hit.title} ${hit.path} ${hit.excerpt}`;
-    if (!/(?:wife|spouse|married).{0,40}carlos|carlos.{0,40}(?:wife|spouse|married)/iu.test(text)) {
+    const text = `${hit.title} ${hit.path} ${hit.excerpt} ${hit.content ?? ''}`;
+    if (!UNCONFIRMED_SPOUSE_PATTERN.test(text)) {
       continue;
     }
     const source = provenance.find((entry) => entry.sourceId && entry.sourceId === hit.sourceId)
@@ -515,6 +573,9 @@ export function spouseFileConflicts(
   return conflicts;
 }
 
+/** @deprecated Prefer relationshipFileConflicts — kept for existing call sites/tests. */
+export const spouseFileConflicts = relationshipFileConflicts;
+
 function extractRelationshipPhrase(text: string): string | undefined {
   const match = /(?:is\s+)?(?:the\s+)?(wife|spouse|husband|partner|sister|brother|colleague)\b(?:\s+of\s+Carlos(?:\s+Prada)?)?/iu
     .exec(text);
@@ -528,6 +589,51 @@ function inferEmployment(text: string, config: GroupIdentityConfig): string[] {
   const masterblox = /master\s*blox/iu.exec(text);
   if (masterblox) return ['MasterBlox'];
   return [];
+}
+
+function uniqueIds(ids: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const id of ids) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+function uniqueByKey<T>(items: readonly T[], keyOf: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const item of items) {
+    const key = keyOf(item);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
+}
+
+function uniqueConflicts(conflicts: readonly GroundedResultConflict[]): GroundedResultConflict[] {
+  const seenIds = new Set<string>();
+  const seenSemantic = new Set<string>();
+  const out: GroundedResultConflict[] = [];
+  for (const conflict of conflicts) {
+    if (seenIds.has(conflict.id)) continue;
+    const semantic = [
+      conflict.claim,
+      conflict.reason,
+      ...[...conflict.sourceIds].sort((left, right) => left.localeCompare(right)),
+    ].join('\u0000');
+    if (seenSemantic.has(semantic)) continue;
+    seenIds.add(conflict.id);
+    seenSemantic.add(semantic);
+    out.push({
+      ...conflict,
+      sourceIds: uniqueIds(conflict.sourceIds),
+    });
+  }
+  return out;
 }
 
 function stableSourceId(rootId: string, relativePath: string): string {
