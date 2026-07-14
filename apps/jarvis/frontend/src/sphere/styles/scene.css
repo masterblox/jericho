@@ -336,10 +336,16 @@
   position: absolute;
   width: var(--kw, 300px);
   max-width: calc(100% - 48px);
+  max-height: var(--kmaxh, none);
   overflow: hidden;
   left: calc(var(--kx, 0px));
   top: calc(var(--ky, 0px));
   animation: k-enter 280ms var(--kdelay, 0ms) ease-out both;
+}
+.k-card--left,
+.k-card--right,
+.k-card--bottom-center {
+  overflow-y: auto;
 }
 [data-reduced-motion="true"] .k-card { animation: k-fade 220ms ease-out both; }
 .k-card:focus-visible { outline: 1px solid rgba(var(--hud), .6); outline-offset: 3px; }

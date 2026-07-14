@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, expect, it } from 'vitest'
+import { assertGroundedResultEvent } from '@jericho/shared'
 import { parseGroundedResult, parseGroundedResultMessage, isSafeRelativePath, parseInterfaceSoundDetail } from '../src/grounded-result'
 
 const V2 = {
@@ -30,8 +31,9 @@ const V2 = {
   retrievalCount: 2,
 }
 
-describe('parseGroundedResultMessage v2', () => {
-  it('parses valid v2', () => {
+describe('parseGroundedResultMessage v2 (shared contract)', () => {
+  it('parses valid v2 via assertGroundedResultEvent', () => {
+    expect(() => assertGroundedResultEvent(V2)).not.toThrow()
     const r = parseGroundedResultMessage(V2)
     expect(r).not.toBeNull()
     expect(r!.schemaVersion).toBe(2)
@@ -40,8 +42,6 @@ describe('parseGroundedResultMessage v2', () => {
     expect(r!.claims![0].supportSourceIds).toEqual(['src-1'])
     expect(r!.conflicts).toHaveLength(1)
     expect(r!.conflicts![0].id).toBe('conf-1')
-    expect(r!.conflicts![0].claim).toBeTruthy()
-    expect(r!.conflicts![0].reason).toBeTruthy()
     expect(r!.actions.openSourceIds).toEqual(['src-1'])
     expect(r!.indexRevision).toBe('r7')
     expect(r!.provenance[0].authority).toBe('canonical')
@@ -60,8 +60,25 @@ describe('parseGroundedResultMessage v2', () => {
     expect(r!.indexRevision).toBeUndefined()
   })
 
-  it('accepts relationship field', () => {
-    expect(parseGroundedResultMessage({ ...V2, relationship: 'wife of Carlos' })).not.toBeNull()
+  it('trims presentation fields without altering contract acceptance', () => {
+    const r = parseGroundedResultMessage({ ...V2, resultId: ' gr-1 ', subject: ' Isabella ' })
+    expect(r).not.toBeNull()
+    expect(r!.resultId).toBe('gr-1')
+    expect(r!.subject).toBe('Isabella')
+  })
+
+  it('rejects over-limit subject/claim/conflict/title (no truncation)', () => {
+    const long = 'x'.repeat(501)
+    expect(parseGroundedResultMessage({ ...V2, subject: long })).toBeNull()
+    expect(parseGroundedResultMessage({ ...V2, claims: [{ id: 'c', text: long, supportSourceIds: ['src-1'] }] })).toBeNull()
+    expect(parseGroundedResultMessage({
+      ...V2,
+      conflicts: [{ id: 'c', claim: long, reason: 'r', sourceIds: ['src-2'] }],
+    })).toBeNull()
+    expect(parseGroundedResultMessage({
+      ...V2,
+      provenance: [{ ...V2.provenance[0], title: long }],
+    })).toBeNull()
   })
 
   it('rejects numeric indexRevision', () => {

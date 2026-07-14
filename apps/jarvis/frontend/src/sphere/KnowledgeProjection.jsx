@@ -21,36 +21,76 @@ const prefersReducedMotion = () => { try { return window.matchMedia('(prefers-re
 
 function computeSphereExclusion(coreEl, stageEl) {
   if (!coreEl || !stageEl) return { left: 0, right: 0, top: 0, bottom: 0 }
+  // Axis-aligned Core rectangle expanded by EXCLUSION_EXPAND — matches Playwright gate.
   const cr = coreEl.getBoundingClientRect(); const sr = stageEl.getBoundingClientRect()
-  const cx = cr.left + cr.width / 2 - sr.left; const cy = cr.top + cr.height / 2 - sr.top
-  const radius = Math.max(cr.width, cr.height) / 2 + EXCLUSION_EXPAND
-  return { left: cx - radius, right: cx + radius, top: cy - radius, bottom: cy + radius }
+  return {
+    left: cr.left - sr.left - EXCLUSION_EXPAND,
+    right: cr.right - sr.left + EXCLUSION_EXPAND,
+    top: cr.top - sr.top - EXCLUSION_EXPAND,
+    bottom: cr.bottom - sr.top + EXCLUSION_EXPAND,
+  }
+}
+
+function rectsSeparate(a, b, gap) {
+  const dx = a.x < b.x ? b.x - (a.x + a.w) : a.x - (b.x + b.w)
+  const dy = a.y < b.y ? b.y - (a.y + a.h) : a.y - (b.y + b.h)
+  if (dx >= gap || dy >= gap) return true
+  return dx >= 0 && dy >= 0 && Math.hypot(Math.max(0, dx), Math.max(0, dy)) >= gap
 }
 
 function placeCards(stageW, stageH, exclusion, cardIds) {
   const cardW = Math.max(CARD_MIN_W, Math.min(CARD_MAX_W, stageW - 2 * STAGE_PADDING))
   const leftSpace = exclusion.left - STAGE_PADDING
   const rightSpace = stageW - exclusion.right - STAGE_PADDING
-  const belowSpace = stageH - exclusion.bottom - 2 * STAGE_PADDING - CARD_GAP
 
   if (leftSpace >= cardW + CARD_GAP && rightSpace >= cardW + CARD_GAP && cardIds.length === 3) {
     const measured = cardIds.map(id => {
       const el = document.querySelector(`[data-knowledge-card="${id}"]`)
       return { id, h: el ? el.getBoundingClientRect().height : 200 }
     })
-    const actCard = measured.find(m => m.id === 'actions')
-    const actH = actCard ? actCard.h : 140
-    if (belowSpace >= actH + CARD_GAP) {
+    const natActH = measured.find(m => m.id === 'actions')?.h ?? 140
+    const natPrimH = measured.find(m => m.id === 'primary')?.h ?? 200
+    const natProvH = measured.find(m => m.id === 'provenance')?.h ?? 200
+
+    // Reserve a bottom band so actions stay ≥24px inside the stage under side cards.
+    const actH = Math.min(natActH, Math.max(120, stageH - exclusion.bottom - CARD_GAP - STAGE_PADDING))
+    const maxSideBottom = stageH - STAGE_PADDING - actH - CARD_GAP
+    const maxSideH = Math.max(120, maxSideBottom - STAGE_PADDING)
+    if (maxSideBottom >= STAGE_PADDING + 120 && actH >= 100) {
+      const primH = Math.min(natPrimH, maxSideH)
+      const provH = Math.min(natProvH, maxSideH)
       const midY = exclusion.top + (exclusion.bottom - exclusion.top) / 2
-      const positions = []
-      const primH = measured.find(m => m.id === 'primary')?.h ?? 200
-      const provH = measured.find(m => m.id === 'provenance')?.h ?? 200
-      const primY = midY - primH / 2
-      const provY = midY - provH / 2
-      positions.push({ id: 'primary', x: STAGE_PADDING, y: Math.max(STAGE_PADDING, primY), className: 'k-card--left', width: cardW, height: primH })
-      positions.push({ id: 'provenance', x: stageW - STAGE_PADDING - cardW, y: Math.max(STAGE_PADDING, provY), className: 'k-card--right', width: cardW, height: provH })
-      positions.push({ id: 'actions', x: STAGE_PADDING + (stageW - 2 * STAGE_PADDING - cardW) / 2, y: exclusion.bottom + STAGE_PADDING + CARD_GAP, className: 'k-card--bottom-center', width: cardW, height: actH })
-      return positions
+      let primY = midY - primH / 2
+      let provY = midY - provH / 2
+      primY = Math.max(STAGE_PADDING, Math.min(primY, maxSideBottom - primH))
+      provY = Math.max(STAGE_PADDING, Math.min(provY, maxSideBottom - provH))
+      const lowerSideBottom = Math.max(primY + primH, provY + provH)
+      const actionsY = Math.max(exclusion.bottom + CARD_GAP, lowerSideBottom + CARD_GAP)
+      const actionsX = STAGE_PADDING + (stageW - 2 * STAGE_PADDING - cardW) / 2
+      const fitsInStage = actionsY + actH <= stageH - STAGE_PADDING + 0.5
+        && primY >= STAGE_PADDING - 0.5
+        && provY >= STAGE_PADDING - 0.5
+        && primY + primH <= maxSideBottom + 0.5
+        && provY + provH <= maxSideBottom + 0.5
+
+      if (fitsInStage) {
+        const primary = { id: 'primary', x: STAGE_PADDING, y: primY, w: cardW, h: primH }
+        const provenance = { id: 'provenance', x: stageW - STAGE_PADDING - cardW, y: provY, w: cardW, h: provH }
+        const actions = { id: 'actions', x: actionsX, y: actionsY, w: cardW, h: actH }
+        const pairsOk = rectsSeparate(primary, provenance, CARD_GAP)
+          && rectsSeparate(primary, actions, CARD_GAP)
+          && rectsSeparate(provenance, actions, CARD_GAP)
+        const coreClear = actions.y >= exclusion.bottom + CARD_GAP - 0.5
+          && primary.x + primary.w <= exclusion.left - CARD_GAP + 0.5
+          && provenance.x >= exclusion.right + CARD_GAP - 0.5
+        if (pairsOk && coreClear) {
+          return [
+            { id: 'primary', x: primary.x, y: primary.y, className: 'k-card--left', width: cardW, height: primH, maxHeight: primH },
+            { id: 'provenance', x: provenance.x, y: provenance.y, className: 'k-card--right', width: cardW, height: provH, maxHeight: provH },
+            { id: 'actions', x: actions.x, y: actions.y, className: 'k-card--bottom-center', width: cardW, height: actH, maxHeight: actH },
+          ]
+        }
+      }
     }
   }
 
@@ -115,7 +155,7 @@ export function KnowledgeProjection({ actions = {} }) {
     const positions = placeCards(sr.width, sr.height, excl, cardIds)
     const placements = positions.map((pos, i) => ({
       id: pos.id ?? cardIds[i], x: pos.x, y: pos.y, className: pos.className, width: pos.width,
-      delayMs: reducedMotion ? 0 : i * STAGGER_MS
+      maxHeight: pos.maxHeight, delayMs: reducedMotion ? 0 : i * STAGGER_MS
     }))
     setPlacement(placements)
   }, [reducedMotion])
@@ -227,6 +267,7 @@ export function KnowledgeProjection({ actions = {} }) {
   const getPlacementStyle = (cardId) => {
     const p = placementById.get(cardId); if (!p) return {}
     const s = { '--kw': `${p.width}px`, '--kx': `${p.x}px`, '--ky': `${p.y}px`, '--kdelay': `${p.delayMs}ms` }
+    if (p.maxHeight) s['--kmaxh'] = `${p.maxHeight}px`
     if (reducedMotion) s.animation = 'k-fade 220ms ease-out both'; return s
   }
 

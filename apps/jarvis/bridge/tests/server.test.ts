@@ -201,6 +201,8 @@ describe('production Core composition', () => {
         JERICHO_GIT_REPOSITORIES: '[]',
         JERICHO_GITHUB_REPOSITORIES: '',
         JERICHO_CONDUCTOR_ROOTS: '[]',
+        // Clear workspace .env MEMORY_ROOTS so legacy OBSIDIAN_VAULT can boot alone.
+        JERICHO_MEMORY_ROOTS: '',
         JERICHO_OBSIDIAN_VAULT: vault,
         JERICHO_HERMES_BUS_ROOT: busRoot,
         JERICHO_HERMES_REPO: 'jericho',
