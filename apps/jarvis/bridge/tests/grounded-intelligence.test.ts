@@ -26,6 +26,7 @@ import {
   IdentityResolutionCache,
   buildGroundedResultEvent,
   groupIdentityEvidence,
+  selectPersonEvidenceHits,
   ISABELLA_IDENTITY,
 } from '../src/retrieval/identity-aware.js';
 function person(overrides: Partial<Entity> & Pick<Entity, 'id' | 'canonicalName'>): Entity {
@@ -1251,5 +1252,192 @@ describe('jericho-unified synthetic vault', () => {
       expect(reorganize.status).toBe(201);
     }
     expect(opened).toHaveLength(SOURCE_FOLDERS.length);
+  });
+});
+
+describe('grounded result uniqueness and generic relationship conflicts', () => {
+  it('emits unique provenance, conflicts, and permitted action IDs for one result', () => {
+    const hits = [
+      {
+        path: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'Isabella Handel works at MasterBlox and is married to Carlos Prada.',
+        score: 0.95,
+        sourceId: 'src-canonical',
+        rootId: 'prada-mind',
+        authority: 'canonical' as const,
+      },
+      {
+        path: 'People/Isabella Handel.md',
+        title: 'Isabella Handel',
+        excerpt: 'Isabella Handel works at MasterBlox and is married to Carlos Prada.',
+        score: 0.95,
+        sourceId: 'src-canonical',
+        rootId: 'prada-mind',
+        authority: 'canonical' as const,
+      },
+      {
+        path: 'Sessions/Francisco.md',
+        title: 'Francisco session',
+        excerpt: 'Isabella is Francisco wife and works elsewhere.',
+        score: 0.4,
+        sourceId: 'src-francisco',
+        rootId: 'jarvis-memory',
+        authority: 'supplemental' as const,
+      },
+      {
+        path: 'Sessions/Francisco.md',
+        title: 'Francisco session',
+        excerpt: 'Isabella is Francisco wife and works elsewhere.',
+        score: 0.4,
+        sourceId: 'src-francisco',
+        rootId: 'jarvis-memory',
+        authority: 'supplemental' as const,
+      },
+    ];
+    const evidence = groupIdentityEvidence('Isabella', hits, 1, ISABELLA_IDENTITY);
+    const event = buildGroundedResultEvent(evidence, randomUUID(), 'private_knowledge', undefined, { hits });
+    assertGroundedResultEvent(event);
+
+    const provenanceIds = event.provenance.map((item) => item.sourceId);
+    expect(provenanceIds).toEqual([...new Set(provenanceIds)]);
+    expect(provenanceIds).toEqual(['src-canonical', 'src-francisco']);
+
+    const conflictIds = (event.conflicts ?? []).map((item) => item.id);
+    expect(conflictIds).toEqual([...new Set(conflictIds)]);
+    const conflictSemantics = (event.conflicts ?? []).map((item) =>
+      `${item.claim}\0${item.reason}\0${[...item.sourceIds].sort().join(',')}`);
+    expect(conflictSemantics).toEqual([...new Set(conflictSemantics)]);
+
+    for (const claim of event.claims ?? []) {
+      expect(claim.supportSourceIds).toEqual([...new Set(claim.supportSourceIds)]);
+    }
+    const claimIds = (event.claims ?? []).map((item) => item.id);
+    expect(claimIds).toEqual([...new Set(claimIds)]);
+
+    for (const key of ['openSourceIds', 'reorganizeSourceIds', 'correctConflictIds'] as const) {
+      const ids = event.actions[key] ?? [];
+      expect(ids).toEqual([...new Set(ids)]);
+    }
+    expect(event.relationship).toBeUndefined();
+  });
+
+  it('surfaces excluded relationship evidence generically for Isabella/Francisco and another person', () => {
+    const cases = [
+      {
+        query: 'Who is Isabella Handel',
+        canonical: {
+          path: 'People/Isabella Handel.md',
+          title: 'Isabella Handel',
+          excerpt: 'Isabella Handel works at MasterBlox.',
+          score: 0.5,
+          sourceId: 'src-isabella',
+          rootId: 'canonical',
+          authority: 'canonical' as const,
+        },
+        conflicting: {
+          path: 'Sessions/noise-francisco.md',
+          title: 'Session notes',
+          excerpt: 'Isabella is Francisco wife according to a passing mention.',
+          score: 0.01,
+          sourceId: 'src-francisco-conflict',
+          rootId: 'supplemental',
+          authority: 'supplemental' as const,
+        },
+        noisePrefix: 'noise-isabella',
+      },
+      {
+        query: 'Who is Mira Chen',
+        canonical: {
+          path: 'People/Mira Chen.md',
+          title: 'Mira Chen',
+          excerpt: 'Mira Chen leads design operations.',
+          score: 0.5,
+          sourceId: 'src-mira',
+          rootId: 'canonical',
+          authority: 'canonical' as const,
+        },
+        conflicting: {
+          path: 'Sessions/noise-mira-spouse.md',
+          title: 'Session notes',
+          excerpt: 'Mira is married to Carlos according to an unverified note.',
+          score: 0.01,
+          sourceId: 'src-mira-conflict',
+          rootId: 'supplemental',
+          authority: 'supplemental' as const,
+        },
+        noisePrefix: 'noise-mira',
+      },
+    ] as const;
+
+    for (const testCase of cases) {
+      const noise = Array.from({ length: 40 }, (_, index) => ({
+        path: `Noise/${testCase.noisePrefix}-${index}.md`,
+        title: `${testCase.noisePrefix} ${index}`,
+        excerpt: `${testCase.query} padding token ${index} `.repeat(8),
+        score: 0.9 - index * 0.01,
+        sourceId: `src-noise-${testCase.noisePrefix}-${index}`,
+        rootId: 'supplemental',
+        authority: 'supplemental' as const,
+      }));
+      const candidates = [...noise, testCase.conflicting, testCase.canonical];
+      const selected = selectPersonEvidenceHits(testCase.query, candidates, 16);
+      expect(selected.some((hit) => hit.sourceId === testCase.canonical.sourceId)).toBe(true);
+      expect(selected.some((hit) => hit.sourceId === testCase.conflicting.sourceId)).toBe(true);
+
+      const evidence = groupIdentityEvidence(testCase.query, selected);
+      const event = buildGroundedResultEvent(evidence, randomUUID(), 'private_knowledge', undefined, {
+        hits: selected,
+      });
+      assertGroundedResultEvent(event);
+      expect(event.relationship).toBeUndefined();
+      expect(event.conflicts?.length).toBeGreaterThan(0);
+      expect(event.conflicts?.some((conflict) =>
+        /Unconfirmed spouse|First-name|conflicting|wife|married/i.test(`${conflict.claim} ${conflict.reason}`))).toBe(true);
+      const provenanceIds = event.provenance.map((item) => item.sourceId);
+      expect(provenanceIds).toEqual([...new Set(provenanceIds)]);
+      const actionConflictIds = event.actions.correctConflictIds ?? [];
+      expect(actionConflictIds).toEqual([...new Set(actionConflictIds)]);
+    }
+  });
+
+  it('keeps low-ranked relationship conflict docs inside the bounded person evidence set', async () => {
+    const root = tempDir('jericho-rel-pool-');
+    writeFileSync(join(root, 'People Isabella Handel.md'), [
+      '# Isabella Handel',
+      'Isabella Handel works at MasterBlox.',
+    ].join('\n'));
+    writeFileSync(join(root, 'Sessions Francisco.md'), [
+      '# Francisco session',
+      'Isabella is Francisco wife and works elsewhere.',
+    ].join('\n'));
+    for (let index = 0; index < 30; index += 1) {
+      writeFileSync(
+        join(root, `Noise Isabella ${index}.md`),
+        `# Noise ${index}\nIsabella mention padding ${'Isabella '.repeat(20)}\n`,
+      );
+    }
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 41) });
+    stores.push(store);
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: () => undefined,
+      instruct: () => undefined,
+    });
+    controller.beginTurn();
+    const grounded = await controller.runPrivateRetrieval('Who is Isabella Handel');
+    expect(grounded).toBeTruthy();
+    assertGroundedResultEvent(grounded!);
+    expect(grounded!.relationship).toBeUndefined();
+    expect(grounded!.conflicts?.some((conflict) =>
+      /Francisco|First-name|conflicting|wife|spouse|Unconfirmed/i.test(`${conflict.claim} ${conflict.reason}`))).toBe(true);
+    const provenanceIds = grounded!.provenance.map((item) => item.sourceId);
+    expect(provenanceIds).toEqual([...new Set(provenanceIds)]);
+    expect((grounded!.actions.correctConflictIds ?? [])).toEqual([
+      ...new Set(grounded!.actions.correctConflictIds ?? []),
+    ]);
   });
 });

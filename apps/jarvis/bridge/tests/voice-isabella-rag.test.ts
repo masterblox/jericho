@@ -350,6 +350,76 @@ describe('assertGroundedResultEvent', () => {
     (event as unknown as Record<string, unknown>).subject = 'x'.repeat(501);
     expect(() => assertGroundedResultEvent(event)).toThrow(/subject/);
   });
+
+  it('rejects whitespace-only opaque IDs without rewriting accepted values', () => {
+    const hit = {
+      path: 'People/Isabella Handel.md',
+      title: 'Isabella Handel',
+      excerpt: 'Works at MasterBlox.',
+      score: 0.97,
+      sourceId: 'src-ok',
+      rootId: 'prada-mind',
+      authority: 'canonical' as const,
+    };
+    const result = groupIdentityEvidence('Isabella', [hit], 1, ISABELLA_IDENTITY);
+    const event = buildGroundedResultEvent(result, randomUUID(), 'private_knowledge', undefined, { hits: [hit] });
+    expect(event.provenance[0]?.sourceId).toBe('src-ok');
+    const originalSubject = event.subject;
+    const originalSourceId = event.provenance[0]!.sourceId;
+    expect(() => assertGroundedResultEvent({ ...event, resultId: '   ' })).toThrow(/whitespace-only|resultId/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      provenance: [{ ...event.provenance[0]!, sourceId: '\t\n' }],
+    })).toThrow(/whitespace-only|sourceId/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      actions: { openSourceIds: ['  '] },
+    })).toThrow(/whitespace-only|openSourceIds/);
+    expect(event.subject).toBe(originalSubject);
+    expect(event.provenance[0]?.sourceId).toBe(originalSourceId);
+  });
+
+  it('rejects duplicate source, claim, conflict, and action opaque IDs', () => {
+    const hit = {
+      path: 'People/Isabella Handel.md',
+      title: 'Isabella Handel',
+      excerpt: 'Works at MasterBlox.',
+      score: 0.97,
+      sourceId: 'src-ok',
+      rootId: 'prada-mind',
+      authority: 'canonical' as const,
+    };
+    const result = groupIdentityEvidence('Isabella', [hit], 1, ISABELLA_IDENTITY);
+    const event = buildGroundedResultEvent(result, randomUUID(), 'private_knowledge', undefined, { hits: [hit] });
+    const baseProv = event.provenance[0]!;
+    expect(baseProv.sourceId).toBe('src-ok');
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      provenance: [baseProv, { ...baseProv }],
+    })).toThrow(/duplicate sourceId/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      claims: [
+        { id: 'claim-a', text: 'One', supportSourceIds: ['src-ok'] },
+        { id: 'claim-a', text: 'Two', supportSourceIds: ['src-ok'] },
+      ],
+    })).toThrow(/duplicate id/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      conflicts: [
+        { id: 'c1', claim: 'A', reason: 'r', sourceIds: ['src-ok'] },
+        { id: 'c1', claim: 'B', reason: 'r', sourceIds: ['src-ok'] },
+      ],
+    })).toThrow(/duplicate id/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      actions: { openSourceIds: ['src-ok', 'src-ok'] },
+    })).toThrow(/duplicate id/);
+    expect(() => assertGroundedResultEvent({
+      ...event,
+      claims: [{ id: 'claim-a', text: 'One', supportSourceIds: ['src-ok', 'src-ok'] }],
+    })).toThrow(/duplicate id/);
+  });
 });
 
 describe('generalized identity grouping', () => {
