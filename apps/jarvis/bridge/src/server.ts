@@ -2642,6 +2642,21 @@ function contentType(path: string): string {
 }
 
 async function main(): Promise<void> {
+  // Gemini Live / upstream sockets can emit ECONNRESET after the SDK callback
+  // path has already settled. Swallow only those transient transport errors so
+  // one dropped voice session cannot take down the private Core process.
+  process.on('uncaughtException', (error) => {
+    const code = typeof error === 'object' && error && 'code' in error
+      ? String((error as NodeJS.ErrnoException).code)
+      : '';
+    if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ETIMEDOUT') {
+      console.error(`[jericho] transient socket error ignored: ${code}`);
+      return;
+    }
+    console.error('[jericho] uncaughtException', error);
+    process.exit(1);
+  });
+
   const config = loadConfig();
   let startupStatus = normalStartupStatus();
   if (process.argv.slice(2).includes('--reinitialize-core')) {

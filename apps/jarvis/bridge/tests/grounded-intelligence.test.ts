@@ -396,6 +396,8 @@ describe('core + multi-root aggregation', () => {
     });
     index.refresh();
     expect(classifyPrivateQuestion('Who is Isabella Handel')).toBe(true);
+    expect(classifyPrivateQuestion("Who's Isabella? Who's Isabella?")).toBe(true);
+    expect(classifyPrivateQuestion("Who's Isabella")).toBe(true);
     const memoryHits = index.search('Isabella Handel', 8);
     expect(memoryHits.some((hit) => hit.authority === 'canonical')).toBe(true);
     expect(memoryHits.some((hit) => hit.authority === 'supplemental')).toBe(true);

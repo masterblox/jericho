@@ -777,7 +777,15 @@ export function classifyPrivateQuestion(transcript: string): boolean {
 }
 
 export function privateSubject(transcript: string): string | undefined {
-  const normalized = transcript.replace(/\s+/gu, ' ').trim().replace(/[.!?]+$/u, '').trim();
+  // ASR often inserts mid-utterance "?" when the speaker repeats a question.
+  // Strip clause punctuation before matching so "Who's Isabella? Who's Isabella?"
+  // still yields a private subject instead of falling through to general tools.
+  const normalized = transcript
+    .replace(/[?!]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/[.]+$/u, '')
+    .trim();
   const patterns = [
     /^who(?:\s+is|['’]s)\s+(.+)$/iu,
     /^tell me who\s+(.+?)(?:\s+is)?$/iu,
