@@ -190,18 +190,16 @@ describe('BridgeClient lifecycle', () => {
     expect(sentMessages(harness.socket)).toEqual([]);
   });
 
-  it('arms listening when greeting_complete arrives while still in standby', async () => {
+  it('never arms the microphone from an unsolicited greeting_complete without a local wake', async () => {
     const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
-    // hasGreeted fast-path can deliver greeting_complete before wake() moves
-    // turnState out of standby.
     harness.socket.message({ type: 'greeting_complete' });
-    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
-    harness.emitChunk('active-audio');
-    expect(sentMessages(harness.socket)).toContainEqual({
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.emitChunk('blocked-standby-audio');
+    expect(sentMessages(harness.socket)).not.toContainEqual({
       type: 'audio',
-      data: 'active-audio',
+      data: 'blocked-standby-audio',
     });
   });
 
@@ -297,6 +295,71 @@ describe('BridgeClient lifecycle', () => {
 
     expect(harness.speaker.interrupt).toHaveBeenCalled();
     expect(consoleLog).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsolicited greeting_complete while in standby', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+  });
+
+  it('rejects a stale greeting_complete after standby reset (turn_complete)', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+    harness.client.wake();
+
+    harness.socket.message({ type: 'turn_complete' });
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+  });
+
+  it('allows greeting_complete only after an explicit local wake is pending', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).not.toHaveBeenLastCalledWith(false);
+
+    harness.client.wake();
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it('clears wakePending on enterStandby so a second greeting_complete cannot re-arm', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+    harness.client.wake();
+
+    harness.socket.message({ type: 'turn_complete' });
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+
+    harness.client.wake();
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+  });
+
+  it('preserves guided test resume only when user initiated the wake', async () => {
+    const onGuidedTestResume = vi.fn();
+    const harness = createBridgeHarness({}, { onGuidedTestResume });
+    await harness.client.start();
+    await harness.socket.open();
+
+    harness.socket.message({ type: 'guided_test_resume', test: 'isabella' });
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).not.toHaveBeenLastCalledWith(false);
+    expect(onGuidedTestResume).toHaveBeenCalledOnce();
+
+    harness.client.wake();
+    harness.socket.message({ type: 'guided_test_resume', test: 'isabella' });
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
 });
 
