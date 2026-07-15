@@ -52,6 +52,51 @@ describe('ClapWakeDetector', () => {
     expect(detector.process(new Float32Array(), 1_000)).toBe(false);
     expect(detector.process(new Float32Array([0, Number.NaN, 1]), 1_100)).toBe(false);
   });
+
+  it('rejects a spoken phrase block that fills most samples above the noise floor', () => {
+    const detector = new ClapWakeDetector();
+    for (let index = 0; index < 40; index += 1) {
+      detector.process(steadySignal(0.012), index * 20);
+    }
+
+    expect(detector.process(speechPhraseBlock(), 1_000)).toBe(false);
+  });
+
+  it('rejects sustained tonal noise even with high crest-factor onset', () => {
+    const detector = new ClapWakeDetector();
+    for (let index = 0; index < 20; index += 1) {
+      detector.process(steadySignal(0.012), index * 20);
+    }
+
+    // A block with a sharp onset transient but sustained trailing energy (like a door slam
+    // or TTS fricative that fills the rest of the block) should be rejected.
+    expect(detector.process(mixedTransientSustained(), 1_000)).toBe(false);
+  });
+
+  it('still detects a real clap in a production-sized block', () => {
+    const detector = new ClapWakeDetector();
+    for (let index = 0; index < 40; index += 1) {
+      detector.process(productionSilence(4096), index * 20);
+    }
+
+    // 4096-sample production block: 8ms clap transient, then silence.
+    expect(detector.process(productionClap(4096), 1_000)).toBe(true);
+  });
+
+  it('accepts consecutive claps separated by the refractory window', () => {
+    const detector = new ClapWakeDetector({ refractoryMs: 800 });
+    const silence = productionSilence(4096);
+
+    for (let index = 0; index < 30; index += 1) {
+      detector.process(silence, index * 85);
+    }
+
+    expect(detector.process(productionClap(4096), 3_000)).toBe(true);
+    // Same block within refractory is suppressed.
+    expect(detector.process(productionClap(4096), 3_100)).toBe(false);
+    // After refractory.
+    expect(detector.process(productionClap(4096), 3_900)).toBe(true);
+  });
 });
 
 describe('MicCapture local wake analysis', () => {
@@ -110,6 +155,48 @@ function transientSignal(peak: number, width: number, length = 256): Float32Arra
 
 function clapSignal(): Float32Array {
   return transientSignal(0.9, 8);
+}
+
+/** A block that looks like a spoken phrase: moderate peak, sustained energy filling > 50% of samples. */
+function speechPhraseBlock(length = 256): Float32Array {
+  const arr = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) {
+    // Speech-like: alternating amplitude with a spectral shape.
+    const envelope = i < 20 ? i / 20 : 1 - (i - 20) / (length - 20) * 0.3;
+    arr[i] = Math.sin((i * 0.37) + Math.sin(i * 0.013) * 2) * 0.45 * envelope;
+  }
+  return arr;
+}
+
+/** A block with a sharp onset (like a clap) but sustained trailing energy (like a door slam or TTS fricative).
+ *  The sustained tail fills enough samples to fail the sustained-fraction gate. */
+function mixedTransientSustained(length = 256): Float32Array {
+  const arr = new Float32Array(length);
+  // Sharp onset
+  for (let i = 0; i < 12; i += 1) {
+    arr[i] = i % 2 === 0 ? 0.75 : -0.75;
+  }
+  // Sustained tail across the remaining samples
+  for (let i = 12; i < length; i += 1) {
+    arr[i] = Math.sin(i * 0.23) * 0.22;
+  }
+  return arr;
+}
+
+/** Production-length silence block (4096 samples at 48kHz). */
+function productionSilence(length = 4096): Float32Array {
+  const arr = new Float32Array(length);
+  for (let i = 0; i < length; i += 1) arr[i] = (i % 47 - 23) * 0.00035;
+  return arr;
+}
+
+/** Production-length clap: ~384 samples of transient (~8ms at 48kHz) in a 4096-sample block. */
+function productionClap(length = 4096, transientLen = 384): Float32Array {
+  const arr = new Float32Array(length);
+  for (let i = 0; i < transientLen; i += 1) {
+    arr[i] = i % 2 === 0 ? 0.88 : -0.88;
+  }
+  return arr;
 }
 
 class FakeProcessor {
