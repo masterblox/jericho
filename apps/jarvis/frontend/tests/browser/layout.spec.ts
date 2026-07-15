@@ -28,6 +28,19 @@ async function dispatchV2(page: Page, d: Record<string, unknown>) {
   await page.evaluate((v) => { document.dispatchEvent(new CustomEvent('jericho:grounded-result', { detail: v })) }, d)
 }
 
+async function waitForCardEntryAnimations(page: Page) {
+  await page.waitForFunction(() => {
+    const cards = [...document.querySelectorAll<HTMLElement>('.k-card')]
+    if (cards.length < 3) return false
+    return cards.every((el) => {
+      const opacity = Number(getComputedStyle(el).opacity)
+      if (opacity < 0.99) return false
+      const anims = typeof el.getAnimations === 'function' ? el.getAnimations() : []
+      return anims.every((a) => a.playState === 'finished' || a.playState === 'idle')
+    })
+  }, undefined, { timeout: 8_000 })
+}
+
 async function prepareProjection(page: Page, reducedMotion = false) {
   await page.goto('/')
   await passConsentGate(page)
@@ -40,6 +53,7 @@ async function prepareProjection(page: Page, reducedMotion = false) {
   await page.waitForSelector('.k-card--actions', { timeout: 5000 })
   // Allow measured placement + optional column fallback to settle.
   await page.waitForTimeout(2500)
+  await waitForCardEntryAnimations(page)
 }
 
 async function boxOf(locator: Locator): Promise<Box> {
@@ -72,6 +86,59 @@ async function assertFullCardInViewport(page: Page, card: Locator, label: string
   expect(box.y, `${label} top`).toBeGreaterThanOrEqual(-1)
   expect(box.x + box.width, `${label} right`).toBeLessThanOrEqual(vp.width + 1)
   expect(box.y + box.height, `${label} bottom`).toBeLessThanOrEqual(vp.height + 1)
+}
+
+/** Initial projection evidence — never call scrollIntoViewIfNeeded before this. */
+async function assertInitialProjectionEvidence(page: Page) {
+  const vp = page.viewportSize()!
+  const sphere = page.locator('.core-sphere')
+  const primary = page.locator('.k-card--primary')
+  const evidence = page.locator('.k-card--provenance')
+  const actions = page.locator('.k-card--actions')
+  await expect(sphere).toBeVisible()
+  await expect(primary).toBeVisible()
+  await expect(evidence).toBeVisible()
+  await expect(actions).toBeVisible()
+
+  await expect(primary).toContainText('Isabella Handel')
+  await expect(primary).toContainText(/CONFIDENCE\s*·\s*STRONG/i)
+  await expect(primary).toContainText('Isabella Handel works at MasterBlox')
+  await expect(primary).not.toContainText('Francisco')
+
+  const flow = page.locator('.k-column-flow')
+  const isColumn = (await flow.count()) > 0
+
+  if (isColumn) {
+    const scrollTop = await flow.evaluate((el) => (el as HTMLElement).scrollTop)
+    expect(scrollTop, 'narrow/column initial scroll must be at top').toBe(0)
+    const sphereBox = await boxOf(sphere)
+    const primaryBox = await boxOf(primary)
+    expect(sphereBox.y + sphereBox.height / 2, 'sphere above primary column').toBeLessThan(primaryBox.y)
+    // Primary is first in the scrollable column (Sphere remains above the flow).
+    const order = await page.evaluate(() => {
+      const cards = [...document.querySelectorAll<HTMLElement>('.k-column-flow .k-card')]
+      return cards.map((el) => el.getAttribute('data-knowledge-card'))
+    })
+    expect(order[0], 'primary leads column').toBe('primary')
+    expect(primaryBox.y, 'primary visible in initial column view').toBeLessThan(vp.height)
+    await assertFullCardInViewport(page, primary, 'initial-primary')
+  } else {
+    await assertFullCardInViewport(page, primary, 'initial-primary')
+    await assertFullCardInViewport(page, evidence, 'initial-evidence')
+    await assertFullCardInViewport(page, actions, 'initial-actions')
+    // Primary content must not require internal scroll.
+    const primaryScroll = await primary.evaluate((el) => ({
+      scrollHeight: el.scrollHeight,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop,
+    }))
+    expect(primaryScroll.scrollTop).toBe(0)
+    expect(primaryScroll.scrollHeight, 'primary content fits without scroll').toBeLessThanOrEqual(primaryScroll.clientHeight + 2)
+    // Evidence may scroll internally but must keep a complete frame.
+    const evidenceBox = await boxOf(evidence)
+    expect(evidenceBox.width).toBeGreaterThan(100)
+    expect(evidenceBox.height).toBeGreaterThan(80)
+  }
 }
 
 async function assertGeometryInvariants(page: Page) {
@@ -198,21 +265,25 @@ test.describe('knowledge projection geometry', () => {
 
   test('hard geometry: viewport, sphere, separation, slots', async ({ page }) => {
     await prepareProjection(page)
+    await assertInitialProjectionEvidence(page)
     await assertGeometryInvariants(page)
   })
 
   test('screenshot', async ({ page }) => {
     await prepareProjection(page)
-    await assertGeometryInvariants(page)
+    await assertInitialProjectionEvidence(page)
     const vp = page.viewportSize()!
+    // Capture the initial state before any scrollIntoViewIfNeeded.
     await page.screenshot({ path: `tests/browser/screenshots/wide-${vp.width}x${vp.height}.png`, fullPage: false })
+    await assertGeometryInvariants(page)
   })
 
   test('reduced motion: hard geometry + screenshot', async ({ page }) => {
     await prepareProjection(page, true)
-    await assertGeometryInvariants(page)
+    await assertInitialProjectionEvidence(page)
     const vp = page.viewportSize()!
     await page.screenshot({ path: `tests/browser/screenshots/reduced-motion-${vp.width}x${vp.height}.png`, fullPage: false })
+    await assertGeometryInvariants(page)
   })
 })
 
@@ -225,7 +296,9 @@ test.describe('action terminal states', () => {
   })
 
   test('open succeeds via pointer and renders NOTE OPENED', async ({ page }) => {
+    let openCount = 0
     await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      openCount += 1
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
     })
     await dispatchV2(page, V2_FIXTURE)
@@ -235,6 +308,7 @@ test.describe('action terminal states', () => {
     await page.locator('.k-actions button', { hasText: 'OPEN NOTE' }).first().click()
     await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
     await expect(page.locator('.k-status')).not.toContainText('WORKING')
+    expect(openCount).toBe(1)
   })
 
   test('open fails via intercepted endpoint and renders ACTION FAILED', async ({ page }) => {
@@ -250,8 +324,10 @@ test.describe('action terminal states', () => {
     await expect(page.locator('.k-status')).not.toContainText('WORKING')
   })
 
-  test('keyboard Enter invokes same action as pointer click', async ({ page }) => {
+  test('keyboard Enter invokes same action as pointer click exactly once', async ({ page }) => {
+    let openCount = 0
     await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      openCount += 1
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
     })
     await dispatchV2(page, V2_FIXTURE)
@@ -262,18 +338,37 @@ test.describe('action terminal states', () => {
     await button.focus()
     await button.press('Enter')
     await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
+    expect(openCount).toBe(1)
   })
 
-  test('gesture-target click invokes same action as pointer', async ({ page }) => {
+  test('registry invokeTap invokes same action as pointer exactly once', async ({ page }) => {
+    let openCount = 0
     await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      openCount += 1
       await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
     })
     await dispatchV2(page, V2_FIXTURE)
     await page.waitForSelector('.k-card--actions', { timeout: 5000 })
     await page.waitForTimeout(600)
 
-    await page.locator('[data-gesture-target^="knowledge:open-note"]').first().click()
+    await page.evaluate(async () => {
+      const mod = await import('/src/gesture-target-registry.ts')
+      const registry = new mod.GestureTargetRegistry(document)
+      const stop = mod.observeDomGestureTargets(document, registry)
+      try {
+        const id = document
+          .querySelector('[data-gesture-target^="knowledge:open-note"]')
+          ?.getAttribute('data-gesture-target')
+        if (!id) throw new Error('missing open-note gesture target')
+        const target = registry.get(id)
+        if (!target) throw new Error(`registry missing ${id}`)
+        target.invokeTap()
+      } finally {
+        stop()
+      }
+    })
     await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
+    expect(openCount).toBe(1)
   })
 
   test('correct preview succeeds and confirm button appears', async ({ page }) => {

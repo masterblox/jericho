@@ -361,6 +361,53 @@ describe('BridgeClient lifecycle', () => {
     harness.socket.message({ type: 'greeting_complete' });
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
   });
+
+  it('socket onerror enters safe standby and rejects a stale greeting_complete', async () => {
+    const onError = vi.fn();
+    const harness = createBridgeHarness({}, { onError });
+    await harness.client.start();
+    await harness.socket.open();
+    harness.client.wake();
+    harness.speaker.isPlaying.mockReturnValue(true);
+
+    harness.socket.error();
+
+    expect(onError).toHaveBeenCalledWith('websocket error');
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    expect(harness.speaker.interrupt).toHaveBeenCalled();
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.emitChunk('post-socket-error-audio');
+    expect(sentMessages(harness.socket)).not.toContainEqual({
+      type: 'audio',
+      data: 'post-socket-error-audio',
+    });
+  });
+
+  it('server error while active enters safe standby and rejects a stale greeting_complete', async () => {
+    const onError = vi.fn();
+    const onStatus = vi.fn();
+    const harness = createBridgeHarness({}, { onError, onStatus });
+    await harness.client.start();
+    await harness.socket.open();
+    harness.client.wake();
+    await flushPromises();
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+
+    harness.socket.message({ type: 'error', message: 'upstream failed' });
+
+    expect(onError).toHaveBeenCalledWith('upstream failed');
+    expect(onStatus).toHaveBeenCalledWith('voice-unavailable');
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    harness.emitChunk('post-server-error-audio');
+    expect(sentMessages(harness.socket)).not.toContainEqual({
+      type: 'audio',
+      data: 'post-server-error-audio',
+    });
+  });
 });
 
 describe('SpeakerPlayback lifecycle', () => {
@@ -402,6 +449,10 @@ class FakeSocket {
 
   message(value: Record<string, unknown>) {
     this.onmessage?.(new MessageEvent('message', { data: JSON.stringify(value) }));
+  }
+
+  error() {
+    this.onerror?.(new Event('error'));
   }
 
   disconnect() {

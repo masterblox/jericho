@@ -197,4 +197,19 @@ describe('isSafeRelativePath', () => {
 describe('parseInterfaceSoundDetail', () => {
   it('parses', () => { expect(parseInterfaceSoundDetail({ resultId: 'r', cue: 'summon' })).toEqual({ resultId: 'r', cue: 'summon' }) })
   it('rejects invalid', () => { expect(parseInterfaceSoundDetail({ resultId: 'r', cue: 'boom' })).toBeNull() })
+  it('preserves opaque resultId exactly without trimming or normalizing', () => {
+    const id = '  result-id-with-padding  '
+    expect(parseInterfaceSoundDetail({ resultId: id, cue: 'lock' })).toEqual({ resultId: id, cue: 'lock' })
+  })
+  it('rejects whitespace-only resultId', () => {
+    expect(parseInterfaceSoundDetail({ resultId: '   ', cue: 'summon' })).toBeNull()
+    expect(parseInterfaceSoundDetail({ resultId: '\t\n', cue: 'summon' })).toBeNull()
+  })
+  it('rejects over-limit resultId without truncation', () => {
+    expect(parseInterfaceSoundDetail({ resultId: 'x'.repeat(1025), cue: 'summon' })).toBeNull()
+    expect(parseInterfaceSoundDetail({ resultId: 'x'.repeat(1024), cue: 'summon' })).toEqual({
+      resultId: 'x'.repeat(1024),
+      cue: 'summon',
+    })
+  })
 })

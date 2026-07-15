@@ -52,6 +52,7 @@ export interface InterfaceSoundDetail { resultId: string; cue: InterfaceSoundCue
 export interface GroundedParseError { field: string; message: string; value: unknown; }
 
 const MAX_PATH = 1_024;
+const MAX_OPAQUE_ID = 1_024;
 
 export function isInterfaceSoundCue(v: unknown): v is InterfaceSoundCue {
   return typeof v === 'string' && (INTERFACE_SOUND_CUES as readonly string[]).includes(v);
@@ -63,11 +64,14 @@ export function isSafeRelativePath(value: string): boolean {
   return !value.split('/').some((s) => !s || s === '.' || s === '..');
 }
 
+/** Preserve opaque resultId exactly; reject empty, whitespace-only, and over-limit IDs. */
 export function parseInterfaceSoundDetail(raw: unknown): InterfaceSoundDetail | null {
   if (!raw || typeof raw !== 'object') return null;
   const d = raw as Record<string, unknown>;
-  const resultId = typeof d.resultId === 'string' ? d.resultId.trim() : '';
-  return resultId && isInterfaceSoundCue(d.cue) ? { resultId, cue: d.cue } : null;
+  if (typeof d.resultId !== 'string') return null;
+  const resultId = d.resultId;
+  if (resultId.length === 0 || !resultId.trim() || resultId.length > MAX_OPAQUE_ID) return null;
+  return isInterfaceSoundCue(d.cue) ? { resultId, cue: d.cue } : null;
 }
 
 /** Trim string fields for presentation; never invent or rewrite contract data.

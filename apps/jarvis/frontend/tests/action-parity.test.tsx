@@ -4,6 +4,7 @@ import React from 'react'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { KnowledgeProjection, GROUNDED_RESULT_EVENT } from '../src/sphere/KnowledgeProjection'
+import { GestureTargetRegistry, observeDomGestureTargets } from '../src/gesture-target-registry'
 
 const V2 = {
   schemaVersion: 2, resultId: 'parity-1', phase: 'resolved', route: 'private_knowledge',
@@ -33,30 +34,77 @@ const renderAndDispatch = (a = {}) => {
 }
 
 describe('action parity', () => {
-  it('open: pointer click, gesture invoke call same callback', async () => {
-    const m = vi.fn().mockResolvedValue({})
-    renderAndDispatch({ openMemory: m })
+  it('pointer, keyboard, and registry each invoke the same result-bound open action exactly once', async () => {
+    const openMemory = vi.fn().mockResolvedValue({})
+    const expected: [string, string, string] = ['', 'parity-1', 'src-1']
+
+    renderAndDispatch({ openMemory })
     fireEvent.click(screen.getByText('OPEN NOTE'))
-    expect(m).toHaveBeenCalledWith('', 'parity-1', 'src-1'); m.mockClear()
-    fireEvent.click(document.querySelector('[data-gesture-target="knowledge:open-note:src-1"]')!)
-    expect(m).toHaveBeenCalledWith('', 'parity-1', 'src-1')
+    expect(openMemory).toHaveBeenCalledTimes(1)
+    expect(openMemory).toHaveBeenCalledWith(...expected)
+    cleanup()
+    openMemory.mockClear()
+
+    renderAndDispatch({ openMemory })
+    const keyboardButton = screen.getByRole('button', { name: /OPEN NOTE/i })
+    keyboardButton.focus()
+    fireEvent.keyDown(keyboardButton, { key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true })
+    // jsdom does not synthesize the click browsers fire for Enter on <button>.
+    if (openMemory.mock.calls.length === 0) fireEvent.click(keyboardButton)
+    expect(openMemory).toHaveBeenCalledTimes(1)
+    expect(openMemory).toHaveBeenCalledWith(...expected)
+    cleanup()
+    openMemory.mockClear()
+
+    renderAndDispatch({ openMemory })
+    const registry = new GestureTargetRegistry(document)
+    const stop = observeDomGestureTargets(document, registry)
+    try {
+      const target = registry.get('knowledge:open-note:src-1')
+      expect(target).toBeTruthy()
+      target!.invokeTap()
+    } finally {
+      stop()
+    }
+    expect(openMemory).toHaveBeenCalledTimes(1)
+    expect(openMemory).toHaveBeenCalledWith(...expected)
   })
 
-  it('correct: pointer and gesture invoke same callback', async () => {
+  it('correct: pointer and registry invokeTap call the same callback exactly once each', async () => {
     const m = vi.fn().mockResolvedValue({ version: 1 })
     renderAndDispatch({ correctIdentity: m, confirmCorrection: vi.fn() })
     fireEvent.click(screen.getByText('CORRECT'))
-    expect(m).toHaveBeenCalledWith('parity-1', 'conf-1'); m.mockClear()
-    fireEvent.click(document.querySelector('[data-gesture-target="knowledge:correct:conf-1"]')!)
+    expect(m).toHaveBeenCalledTimes(1)
+    expect(m).toHaveBeenCalledWith('parity-1', 'conf-1')
+    m.mockClear()
+
+    const registry = new GestureTargetRegistry(document)
+    const stop = observeDomGestureTargets(document, registry)
+    try {
+      registry.get('knowledge:correct:conf-1')!.invokeTap()
+    } finally {
+      stop()
+    }
+    expect(m).toHaveBeenCalledTimes(1)
     expect(m).toHaveBeenCalledWith('parity-1', 'conf-1')
   })
 
-  it('reorganize: pointer and gesture invoke same callback', async () => {
+  it('reorganize: pointer and registry invokeTap call the same callback exactly once each', async () => {
     const m = vi.fn().mockResolvedValue({})
     renderAndDispatch({ proposeNoteReorganization: m })
     fireEvent.click(screen.getByText('REORGANIZE'))
-    expect(m).toHaveBeenCalledWith({ relativePath: '', title: '', resultId: 'parity-1', sourceId: 'src-1' }); m.mockClear()
-    fireEvent.click(document.querySelector('[data-gesture-target="knowledge:reorganize:src-1"]')!)
+    expect(m).toHaveBeenCalledTimes(1)
+    expect(m).toHaveBeenCalledWith({ relativePath: '', title: '', resultId: 'parity-1', sourceId: 'src-1' })
+    m.mockClear()
+
+    const registry = new GestureTargetRegistry(document)
+    const stop = observeDomGestureTargets(document, registry)
+    try {
+      registry.get('knowledge:reorganize:src-1')!.invokeTap()
+    } finally {
+      stop()
+    }
+    expect(m).toHaveBeenCalledTimes(1)
     expect(m).toHaveBeenCalledWith({ relativePath: '', title: '', resultId: 'parity-1', sourceId: 'src-1' })
   })
 })

@@ -44,9 +44,12 @@ function placeCards(stageW, stageH, exclusion, cardIds) {
   const rightSpace = stageW - exclusion.right - STAGE_PADDING
 
   if (leftSpace >= cardW + CARD_GAP && rightSpace >= cardW + CARD_GAP && cardIds.length === 3) {
+    // Prefer scrollHeight so a prior maxHeight clamp cannot hide true content size.
     const measured = cardIds.map(id => {
       const el = document.querySelector(`[data-knowledge-card="${id}"]`)
-      return { id, h: el ? el.getBoundingClientRect().height : 200 }
+      if (!el) return { id, h: 200 }
+      const boxH = el.getBoundingClientRect().height
+      return { id, h: Math.max(boxH, el.scrollHeight || 0) }
     })
     const natActH = measured.find(m => m.id === 'actions')?.h ?? 140
     const natPrimH = measured.find(m => m.id === 'primary')?.h ?? 200
@@ -56,9 +59,11 @@ function placeCards(stageW, stageH, exclusion, cardIds) {
     const actH = Math.min(natActH, Math.max(120, stageH - exclusion.bottom - CARD_GAP - STAGE_PADDING))
     const maxSideBottom = stageH - STAGE_PADDING - actH - CARD_GAP
     const maxSideH = Math.max(120, maxSideBottom - STAGE_PADDING)
-    if (maxSideBottom >= STAGE_PADDING + 120 && actH >= 100) {
-      const primH = Math.min(natPrimH, maxSideH)
-      const provH = Math.min(natProvH, maxSideH)
+    // Primary must expose identity, confidence, and claims without internal scroll.
+    // Evidence may scroll internally but must keep a complete frame in-viewport.
+    const primH = Math.ceil(natPrimH)
+    if (maxSideBottom >= STAGE_PADDING + 120 && actH >= 100 && primH <= maxSideH + 0.5) {
+      const provH = Math.min(Math.ceil(natProvH), maxSideH)
       const midY = exclusion.top + (exclusion.bottom - exclusion.top) / 2
       let primY = midY - primH / 2
       let provY = midY - provH / 2

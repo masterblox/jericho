@@ -316,7 +316,10 @@ export class BridgeClient {
       if (this.started && !this.disposed) this.retry = setTimeout(() => this.connect(), 1500);
     };
     socket.onerror = () => {
-      if (this.ws === socket) this.events.onError?.('websocket error');
+      if (this.ws !== socket) return;
+      // Transport failure must never leave the mic armed or wakePending set.
+      this.enterStandby({ interrupt: true });
+      this.events.onError?.('websocket error');
     };
   }
 
@@ -429,7 +432,11 @@ export class BridgeClient {
         }
         break;
       case 'error':
-        if (this.turnState === 'greeting' || this.turnState === 'waiting') {
+        if (
+          this.turnState === 'greeting'
+          || this.turnState === 'waiting'
+          || this.turnState === 'active'
+        ) {
           this.enterStandby({ interrupt: true });
           this.events.onStatus?.('voice-unavailable');
         }
