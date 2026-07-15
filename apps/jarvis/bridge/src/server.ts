@@ -285,15 +285,11 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     identityCache.invalidate();
     groundedActions.invalidateIdentityCache();
   };
-  if (options.memoryIndex) {
-    const index = options.memoryIndex;
-    const originalRefresh = index.refresh.bind(index);
-    index.refresh = () => {
-      const health = originalRefresh();
-      invalidateLiveIdentityCaches();
-      return health;
-    };
-  }
+  // Cache invalidation only after a successful immutable snapshot swap.
+  const unsubscribeMemorySwap = options.memoryIndex?.onSnapshotSwapped(() => {
+    invalidateLiveIdentityCaches();
+  });
+  void unsubscribeMemorySwap;
   const voiceVaultSearch = options.vaultSearch ?? (options.obsidianSearch ? {
     search: async (query: string, limit: number, _signal: AbortSignal) => {
       const results = await options.obsidianSearch!.search(query, limit) as Array<{
@@ -1827,9 +1823,7 @@ function openVoiceSession(
                 receivedAt: Date.now(),
               });
               if (turnPorts.groundingState === 'answering') turnPorts.noteGroundedOutput();
-              // Native audio often skips inputTranscription but still narrates
-              // "test" / "Isabella" in model text — reuse guided fragment window.
-              turnPorts.observeGuidedCue(part.text);
+              // Model text must never start guided mode — only user inputTranscription.
             }
           }
           const calls = message.toolCall?.functionCalls ?? [];
@@ -1837,10 +1831,7 @@ function openVoiceSession(
           if (calls.length && activeSession) {
             void Promise.all(calls.map(async (call: any) => {
               const args = call.args ?? {};
-              const cueBits = [call.name, args.query, args.q, args.subject, args.name]
-                .filter((v) => typeof v === 'string')
-                .join(' ');
-              if (cueBits) turnPorts.observeGuidedCue(cueBits);
+              // Tool arguments are model-generated; never feed them into guided lifecycle.
               send({ type: 'tool_start', name: call.name, args });
               const result = await tools.execute(call.name, args);
               send({ type: 'tool_result', name: call.name, result });
@@ -1870,8 +1861,20 @@ function openVoiceSession(
             }
           }
         },
-        onerror: () => {
+        onerror: (error?: unknown) => {
           if (connectionGeneration === generation) {
+            if (handleVoiceTransportError(error, {
+              onTransient: () => {
+                if (preview?.generation === connectionGeneration) {
+                  finishPreview('unavailable');
+                  return;
+                }
+                send({ type: 'error', message: 'voice unavailable' });
+                if (active || greetingActive || greetingPending) deactivate();
+              },
+            })) {
+              return;
+            }
             if (preview?.generation === connectionGeneration) {
               finishPreview('unavailable');
               return;
@@ -1897,6 +1900,15 @@ function openVoiceSession(
         return;
       }
       session = connected;
+      attachGeminiSessionTransportGuard(connected, (error) => {
+        if (connectionGeneration !== generation) return;
+        handleVoiceTransportError(error, {
+          onTransient: () => {
+            send({ type: 'error', message: 'voice unavailable' });
+            if (active || greetingActive || greetingPending) deactivate();
+          },
+        });
+      });
       if (optionsConnect.previewId && preview?.id === optionsConnect.previewId) {
         send({
           type: 'voice_preview',
@@ -2648,21 +2660,52 @@ function contentType(path: string): string {
   }
 }
 
-async function main(): Promise<void> {
-  // Gemini Live / upstream sockets can emit ECONNRESET after the SDK callback
-  // path has already settled. Swallow only those transient transport errors so
-  // one dropped voice session cannot take down the private Core process.
-  process.on('uncaughtException', (error) => {
-    const code = typeof error === 'object' && error && 'code' in error
-      ? String((error as NodeJS.ErrnoException).code)
-      : '';
-    if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ETIMEDOUT') {
-      console.error(`[jericho] transient socket error ignored: ${code}`);
-      return;
-    }
-    console.error('[jericho] uncaughtException', error);
-    process.exit(1);
+function isTransientGeminiTransportError(error: unknown): boolean {
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : '';
+  if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ETIMEDOUT') return true;
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  return /\bECONNRESET\b|\bEPIPE\b|\bETIMEDOUT\b/u.test(message);
+}
+
+/**
+ * Handle Gemini Live transport failures inside the owning voice session only.
+ * Returns true when the error was a transient socket failure that was handled.
+ */
+function handleVoiceTransportError(
+  error: unknown,
+  hooks: { onTransient: () => void },
+): boolean {
+  if (!isTransientGeminiTransportError(error)) return false;
+  const code = typeof error === 'object' && error && 'code' in error
+    ? String((error as NodeJS.ErrnoException).code)
+    : 'transport';
+  console.error(`[jericho] voice session transport error: ${code}`);
+  hooks.onTransient();
+  return true;
+}
+
+/**
+ * Attach an error listener to the Gemini Live WebSocket so late ECONNRESET /
+ * EPIPE / ETIMEDOUT after the SDK callback settles cannot become process-fatal.
+ */
+function attachGeminiSessionTransportGuard(
+  session: VoiceSessionPort,
+  onError: (error: unknown) => void,
+): void {
+  const conn = (session as { conn?: { ws?: { on?: (event: string, listener: (error: Error) => void) => void } } }).conn;
+  const ws = conn?.ws;
+  if (!ws || typeof ws.on !== 'function') return;
+  ws.on('error', (error: Error) => {
+    onError(error);
   });
+}
+
+async function main(): Promise<void> {
+  // Transient Gemini Live socket errors are handled inside the owning voice
+  // session (see attachGeminiSessionTransportGuard). Unrelated process errors
+  // remain fatal under Node's default uncaughtException behavior.
 
   const config = loadConfig();
   let startupStatus = normalStartupStatus();

@@ -105,10 +105,14 @@ export class GroundedTurnController {
   #processedTurnComplete = false;
   #guidedActive = false;
   #pendingTurnCompleteWithoutTranscript = false;
-  /** First half of a fragmented "Test Isabella" ASR pair. */
-  #pendingGuidedFragment: { kind: 'test'; at: number } | undefined;
-  /** Bare Isabella final seen recently (ASR often reverses fragment order). */
-  #recentBareIsabellaAt: number | undefined;
+  /** Held ASR fragment awaiting its pair before spoken capture is committed. */
+  #pendingGuidedFragment: {
+    kind: 'test' | 'isabella';
+    at: number;
+    transcript: string;
+    turnId: string;
+  } | undefined;
+  #fragmentExpiryTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(ports: GroundedTurnPorts) {
     this.#ports = ports;
@@ -206,6 +210,7 @@ export class GroundedTurnController {
    * Speculative turnComplete during answering without grounded output must NOT disarm.
    */
   onTurnComplete(): { mayDeactivate: boolean } {
+    this.expireGuidedFragments(this.now());
     if (!this.#turn) {
       this.#pendingTurnCompleteWithoutTranscript = true;
       return { mayDeactivate: false };
@@ -279,17 +284,22 @@ export class GroundedTurnController {
       return;
     }
     this.consumePendingTurnComplete();
+    const now = this.#ports.clock?.() ?? Date.now();
+    const guidedOutcome = this.resolveGuidedFinalize(transcript, turn, now);
+    if (guidedOutcome === 'pending') {
+      // Fragment held: no spoken capture until the pair arrives or the window expires.
+      return;
+    }
+    if (guidedOutcome === 'activated') {
+      return;
+    }
     if (!turn.captureCommitted) {
       turn.captureCommitted = true;
       this.commitSpokenCapture(turn.id, transcript);
     }
-    const now = this.#ports.clock?.() ?? Date.now();
-    if (this.tryStartGuided(transcript, turn, now)) {
-      return;
-    }
     if (isGuidedStop(transcript)) {
       this.#guidedActive = false;
-      this.#pendingGuidedFragment = undefined;
+      this.clearGuidedFragments();
       this.#ports.send({ type: 'guided_test_end', test: 'isabella' });
       this.#ports.onGuidedStop?.();
       turn.route = 'general';
@@ -603,94 +613,96 @@ export class GroundedTurnController {
     }
   }
 
-  /**
-   * Live native-audio often understands "Test" / "Isabella" but skips
-   * inputTranscription and routes via tools/model text instead. Feed those
-   * lexical cues into the same fragment window as ASR finals.
-   */
-  observeGuidedCue(text: string): boolean {
-    if (!text || this.#guidedActive) return false;
-    const now = this.now();
-    this.expireGuidedFragments(now);
-    const normalized = normalizeGuidedTranscript(text);
-    if (!normalized) return false;
-    if (isGuidedStart(normalized) || (/\btest(?:ing)?\b/iu.test(normalized) && /\bisabel(?:la|a)?\b/iu.test(normalized))) {
-      return this.activateGuided(now);
+  private clearGuidedFragments(): void {
+    this.#pendingGuidedFragment = undefined;
+    if (this.#fragmentExpiryTimer) {
+      clearTimeout(this.#fragmentExpiryTimer);
+      this.#fragmentExpiryTimer = undefined;
     }
-    if (/\btest(?:ing)?\b/iu.test(normalized)) {
-      if (
-        this.#recentBareIsabellaAt !== undefined
-        && now - this.#recentBareIsabellaAt <= GUIDED_FRAGMENT_WINDOW_MS
-      ) {
-        return this.activateGuided(now);
-      }
-      this.#pendingGuidedFragment = { kind: 'test', at: now };
-      return false;
-    }
-    if (/\bisabel(?:la|a)?\b/iu.test(normalized)) {
-      if (this.#pendingGuidedFragment?.kind === 'test') {
-        return this.activateGuided(now);
-      }
-      this.#recentBareIsabellaAt = now;
-    }
-    return false;
+  }
+
+  private armFragmentExpiry(heldAt: number): void {
+    if (this.#fragmentExpiryTimer) clearTimeout(this.#fragmentExpiryTimer);
+    const delay = Math.max(0, GUIDED_FRAGMENT_WINDOW_MS - (this.now() - heldAt));
+    this.#fragmentExpiryTimer = setTimeout(() => {
+      this.#fragmentExpiryTimer = undefined;
+      const pending = this.#pendingGuidedFragment;
+      if (!pending) return;
+      if (this.now() - pending.at < GUIDED_FRAGMENT_WINDOW_MS) return;
+      this.#pendingGuidedFragment = undefined;
+      // Incomplete fragments expire without leaving the microphone armed.
+      this.#ports.onTurnSettled?.();
+    }, delay);
+    this.#fragmentExpiryTimer.unref?.();
   }
 
   private expireGuidedFragments(now: number): void {
     const pending = this.#pendingGuidedFragment;
     if (pending && now - pending.at > GUIDED_FRAGMENT_WINDOW_MS) {
-      this.#pendingGuidedFragment = undefined;
-    }
-    if (
-      this.#recentBareIsabellaAt
-      && now - this.#recentBareIsabellaAt > GUIDED_FRAGMENT_WINDOW_MS
-    ) {
-      this.#recentBareIsabellaAt = undefined;
+      this.clearGuidedFragments();
+      // Incomplete fragments expire without leaving the microphone armed.
+      this.#ports.onTurnSettled?.();
     }
   }
 
-  private activateGuided(now: number): boolean {
+  private activateGuided(now: number, turn: ActiveTurn, stitchedTranscript: string): boolean {
     void now;
-    this.#pendingGuidedFragment = undefined;
-    this.#recentBareIsabellaAt = undefined;
+    this.clearGuidedFragments();
+    if (!turn.captureCommitted) {
+      turn.captureCommitted = true;
+      this.commitSpokenCapture(turn.id, stitchedTranscript);
+    }
     this.#guidedActive = true;
+    turn.guided = { test: 'isabella' };
+    turn.route = 'general';
+    turn.speculative = [];
     this.#ports.send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
     this.#ports.send({ type: 'guided_test_phase', test: 'isabella', phase: 'ready' });
     this.#ports.onGuidedStart?.();
-    if (this.#turn) {
-      this.#turn.guided = { test: 'isabella' };
-      this.#turn.route = 'general';
-      this.#turn.speculative = [];
-    }
     return true;
   }
 
-  private tryStartGuided(transcript: string, turn: ActiveTurn, now: number): boolean {
+  /**
+   * @returns pending when holding a fragment, activated when guided started, none otherwise.
+   */
+  private resolveGuidedFinalize(
+    transcript: string,
+    turn: ActiveTurn,
+    now: number,
+  ): 'pending' | 'activated' | 'none' {
     this.expireGuidedFragments(now);
-    // Pair either order: test→Isabella (pending cue) or Isabella→test (recent bare).
-    // Do not consume bare Isabella alone — ASR often reduces "Who is Isabella" to that.
+    if (this.#guidedActive) return 'none';
+
+    const pending = this.#pendingGuidedFragment;
     const pairedForward =
-      this.#pendingGuidedFragment?.kind === 'test' && isGuidedIsabellaFragment(transcript);
+      pending?.kind === 'test' && isGuidedIsabellaFragment(transcript);
     const pairedReverse =
-      isGuidedTestFragment(transcript)
-      && this.#recentBareIsabellaAt !== undefined
-      && now - this.#recentBareIsabellaAt <= GUIDED_FRAGMENT_WINDOW_MS;
+      pending?.kind === 'isabella' && isGuidedTestFragment(transcript);
     if (isGuidedStart(transcript) || pairedForward || pairedReverse) {
-      turn.guided = { test: 'isabella' };
+      const stitched = pairedForward || pairedReverse
+        ? 'Test Isabella'
+        : normalizeGuidedTranscript(transcript);
+      this.activateGuided(now, turn, stitched);
+      return 'activated';
+    }
+
+    if (isGuidedTestFragment(transcript) || isGuidedIsabellaFragment(transcript)) {
+      // Supersede any opposite-order incomplete hold without committing it.
+      this.#pendingGuidedFragment = {
+        kind: isGuidedTestFragment(transcript) ? 'test' : 'isabella',
+        at: now,
+        transcript,
+        turnId: turn.id,
+      };
       turn.route = 'general';
       turn.speculative = [];
-      return this.activateGuided(now);
+      this.armFragmentExpiry(now);
+      return 'pending';
     }
-    if (isGuidedTestFragment(transcript)) {
-      this.#pendingGuidedFragment = { kind: 'test', at: now };
-      turn.route = 'general';
-      turn.speculative = [];
-      return true;
-    }
-    if (isGuidedIsabellaFragment(transcript)) {
-      this.#recentBareIsabellaAt = now;
-    }
-    return false;
+
+    // A non-fragment utterance abandons any incomplete guided hold.
+    if (pending) this.clearGuidedFragments();
+    return 'none';
   }
 
   private beginGrounding(): void {

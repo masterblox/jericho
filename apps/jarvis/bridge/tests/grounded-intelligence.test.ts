@@ -1039,7 +1039,7 @@ describe('review regressions', () => {
     expect(terminals[0]?.guided).toEqual({ test: 'isabella' });
   });
 
-  it('guided start accepts ASR fragments test + Isabella across turns', async () => {
+  it('guided start accepts ASR fragments test + Isabella across turns with one capture', async () => {
     const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 32) });
     stores.push(store);
     const sent: Record<string, unknown>[] = [];
@@ -1055,14 +1055,18 @@ describe('review regressions', () => {
     expect(controller.guidedActive).toBe(false);
     expect(sent.some((message) => message.type === 'guided_test_start')).toBe(false);
     expect(controller.onTurnComplete().mayDeactivate).toBe(false);
+    expect(store.listEvents().filter((event) => event.type === 'local.capture.spoken')).toHaveLength(0);
     controller.beginTurn();
     controller.ingestTranscription({ text: 'Isabela.' }, 'final');
     await controller.finalizeNow();
     expect(controller.guidedActive).toBe(true);
-    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+    expect(sent.filter((message) => message.type === 'guided_test_start')).toHaveLength(1);
+    const captures = store.listEvents().filter((event) => event.type === 'local.capture.spoken');
+    expect(captures).toHaveLength(1);
+    expect((captures[0]?.payload as { transcript?: string }).transcript).toBe('Test Isabella');
   });
 
-  it('guided start accepts lexical cues when native audio skips transcription', async () => {
+  it('model output and tool arguments cannot start guided mode', async () => {
     const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 35) });
     stores.push(store);
     const sent: Record<string, unknown>[] = [];
@@ -1072,11 +1076,25 @@ describe('review regressions', () => {
       instruct: () => undefined,
       onGuidedStart: () => undefined,
     });
-    expect(controller.observeGuidedCue('The input "test" feels like a distraction')).toBe(false);
+    // Simulate model narration / tool-arg leakage — these must never enter guided lifecycle.
+    controller.bufferSpeculative({
+      kind: 'text',
+      text: 'The input "test" Isabella guided walkthrough',
+      receivedAt: Date.now(),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'search_vault query Isabella test' }, 'final');
+    // Tool-shaped text that is not a guided start phrase must not activate guided.
+    await controller.finalizeNow();
     expect(controller.guidedActive).toBe(false);
-    expect(controller.observeGuidedCue('search_vault query Isabella')).toBe(true);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(false);
+
+    // Only correlated user inputTranscription of Test+Isabella starts guided.
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Test Isabella' }, 'final');
+    await controller.finalizeNow();
     expect(controller.guidedActive).toBe(true);
-    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+    expect(sent.filter((message) => message.type === 'guided_test_start')).toHaveLength(1);
   });
 
   it('guided start accepts reversed ASR fragments Isabella then test', async () => {
@@ -1093,11 +1111,40 @@ describe('review regressions', () => {
     controller.ingestTranscription({ text: 'Isabella.' }, 'final');
     await controller.finalizeNow();
     expect(controller.guidedActive).toBe(false);
+    expect(store.listEvents().filter((event) => event.type === 'local.capture.spoken')).toHaveLength(0);
     controller.beginTurn();
     controller.ingestTranscription({ text: 'test.' }, 'final');
     await controller.finalizeNow();
     expect(controller.guidedActive).toBe(true);
     expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+    const captures = store.listEvents().filter((event) => event.type === 'local.capture.spoken');
+    expect(captures).toHaveLength(1);
+    expect((captures[0]?.payload as { transcript?: string }).transcript).toBe('Test Isabella');
+  });
+
+  it('expired guided fragments disarm without committing capture', async () => {
+    let now = 1_000;
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 36) });
+    stores.push(store);
+    let settled = 0;
+    const controller = new GroundedTurnController({
+      store,
+      send: () => undefined,
+      instruct: () => undefined,
+      clock: () => now,
+      onTurnSettled: () => {
+        settled += 1;
+      },
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'test.' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(false);
+    expect(controller.onTurnComplete().mayDeactivate).toBe(false);
+    now += 13_000;
+    expect(controller.onTurnComplete().mayDeactivate).toBe(true);
+    expect(settled).toBeGreaterThanOrEqual(1);
+    expect(store.listEvents().filter((event) => event.type === 'local.capture.spoken')).toHaveLength(0);
   });
 
   it('bare Isabella alone does not start guided and stays available for private questions', async () => {
@@ -1529,5 +1576,143 @@ describe('grounded result uniqueness and generic relationship conflicts', () => 
     expect((grounded!.actions.correctConflictIds ?? [])).toEqual([
       ...new Set(grounded!.actions.correctConflictIds ?? []),
     ]);
+  });
+});
+
+describe('large-corpus refresh responsiveness', () => {
+  function corpusRoot(fileCount: number): string {
+    const root = tempDir('jericho-corpus-');
+    for (let index = 0; index < fileCount; index += 1) {
+      writeFileSync(
+        join(root, `note-${index}.md`),
+        `# Note ${index}\nBody for corpus document ${index} with Isabella Handel MasterBlox padding.\n`,
+      );
+    }
+    return root;
+  }
+
+  it('never overlaps refreshes and preserves last snapshot on failure', async () => {
+    const root = corpusRoot(40);
+    const index = new MemoryIndex({
+      roots: [{ id: 'jericho-unified', path: root, authority: 'canonical' }],
+    });
+    const first = await index.requestRefresh();
+    expect(first.status).toBe('idle');
+    expect(first.available).toBe(true);
+    expect(first.lastSuccessAt).toBeTruthy();
+    expect(first.lastDurationMs).toBeGreaterThanOrEqual(0);
+    const revision = first.revision;
+
+    const a = index.requestRefresh();
+    const b = index.requestRefresh();
+    expect(a).toBe(b);
+    expect(index.health().status).toBe('indexing');
+    await a;
+    expect(index.health().status).toBe('idle');
+    expect(index.revision).toBe(revision);
+
+    rmSync(root, { recursive: true, force: true });
+    const failed = index.refresh();
+    expect(failed.status).toBe('error');
+    expect(failed.lastError).toBeTruthy();
+    expect(failed.available).toBe(true);
+    expect(failed.revision).toBe(revision);
+    expect(index.search('Isabella', 3).length).toBeGreaterThan(0);
+  });
+
+  it('keeps health/event-loop latency bounded while indexing a large corpus', async () => {
+    const root = corpusRoot(2_500);
+    const index = new MemoryIndex({
+      roots: [{ id: 'jericho-unified', path: root, authority: 'canonical' }],
+    });
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 77) });
+    stores.push(store);
+    const server = createJerichoServer({
+      store,
+      apiToken: TOKEN,
+      memoryIndex: index,
+    });
+    servers.push(server);
+    const address = await server.listen(0, '127.0.0.1');
+
+    const refreshPromise = index.requestRefresh();
+    const lags: number[] = [];
+    let sawIndexing = false;
+    for (;;) {
+      const healthStarted = Date.now();
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/v1/health`, {
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      const healthLag = Date.now() - healthStarted;
+      lags.push(healthLag);
+      expect(response.status).toBe(200);
+      const body = await response.json() as {
+        memory: { status: string; revision: string; lastSuccessAt?: string; lastDurationMs?: number };
+      };
+      if (body.memory.status === 'indexing') sawIndexing = true;
+      const loopStarted = Date.now();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      lags.push(Date.now() - loopStarted);
+      if (body.memory.status !== 'indexing') break;
+    }
+    const health = await refreshPromise;
+    expect(sawIndexing).toBe(true);
+    expect(health.status).toBe('idle');
+    expect(health.available).toBe(true);
+    expect(health.roots[0]?.documentCount).toBe(2_500);
+    expect(health.lastSuccessAt).toBeTruthy();
+    expect(typeof health.lastDurationMs).toBe('number');
+    const maxLag = Math.max(...lags);
+    expect(maxLag).toBeLessThan(250);
+  });
+
+  it('guided fragmented turn yields exactly one capture, retrieval, terminal, and narration', async () => {
+    const root = corpusRoot(8);
+    writeFileSync(join(root, 'People.md'), '# Isabella Handel\nIsabella Handel works at MasterBlox.\n');
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 78) });
+    stores.push(store);
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const sent: Record<string, unknown>[] = [];
+    let guidedResults = 0;
+    let narrations = 0;
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: (message) => sent.push(message),
+      instruct: () => {
+        narrations += 1;
+      },
+      onGuidedStart: () => undefined,
+      onGuidedResult: () => {
+        guidedResults += 1;
+        narrations += 1;
+      },
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'test' }, 'final');
+    await controller.finalizeNow();
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Isabella' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(true);
+
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+
+    const captures = store.listEvents().filter((event) => event.type === 'local.capture.spoken');
+    // One for stitched guided start + one for the who-is question.
+    expect(captures).toHaveLength(2);
+    const transcripts = captures.map((event) => (event.payload as { transcript: string }).transcript);
+    expect(transcripts).toContain('Test Isabella');
+    expect(transcripts).toContain('Who is Isabella');
+    expect(guidedResults).toBe(1);
+    const retrieving = sent.filter((message) => message.type === 'grounded_result' && message.phase === 'retrieving');
+    const terminals = sent.filter((message) => message.type === 'grounded_result' && message.phase !== 'retrieving');
+    expect(retrieving).toHaveLength(1);
+    expect(terminals).toHaveLength(1);
+    expect(narrations).toBe(1);
+    expect(sent.filter((message) => message.type === 'guided_test_start')).toHaveLength(1);
   });
 });

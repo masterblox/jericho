@@ -7,6 +7,8 @@ import {
   statSync,
 } from 'node:fs';
 import { join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { Worker } from 'node:worker_threads';
 
 import type { MemoryRootAuthority } from '@jericho/shared';
 
@@ -25,6 +27,8 @@ const SKIP_DIR_NAMES = new Set([
   'out',
   'target',
 ]);
+
+const WORKER_PATH = fileURLToPath(new URL('./memory-index-worker.mjs', import.meta.url));
 
 function shouldSkipDirectory(name: string): boolean {
   if (name.startsWith('.')) return true;
@@ -53,9 +57,15 @@ export interface MemoryRootHealth {
   available: boolean;
 }
 
+export type MemoryIndexStatus = 'idle' | 'indexing' | 'error';
+
 export interface MemoryIndexHealth {
   available: boolean;
   revision: string;
+  status: MemoryIndexStatus;
+  lastSuccessAt?: string;
+  lastDurationMs?: number;
+  lastError?: string;
   roots: MemoryRootHealth[];
 }
 
@@ -79,6 +89,26 @@ interface ImmutableSnapshot {
   rootStats: Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>;
 }
 
+interface WorkerDocument {
+  sourceId: string;
+  rootId: string;
+  authority: MemoryRootAuthority;
+  relativePath: string;
+  title: string;
+  content: string;
+  tokens: string[];
+  termFreqEntries: Array<[string, number]>;
+}
+
+interface WorkerSnapshot {
+  revision: string;
+  indexedAt: string;
+  documents: WorkerDocument[];
+  docFreqEntries: Array<[string, number]>;
+  avgDocLength: number;
+  rootStats: Array<{ id: string; documentCount: number; revision: string; lastIndexedAt: string }>;
+}
+
 export interface MemoryIndexOptions {
   roots: readonly MemoryRootConfig[];
   maxFileBytes?: number;
@@ -88,7 +118,8 @@ export interface MemoryIndexOptions {
 
 /**
  * Read-only multi-root Markdown BM25 index.
- * Snapshots are immutable; refresh() replaces the active snapshot atomically.
+ * Snapshots are immutable; successful refreshes swap atomically.
+ * Large refreshes run in a worker thread so the Core event loop stays responsive.
  */
 export class MemoryIndex {
   readonly #roots: readonly MemoryRootConfig[];
@@ -97,6 +128,12 @@ export class MemoryIndex {
   readonly #clock: () => string;
   #snapshot: ImmutableSnapshot | undefined;
   #available = false;
+  #status: MemoryIndexStatus = 'idle';
+  #lastSuccessAt: string | undefined;
+  #lastDurationMs: number | undefined;
+  #lastError: string | undefined;
+  #inflight: Promise<MemoryIndexHealth> | undefined;
+  readonly #snapshotListeners = new Set<() => void>();
 
   constructor(options: MemoryIndexOptions) {
     this.#roots = options.roots;
@@ -111,6 +148,18 @@ export class MemoryIndex {
 
   get revision(): string {
     return this.#snapshot?.revision ?? 'unindexed';
+  }
+
+  get status(): MemoryIndexStatus {
+    return this.#status;
+  }
+
+  /** Notify after a successful atomic snapshot swap (for identity-cache invalidation). */
+  onSnapshotSwapped(listener: () => void): () => void {
+    this.#snapshotListeners.add(listener);
+    return () => {
+      this.#snapshotListeners.delete(listener);
+    };
   }
 
   health(): MemoryIndexHealth {
@@ -128,61 +177,67 @@ export class MemoryIndex {
     return {
       available: this.available,
       revision: this.revision,
+      status: this.#status,
+      ...(this.#lastSuccessAt ? { lastSuccessAt: this.#lastSuccessAt } : {}),
+      ...(this.#lastDurationMs !== undefined ? { lastDurationMs: this.#lastDurationMs } : {}),
+      ...(this.#lastError ? { lastError: this.#lastError } : {}),
       roots,
     };
   }
 
-  /** Build or rebuild an immutable BM25 snapshot from configured roots. */
+  /**
+   * Synchronous refresh for tests and tiny corpora.
+   * Preserves the last valid snapshot on failure. Refuses to overlap an in-flight async refresh.
+   */
   refresh(): MemoryIndexHealth {
+    if (this.#inflight || this.#status === 'indexing') {
+      return this.health();
+    }
     if (this.#roots.length === 0) {
       this.#snapshot = undefined;
       this.#available = false;
+      this.#status = 'idle';
+      this.#lastError = undefined;
       return this.health();
     }
+    const started = Date.now();
+    this.#status = 'indexing';
     try {
-      const indexedAt = this.#clock();
-      const documents: IndexedDocument[] = [];
-      const rootStats = new Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>();
-      for (const root of this.#roots) {
-        const rootDocs = scanRoot(root, this.#maxFileBytes, this.#maxFilesPerRoot);
-        const rootRevision = createHash('sha256')
-          .update(rootDocs.map((doc) => `${root.id}:${root.authority}:${doc.relativePath}:${createHash('sha256').update(doc.content).digest('hex')}`).join('\n'))
-          .digest('hex')
-          .slice(0, 24);
-        rootStats.set(root.id, {
-          documentCount: rootDocs.length,
-          revision: rootRevision,
-          lastIndexedAt: indexedAt,
-        });
-        documents.push(...rootDocs);
-      }
-      const docFreq = new Map<string, number>();
-      let totalLength = 0;
-      for (const document of documents) {
-        totalLength += document.tokens.length;
-        const seen = new Set(document.tokens);
-        for (const term of seen) {
-          docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
-        }
-      }
-      const revision = createHash('sha256')
-        .update([...rootStats.values()].map((stats) => stats.revision).join('|'))
-        .digest('hex')
-        .slice(0, 32);
-      this.#snapshot = Object.freeze({
-        revision,
-        indexedAt,
-        documents: Object.freeze(documents) as IndexedDocument[],
-        docFreq,
-        avgDocLength: documents.length ? totalLength / documents.length : 0,
-        rootStats,
-      }) as ImmutableSnapshot;
-      this.#available = true;
-    } catch {
+      const snapshot = buildSnapshotLocal(
+        this.#roots,
+        this.#maxFileBytes,
+        this.#maxFilesPerRoot,
+        this.#clock(),
+      );
+      return this.#commitSnapshot(snapshot, started);
+    } catch (error) {
+      return this.#failRefresh(error, started);
+    }
+  }
+
+  /**
+   * Non-overlapping async refresh off the Node event loop via worker_threads.
+   * Concurrent callers share the same in-flight promise. Failed builds keep the prior snapshot.
+   */
+  requestRefresh(): Promise<MemoryIndexHealth> {
+    if (this.#inflight) return this.#inflight;
+    if (this.#roots.length === 0) {
       this.#snapshot = undefined;
       this.#available = false;
+      this.#status = 'idle';
+      this.#lastError = undefined;
+      return Promise.resolve(this.health());
     }
-    return this.health();
+    const started = Date.now();
+    this.#status = 'indexing';
+    this.#lastError = undefined;
+    this.#inflight = this.#buildInWorker(this.#clock())
+      .then((snapshot) => this.#commitSnapshot(snapshot, started))
+      .catch((error) => this.#failRefresh(error, started))
+      .finally(() => {
+        this.#inflight = undefined;
+      });
+    return this.#inflight;
   }
 
   search(query: string, limit = 8): MemoryIndexHit[] {
@@ -217,6 +272,143 @@ export class MemoryIndex {
       content: document.content,
     }));
   }
+
+  #commitSnapshot(snapshot: ImmutableSnapshot, startedMs: number): MemoryIndexHealth {
+    this.#snapshot = snapshot;
+    this.#available = true;
+    this.#status = 'idle';
+    this.#lastSuccessAt = snapshot.indexedAt;
+    this.#lastDurationMs = Math.max(0, Date.now() - startedMs);
+    this.#lastError = undefined;
+    for (const listener of this.#snapshotListeners) {
+      try {
+        listener();
+      } catch {
+        // Listener failures must not roll back a successful swap.
+      }
+    }
+    return this.health();
+  }
+
+  #failRefresh(error: unknown, startedMs: number): MemoryIndexHealth {
+    this.#status = 'error';
+    this.#lastDurationMs = Math.max(0, Date.now() - startedMs);
+    this.#lastError = error instanceof Error ? error.message : String(error);
+    // Preserve the last valid immutable snapshot when one exists.
+    return this.health();
+  }
+
+  #buildInWorker(indexedAt: string): Promise<ImmutableSnapshot> {
+    const workerData = {
+      roots: this.#roots.map((root) => ({
+        id: root.id,
+        path: root.path,
+        authority: root.authority,
+      })),
+      maxFileBytes: this.#maxFileBytes,
+      maxFilesPerRoot: this.#maxFilesPerRoot,
+      indexedAt,
+    };
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const worker = new Worker(WORKER_PATH, { workerData });
+      const fail = (error: unknown) => {
+        if (settled) return;
+        settled = true;
+        worker.removeAllListeners();
+        void worker.terminate();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      worker.once('message', (message: { ok: true; snapshot: WorkerSnapshot } | { ok: false; error: string }) => {
+        if (settled) return;
+        settled = true;
+        worker.removeAllListeners();
+        void worker.terminate();
+        if (!message.ok) {
+          reject(new Error(message.error));
+          return;
+        }
+        resolve(hydrateSnapshot(message.snapshot));
+      });
+      worker.once('error', fail);
+      worker.once('exit', (code) => {
+        if (!settled && code !== 0) fail(new Error(`memory_index_worker_exit_${code}`));
+      });
+    });
+  }
+}
+
+function hydrateSnapshot(payload: WorkerSnapshot): ImmutableSnapshot {
+  const documents: IndexedDocument[] = payload.documents.map((document) => ({
+    sourceId: document.sourceId,
+    rootId: document.rootId,
+    authority: document.authority,
+    relativePath: document.relativePath,
+    title: document.title,
+    content: document.content,
+    tokens: document.tokens,
+    termFreq: new Map(document.termFreqEntries),
+  }));
+  const rootStats = new Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>();
+  for (const stats of payload.rootStats) {
+    rootStats.set(stats.id, {
+      documentCount: stats.documentCount,
+      revision: stats.revision,
+      lastIndexedAt: stats.lastIndexedAt,
+    });
+  }
+  return Object.freeze({
+    revision: payload.revision,
+    indexedAt: payload.indexedAt,
+    documents: Object.freeze(documents) as IndexedDocument[],
+    docFreq: new Map(payload.docFreqEntries),
+    avgDocLength: payload.avgDocLength,
+    rootStats,
+  }) as ImmutableSnapshot;
+}
+
+function buildSnapshotLocal(
+  roots: readonly MemoryRootConfig[],
+  maxFileBytes: number,
+  maxFilesPerRoot: number,
+  indexedAt: string,
+): ImmutableSnapshot {
+  const documents: IndexedDocument[] = [];
+  const rootStats = new Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>();
+  for (const root of roots) {
+    const rootDocs = scanRoot(root, maxFileBytes, maxFilesPerRoot);
+    const rootRevision = createHash('sha256')
+      .update(rootDocs.map((doc) => `${root.id}:${root.authority}:${doc.relativePath}:${createHash('sha256').update(doc.content).digest('hex')}`).join('\n'))
+      .digest('hex')
+      .slice(0, 24);
+    rootStats.set(root.id, {
+      documentCount: rootDocs.length,
+      revision: rootRevision,
+      lastIndexedAt: indexedAt,
+    });
+    documents.push(...rootDocs);
+  }
+  const docFreq = new Map<string, number>();
+  let totalLength = 0;
+  for (const document of documents) {
+    totalLength += document.tokens.length;
+    const seen = new Set(document.tokens);
+    for (const term of seen) {
+      docFreq.set(term, (docFreq.get(term) ?? 0) + 1);
+    }
+  }
+  const revision = createHash('sha256')
+    .update([...rootStats.values()].map((stats) => stats.revision).join('|'))
+    .digest('hex')
+    .slice(0, 32);
+  return Object.freeze({
+    revision,
+    indexedAt,
+    documents: Object.freeze(documents) as IndexedDocument[],
+    docFreq,
+    avgDocLength: documents.length ? totalLength / documents.length : 0,
+    rootStats,
+  }) as ImmutableSnapshot;
 }
 
 function authorityRank(authority: MemoryRootAuthority): number {
