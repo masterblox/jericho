@@ -3,15 +3,18 @@
  * Loaded only via worker_threads so large vault walks never block the Core event loop.
  */
 import { parentPort, workerData } from 'node:worker_threads';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
+  createWriteStream,
   lstatSync,
   readFileSync,
   readdirSync,
   realpathSync,
   statSync,
 } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { once } from 'node:events';
 
 const SKIP_DIR_NAMES = new Set([
   '.git',
@@ -156,9 +159,33 @@ function buildSnapshot(request) {
   };
 }
 
+async function writeSnapshotFile(snapshot) {
+  // NDJSON avoids a single giant structured-clone / JSON.parse on the Core thread.
+  const snapshotPath = join(tmpdir(), `jericho-mem-${process.pid}-${randomBytes(8).toString('hex')}.ndjson`);
+  const stream = createWriteStream(snapshotPath, { encoding: 'utf8' });
+  const write = async (line) => {
+    if (!stream.write(`${line}\n`)) await once(stream, 'drain');
+  };
+  await write(JSON.stringify({
+    type: 'meta',
+    revision: snapshot.revision,
+    indexedAt: snapshot.indexedAt,
+    avgDocLength: snapshot.avgDocLength,
+    rootStats: snapshot.rootStats,
+    docFreqEntries: snapshot.docFreqEntries,
+  }));
+  for (const document of snapshot.documents) {
+    await write(JSON.stringify({ type: 'doc', document }));
+  }
+  stream.end();
+  await once(stream, 'finish');
+  return snapshotPath;
+}
+
 try {
   const snapshot = buildSnapshot(workerData);
-  parentPort.postMessage({ ok: true, snapshot });
+  const snapshotPath = await writeSnapshotFile(snapshot);
+  parentPort.postMessage({ ok: true, snapshotPath });
 } catch (error) {
   parentPort.postMessage({
     ok: false,

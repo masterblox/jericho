@@ -1,12 +1,16 @@
 import { createHash } from 'node:crypto';
 import {
+  createReadStream,
   lstatSync,
   readFileSync,
   readdirSync,
   realpathSync,
+  rmSync,
   statSync,
 } from 'node:fs';
+import { createInterface } from 'node:readline';
 import { join, relative, sep } from 'node:path';
+import { setImmediate as setImm } from 'node:timers';
 import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
@@ -319,7 +323,7 @@ export class MemoryIndex {
         void worker.terminate();
         reject(error instanceof Error ? error : new Error(String(error)));
       };
-      worker.once('message', (message: { ok: true; snapshot: WorkerSnapshot } | { ok: false; error: string }) => {
+      worker.once('message', (message: { ok: true; snapshotPath: string } | { ok: false; error: string }) => {
         if (settled) return;
         settled = true;
         worker.removeAllListeners();
@@ -328,7 +332,7 @@ export class MemoryIndex {
           reject(new Error(message.error));
           return;
         }
-        resolve(hydrateSnapshot(message.snapshot));
+        void hydrateSnapshotFromNdjson(message.snapshotPath).then(resolve, reject);
       });
       worker.once('error', fail);
       worker.once('exit', (code) => {
@@ -338,33 +342,93 @@ export class MemoryIndex {
   }
 }
 
-function hydrateSnapshot(payload: WorkerSnapshot): ImmutableSnapshot {
-  const documents: IndexedDocument[] = payload.documents.map((document) => ({
-    sourceId: document.sourceId,
-    rootId: document.rootId,
-    authority: document.authority,
-    relativePath: document.relativePath,
-    title: document.title,
-    content: document.content,
-    tokens: document.tokens,
-    termFreq: new Map(document.termFreqEntries),
-  }));
-  const rootStats = new Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>();
-  for (const stats of payload.rootStats) {
-    rootStats.set(stats.id, {
-      documentCount: stats.documentCount,
-      revision: stats.revision,
-      lastIndexedAt: stats.lastIndexedAt,
+const HYDRATE_YIELD_EVERY = 200;
+
+async function hydrateSnapshotFromNdjson(snapshotPath: string): Promise<ImmutableSnapshot> {
+  try {
+    const documents: IndexedDocument[] = [];
+    let revision = '';
+    let indexedAt = '';
+    let avgDocLength = 0;
+    let docFreqEntries: Array<[string, number]> = [];
+    const rootStats = new Map<string, { documentCount: number; revision: string; lastIndexedAt: string }>();
+    let seen = 0;
+
+    const rl = createInterface({
+      input: createReadStream(snapshotPath, { encoding: 'utf8' }),
+      crlfDelay: Infinity,
     });
+    for await (const line of rl) {
+      if (!line.trim()) continue;
+      const row = JSON.parse(line) as
+        | {
+          type: 'meta';
+          revision: string;
+          indexedAt: string;
+          avgDocLength: number;
+          rootStats: Array<{ id: string; documentCount: number; revision: string; lastIndexedAt: string }>;
+          docFreqEntries: Array<[string, number]>;
+        }
+        | { type: 'doc'; document: WorkerDocument };
+      if (row.type === 'meta') {
+        revision = row.revision;
+        indexedAt = row.indexedAt;
+        avgDocLength = row.avgDocLength;
+        docFreqEntries = row.docFreqEntries;
+        for (const stats of row.rootStats) {
+          rootStats.set(stats.id, {
+            documentCount: stats.documentCount,
+            revision: stats.revision,
+            lastIndexedAt: stats.lastIndexedAt,
+          });
+        }
+      } else if (row.type === 'doc') {
+        const document = row.document;
+        documents.push({
+          sourceId: document.sourceId,
+          rootId: document.rootId,
+          authority: document.authority,
+          relativePath: document.relativePath,
+          title: document.title,
+          content: document.content,
+          tokens: document.tokens,
+          termFreq: new Map(document.termFreqEntries),
+        });
+        seen += 1;
+        if (seen % HYDRATE_YIELD_EVERY === 0) {
+          await new Promise<void>((resolve) => setImm(resolve));
+        }
+      }
+    }
+
+    const docFreq = new Map<string, number>();
+    for (let i = 0; i < docFreqEntries.length; i += 1) {
+      const [term, count] = docFreqEntries[i]!;
+      docFreq.set(term, count);
+      if ((i + 1) % HYDRATE_YIELD_EVERY === 0) {
+        await new Promise<void>((resolve) => setImm(resolve));
+      }
+    }
+
+    if (!revision || !indexedAt) {
+      throw new Error('memory_index_snapshot_meta_missing');
+    }
+
+    return Object.freeze({
+      revision,
+      indexedAt,
+      documents: Object.freeze(documents) as IndexedDocument[],
+      docFreq,
+      avgDocLength,
+      rootStats,
+    }) as ImmutableSnapshot;
+  } finally {
+    try {
+      rmSync(snapshotPath, { force: true });
+    } catch {
+      /* best-effort cleanup */
+    }
   }
-  return Object.freeze({
-    revision: payload.revision,
-    indexedAt: payload.indexedAt,
-    documents: Object.freeze(documents) as IndexedDocument[],
-    docFreq: new Map(payload.docFreqEntries),
-    avgDocLength: payload.avgDocLength,
-    rootStats,
-  }) as ImmutableSnapshot;
 }
 
 function buildSnapshotLocal(
