@@ -1062,6 +1062,23 @@ describe('review regressions', () => {
     expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
   });
 
+  it('guided start accepts lexical cues when native audio skips transcription', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 35) });
+    stores.push(store);
+    const sent: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      send: (message) => sent.push(message),
+      instruct: () => undefined,
+      onGuidedStart: () => undefined,
+    });
+    expect(controller.observeGuidedCue('The input "test" feels like a distraction')).toBe(false);
+    expect(controller.guidedActive).toBe(false);
+    expect(controller.observeGuidedCue('search_vault query Isabella')).toBe(true);
+    expect(controller.guidedActive).toBe(true);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+  });
+
   it('guided start accepts reversed ASR fragments Isabella then test', async () => {
     const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 34) });
     stores.push(store);

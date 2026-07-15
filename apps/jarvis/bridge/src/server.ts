@@ -1827,6 +1827,9 @@ function openVoiceSession(
                 receivedAt: Date.now(),
               });
               if (turnPorts.groundingState === 'answering') turnPorts.noteGroundedOutput();
+              // Native audio often skips inputTranscription but still narrates
+              // "test" / "Isabella" in model text — reuse guided fragment window.
+              turnPorts.observeGuidedCue(part.text);
             }
           }
           const calls = message.toolCall?.functionCalls ?? [];
@@ -1834,6 +1837,10 @@ function openVoiceSession(
           if (calls.length && activeSession) {
             void Promise.all(calls.map(async (call: any) => {
               const args = call.args ?? {};
+              const cueBits = [call.name, args.query, args.q, args.subject, args.name]
+                .filter((v) => typeof v === 'string')
+                .join(' ');
+              if (cueBits) turnPorts.observeGuidedCue(cueBits);
               send({ type: 'tool_start', name: call.name, args });
               const result = await tools.execute(call.name, args);
               send({ type: 'tool_result', name: call.name, result });

@@ -603,7 +603,40 @@ export class GroundedTurnController {
     }
   }
 
-  private tryStartGuided(transcript: string, turn: ActiveTurn, now: number): boolean {
+  /**
+   * Live native-audio often understands "Test" / "Isabella" but skips
+   * inputTranscription and routes via tools/model text instead. Feed those
+   * lexical cues into the same fragment window as ASR finals.
+   */
+  observeGuidedCue(text: string): boolean {
+    if (!text || this.#guidedActive) return false;
+    const now = this.now();
+    this.expireGuidedFragments(now);
+    const normalized = normalizeGuidedTranscript(text);
+    if (!normalized) return false;
+    if (isGuidedStart(normalized) || (/\btest(?:ing)?\b/iu.test(normalized) && /\bisabel(?:la|a)?\b/iu.test(normalized))) {
+      return this.activateGuided(now);
+    }
+    if (/\btest(?:ing)?\b/iu.test(normalized)) {
+      if (
+        this.#recentBareIsabellaAt !== undefined
+        && now - this.#recentBareIsabellaAt <= GUIDED_FRAGMENT_WINDOW_MS
+      ) {
+        return this.activateGuided(now);
+      }
+      this.#pendingGuidedFragment = { kind: 'test', at: now };
+      return false;
+    }
+    if (/\bisabel(?:la|a)?\b/iu.test(normalized)) {
+      if (this.#pendingGuidedFragment?.kind === 'test') {
+        return this.activateGuided(now);
+      }
+      this.#recentBareIsabellaAt = now;
+    }
+    return false;
+  }
+
+  private expireGuidedFragments(now: number): void {
     const pending = this.#pendingGuidedFragment;
     if (pending && now - pending.at > GUIDED_FRAGMENT_WINDOW_MS) {
       this.#pendingGuidedFragment = undefined;
@@ -614,6 +647,26 @@ export class GroundedTurnController {
     ) {
       this.#recentBareIsabellaAt = undefined;
     }
+  }
+
+  private activateGuided(now: number): boolean {
+    void now;
+    this.#pendingGuidedFragment = undefined;
+    this.#recentBareIsabellaAt = undefined;
+    this.#guidedActive = true;
+    this.#ports.send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
+    this.#ports.send({ type: 'guided_test_phase', test: 'isabella', phase: 'ready' });
+    this.#ports.onGuidedStart?.();
+    if (this.#turn) {
+      this.#turn.guided = { test: 'isabella' };
+      this.#turn.route = 'general';
+      this.#turn.speculative = [];
+    }
+    return true;
+  }
+
+  private tryStartGuided(transcript: string, turn: ActiveTurn, now: number): boolean {
+    this.expireGuidedFragments(now);
     // Pair either order: test→Isabella (pending cue) or Isabella→test (recent bare).
     // Do not consume bare Isabella alone — ASR often reduces "Who is Isabella" to that.
     const pairedForward =
@@ -623,16 +676,10 @@ export class GroundedTurnController {
       && this.#recentBareIsabellaAt !== undefined
       && now - this.#recentBareIsabellaAt <= GUIDED_FRAGMENT_WINDOW_MS;
     if (isGuidedStart(transcript) || pairedForward || pairedReverse) {
-      this.#pendingGuidedFragment = undefined;
-      this.#recentBareIsabellaAt = undefined;
-      this.#guidedActive = true;
-      this.#ports.send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
-      this.#ports.send({ type: 'guided_test_phase', test: 'isabella', phase: 'ready' });
-      this.#ports.onGuidedStart?.();
       turn.guided = { test: 'isabella' };
       turn.route = 'general';
       turn.speculative = [];
-      return true;
+      return this.activateGuided(now);
     }
     if (isGuidedTestFragment(transcript)) {
       this.#pendingGuidedFragment = { kind: 'test', at: now };
