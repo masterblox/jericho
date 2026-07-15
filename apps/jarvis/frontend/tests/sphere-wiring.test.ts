@@ -13,10 +13,10 @@ describe('production sphere wiring', () => {
     expect(projection).toContain('data-jericho-active-approval');
   });
 
-  it('exposes the dictated AGENTS / TASKS / BRAIN projections with fail-closed states', () => {
+  it('exposes the dictated AGENTS / TASKS / BRAIN / VOICE projections with fail-closed states', () => {
     const projection = source('sphere/components/peripherals.jsx');
     const api = source('sphere/jericho-api.js');
-    expect(api).toContain("['CORE', 'AGENTS', 'TASKS', 'BRAIN']");
+    expect(api).toContain("'CORE', 'AGENTS', 'TASKS', 'BRAIN', 'VOICE'");
     expect(projection).toContain('AgentsProjection');
     expect(projection).toContain('TasksProjection');
     expect(projection).toContain('BrainProjection');
@@ -60,5 +60,28 @@ describe('production sphere wiring', () => {
     expect(field).not.toMatch(/from ['"]\.\.\/data/);
     expect(api).not.toMatch(/from ['"]\.\/data/);
     expect(api).toContain('setAgents');
+  });
+
+  it('wires grounded-result action endpoints through CoreClient with opaque IDs', () => {
+    const client = source('core-client.ts');
+    const shell = source('sphere-shell.tsx');
+    expect(client).toContain('/api/v1/grounded-results');
+    expect(client).toContain('openGroundedResult');
+    expect(client).toContain('reorganizeGroundedResult');
+    expect(client).toContain('correctIdentityPreview');
+    expect(client).toContain('{ sourceId }');
+    expect(client).toContain('{ conflictId }');
+    expect(shell).toContain('openGroundedResult');
+    expect(shell).toContain('reorganizeGroundedResult');
+    expect(shell).toContain('correctIdentityPreview');
+  });
+
+  it('tracks guided test lifecycle in the sphere state API', () => {
+    const api = source('sphere/jericho-api.js');
+    expect(api).toContain('startGuidedTest');
+    expect(api).toContain('resumeGuidedTest');
+    expect(api).toContain('updateGuidedPhase');
+    expect(api).toContain('endGuidedTest');
+    expect(api).toContain('guidedTest');
   });
 });

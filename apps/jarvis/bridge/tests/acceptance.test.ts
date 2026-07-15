@@ -521,8 +521,8 @@ describe('Jericho integration acceptance', () => {
     store2.close();
   });
 
-  // ── 11. Identity-aware retrieval resolves Isabella as Carlos' spouse ──
-  it('retrieval resolves Isabella Handel as spouse of Carlos Prada with MasterBlox employment', () => {
+  // ── 11. Identity-aware retrieval resolves Isabella without inventing spouse claims ──
+  it('retrieval resolves Isabella Handel with MasterBlox employment and excludes Francisco-wife evidence', () => {
     const result = groupIdentityEvidence('Isabella', [
       {
         path: 'Prada Mind/05 - People & Partnerships/Team Members/Isabella Handel.md',
@@ -543,7 +543,7 @@ describe('Jericho integration acceptance', () => {
     expect(result.resolved!.fullName).toBe('Isabella Handel');
     expect(result.resolved!.canonical).toBe(true);
     expect(result.resolved!.employment).toContain('MasterBlox');
-    expect(result.resolved!.relationshipToCarlos).toMatch(/spouse|wife/i);
+    expect(result.resolved!.relationshipToCarlos).toBeUndefined();
 
     // Ambiguous first-name-only hit excluded
     expect(result.excluded.length).toBe(1);

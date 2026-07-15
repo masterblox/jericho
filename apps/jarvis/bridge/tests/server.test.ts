@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { request as httpRequest } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -38,6 +38,8 @@ afterEach(async () => {
 
 describe('runtime config', () => {
   it('boots without Gemini and honors CLI > CONDUCTOR_PORT > PORT > default including port zero', () => {
+    const vault = realpathSync(mkdtempSync(join(tmpdir(), 'jericho-config-vault-')));
+    directories.push(vault);
     expect(loadConfig({
       JERICHO_API_TOKEN: TOKEN,
       CONDUCTOR_PORT: '4100',
@@ -57,7 +59,7 @@ describe('runtime config', () => {
       JERICHO_GIT_REPOSITORIES: '[{"id":"jericho","path":"/repos/jericho"}]',
       JERICHO_GITHUB_REPOSITORIES: 'masterblox/jericho, masterblox/hermes',
       JERICHO_CONDUCTOR_ROOTS: '[{"id":"workspaces","path":"/workspaces"}]',
-      JERICHO_OBSIDIAN_VAULT: '/vault',
+      JERICHO_OBSIDIAN_VAULT: vault,
       JERICHO_VAULT_GATEWAY_URL: 'https://vault.internal',
       JERICHO_VAULT_GATEWAY_TOKEN: 'vault-token',
       JERICHO_VAULT_GATEWAY_TIMEOUT_MS: '12000',
@@ -91,7 +93,8 @@ describe('runtime config', () => {
       gitRepositories: [{ id: 'jericho', path: '/repos/jericho' }],
       githubRepositories: ['masterblox/jericho', 'masterblox/hermes'],
       conductorRoots: [{ id: 'workspaces', path: '/workspaces' }],
-      obsidianVaultPath: '/vault',
+      obsidianVaultPath: vault,
+      memoryRoots: [{ id: 'obsidian', path: vault, authority: 'canonical' }],
       vaultGatewayUrl: 'https://vault.internal',
       vaultGatewayToken: 'vault-token',
       vaultGatewayTimeoutMs: 12_000,
@@ -198,6 +201,8 @@ describe('production Core composition', () => {
         JERICHO_GIT_REPOSITORIES: '[]',
         JERICHO_GITHUB_REPOSITORIES: '',
         JERICHO_CONDUCTOR_ROOTS: '[]',
+        // Clear workspace .env MEMORY_ROOTS so legacy OBSIDIAN_VAULT can boot alone.
+        JERICHO_MEMORY_ROOTS: '',
         JERICHO_OBSIDIAN_VAULT: vault,
         JERICHO_HERMES_BUS_ROOT: busRoot,
         JERICHO_HERMES_REPO: 'jericho',

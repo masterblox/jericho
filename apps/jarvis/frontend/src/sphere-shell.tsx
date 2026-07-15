@@ -129,9 +129,12 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
 
   return <SphereApp liveData={liveData} health={health} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
     searchMemory: (query: string) => client.searchVault(query, 8),
-    openMemory: (relativePath: string) => client.openVaultNote(relativePath),
-    proposeNoteReorganization: (input: { relativePath: string; title: string }) =>
-      client.proposeNoteReorganization(input),
+    openMemory: (relativePath: string, resultId?: string, sourceId?: string) =>
+      resultId && sourceId ? client.openGroundedResult(resultId, sourceId) : client.openVaultNote(relativePath),
+    proposeNoteReorganization: (input: { relativePath: string; title: string; resultId?: string; sourceId?: string }) =>
+      input.resultId && input.sourceId
+        ? client.reorganizeGroundedResult(input.resultId, input.sourceId)
+        : client.proposeNoteReorganization(input),
     decideProposal: (input: Parameters<CoreClient['decideProposal']>[0]) => client.decideProposal(input),
     decide: (approval: CommandCenterApproval, outcome: 'approved' | 'rejected') => client.decideMission({
       missionId: approval.missionId,
@@ -147,6 +150,12 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
       reason: 'Cancelled from sphere command overlay',
     }),
     retain: (missionId: string) => client.retainMission(missionId),
+    correctIdentity: async (resultId: string, conflictId: string) => {
+      const response = await client.correctIdentityPreview(resultId, conflictId);
+      return response.preview;
+    },
+    confirmCorrection: (preview: Record<string, unknown>, resultId: string, conflictId: string) =>
+      client.confirmGroundedResult(resultId, conflictId, String(preview.id ?? '')),
   }} />;
 }
 

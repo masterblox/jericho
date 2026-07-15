@@ -52,6 +52,7 @@ import {
   type ConnectorActionAdapters,
 } from './orchestration/connector-action-executor.js';
 import { MissionRunner, type RunnerOutcome } from './orchestration/runner.js';
+import { MemoryIndex } from './retrieval/memory-index.js';
 import {
   HttpVaultGatewayClient,
   type VaultGatewayPort,
@@ -67,6 +68,7 @@ export interface ConnectorRuntime {
   }>;
   obsidianSearch?: ObsidianConnector;
   vaultGateway?: VaultGatewayPort;
+  memoryIndex?: MemoryIndex;
   start(): Promise<void>;
   stop(): Promise<void>;
 }
@@ -125,13 +127,19 @@ export function createConnectorRuntime(
   const obsidian = config.obsidianVaultPath
     ? new ObsidianConnector({
         vaultPath: config.obsidianVaultPath,
-        maxNotes: 500,
+        maxNotes: 50_000,
         maxNoteBytes: 2 * 1024 * 1024,
         staleAfterMs: config.vaultSyncStaleMs,
         ...(vaultGateway ? { gateway: vaultGateway } : {}),
       })
     : undefined;
   if (obsidian) connectors.push(obsidian);
+
+  const memoryIndex = config.memoryRoots.length
+    ? new MemoryIndex({ roots: config.memoryRoots })
+    : undefined;
+  // Kick off the first vault index off the event loop; do not block Core startup.
+  void memoryIndex?.requestRefresh();
 
   const registry = new CaptureConnectorRegistry(connectors);
   const supervisor = new ConnectorSupervisor({
@@ -146,7 +154,13 @@ export function createConnectorRuntime(
   const scheduler = new ConnectorPollingScheduler(supervisor, descriptors, {
     pollIntervalMs: config.connectorPollIntervalMs,
     maxBackoffMs: Math.max(config.connectorPollIntervalMs, config.connectorPollIntervalMs * 8),
+    ...(memoryIndex ? {
+      onPoll: () => {
+        void memoryIndex.requestRefresh();
+      },
+    } : {}),
   });
+  let memoryTimer: ReturnType<typeof setInterval> | undefined;
   return {
     registry,
     supervisor,
@@ -154,8 +168,21 @@ export function createConnectorRuntime(
     actionAdapters: Object.freeze({ telegram, whatsapp }),
     ...(obsidian ? { obsidianSearch: obsidian } : {}),
     ...(vaultGateway ? { vaultGateway } : {}),
-    start: () => scheduler.start(),
-    stop: () => scheduler.stop(),
+    ...(memoryIndex ? { memoryIndex } : {}),
+    start: async () => {
+      await scheduler.start();
+      if (memoryIndex && descriptors.length === 0) {
+        memoryTimer = setInterval(() => {
+          void memoryIndex.requestRefresh();
+        }, config.connectorPollIntervalMs);
+        memoryTimer.unref?.();
+      }
+    },
+    stop: async () => {
+      if (memoryTimer) clearInterval(memoryTimer);
+      memoryTimer = undefined;
+      await scheduler.stop();
+    },
   };
 }
 
@@ -171,6 +198,7 @@ export interface PollingDescriptor {
 export interface ConnectorPollingSchedulerOptions {
   pollIntervalMs: number;
   maxBackoffMs: number;
+  onPoll?: () => void;
 }
 
 interface PollingTarget {
@@ -234,6 +262,7 @@ export class ConnectorPollingScheduler {
     const execution = (async () => {
       try {
         await this.syncPort.sync(target.connectorId, target.partition, signal);
+        this.options.onPoll?.();
         target.failures = 0;
       } catch {
         if (!signal.aborted) target.failures += 1;

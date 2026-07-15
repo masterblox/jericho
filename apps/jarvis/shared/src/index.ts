@@ -353,6 +353,9 @@ export interface VoicePreviewState {
 }
 
 export interface IdentityEvidenceProvenance {
+  sourceId?: string;
+  rootId?: string;
+  authority?: MemoryRootAuthority;
   relativePath: string;
   title: string;
   excerpt: string;
@@ -390,19 +393,43 @@ export type AnswerConfidence = 'strong' | 'partial' | 'ambiguous' | 'none';
 /** Lifecycle phase for a grounded-result WebSocket message. */
 export type GroundedResultPhase = 'retrieving' | 'resolved' | 'ambiguous' | 'unavailable';
 
+/** Authority of a configured local memory root. */
+export type MemoryRootAuthority = 'canonical' | 'supplemental';
+
+/** Supported claim carried by a terminal grounded result. */
+export interface GroundedResultClaim {
+  id: string;
+  text: string;
+  supportSourceIds: string[];
+}
+
+/** Visible conflict or excluded claim carried by a grounded result. */
+export interface GroundedResultConflict {
+  id: string;
+  claim: string;
+  reason: string;
+  sourceIds: string[];
+}
+
 /** Bounded provenance entry carried in every grounded result. */
 export interface GroundedResultProvenance {
+  sourceId: string;
+  rootId: string;
+  authority: MemoryRootAuthority;
   relativePath: string;
   title: string;
   excerpt: string;
   score: number;
 }
 
-/** Actions a frontend may render for a resolved grounded result. */
+/**
+ * Opaque, result-bound action IDs a frontend may render.
+ * Paths, entity IDs, and claims are never client-supplied.
+ */
 export interface GroundedResultAction {
-  open_note?: string;
-  reorganize_notes?: boolean;
-  correct_identity?: boolean;
+  openSourceIds?: string[];
+  reorganizeSourceIds?: string[];
+  correctConflictIds?: string[];
 }
 
 /**
@@ -413,6 +440,7 @@ export interface GroundedResultAction {
  * product UI from knowledge-card results.
  */
 export interface GroundedResultEvent {
+  schemaVersion: 2;
   resultId: string;
   phase: GroundedResultPhase;
   route: KnowledgeRoute;
@@ -422,6 +450,10 @@ export interface GroundedResultEvent {
   fullName?: string;
   relationship?: string;
   employment?: string[];
+  summary?: string;
+  claims?: GroundedResultClaim[];
+  conflicts?: GroundedResultConflict[];
+  indexRevision?: string;
   provenance: GroundedResultProvenance[];
   actions: GroundedResultAction;
   retrievalCount: number;
@@ -2237,15 +2269,16 @@ export function assertPreferenceChange(value: unknown): asserts value is Prefere
 export function assertGroundedResultEvent(value: unknown): asserts value is GroundedResultEvent {
   assertRecord(value, 'GroundedResultEvent');
   const allowed = new Set([
-    'resultId', 'phase', 'route', 'subject', 'confidence',
+    'schemaVersion', 'resultId', 'phase', 'route', 'subject', 'confidence',
     'canonicalIdentity', 'fullName', 'relationship', 'employment',
+    'summary', 'claims', 'conflicts', 'indexRevision',
     'provenance', 'actions', 'retrievalCount', 'guided',
   ]);
   for (const key of Object.keys(value)) {
     if (!allowed.has(key)) throw new TypeError(`GroundedResultEvent: unknown field "${key}"`);
   }
-  assertNonEmptyString(value.resultId, 'resultId');
-  if ((value.resultId as string).length > 1_024) throw new TypeError('resultId exceeds 1024 chars');
+  if (value.schemaVersion !== 2) throw new TypeError('GroundedResultEvent schemaVersion must be 2');
+  assertOpaqueId(value.resultId, 'resultId');
   const validPhases = new Set(['retrieving', 'resolved', 'ambiguous', 'unavailable']);
   if (!validPhases.has(String(value.phase))) throw new TypeError('GroundedResultEvent phase is invalid');
   const validRoutes = new Set(['private_knowledge', 'core_operational', 'general', 'clarification']);
@@ -2255,7 +2288,7 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
   }
   const validConfidences = new Set(['strong', 'partial', 'ambiguous', 'none']);
   if (!validConfidences.has(String(value.confidence))) throw new TypeError('GroundedResultEvent confidence is invalid');
-  for (const key of ['canonicalIdentity', 'fullName', 'relationship']) {
+  for (const key of ['canonicalIdentity', 'fullName', 'relationship', 'summary', 'indexRevision']) {
     if (key in value && value[key] !== undefined) {
       assertNonEmptyString(value[key], key);
       if ((value[key] as string).length > 500) throw new TypeError(`GroundedResultEvent ${key} exceeds 500 chars`);
@@ -2270,24 +2303,20 @@ export function assertGroundedResultEvent(value: unknown): asserts value is Grou
   } else if ('employment' in value) {
     throw new TypeError('GroundedResultEvent employment must be an array');
   }
+  if ('claims' in value && value.claims !== undefined) assertGroundedResultClaimList(value.claims, 'claims');
+  if ('conflicts' in value && value.conflicts !== undefined) {
+    assertGroundedResultConflictList(value.conflicts, 'conflicts');
+  }
   assertGroundedResultProvenanceList(value.provenance, 'provenance');
   assertRecord(value.actions, 'actions');
-  const actionKeys = new Set(['open_note', 'reorganize_notes', 'correct_identity']);
+  const actionKeys = new Set(['openSourceIds', 'reorganizeSourceIds', 'correctConflictIds']);
   for (const key of Object.keys(value.actions)) {
     if (!actionKeys.has(key)) throw new TypeError(`GroundedResultEvent actions: unknown key "${key}"`);
   }
-  if (typeof value.actions.open_note === 'string') {
-    assertValidRelativePath(value.actions.open_note, 'actions.open_note');
-  } else if ('open_note' in value.actions) {
-    throw new TypeError('actions.open_note must be a string');
-  }
-  for (const key of ['reorganize_notes', 'correct_identity']) {
-    if (key in value.actions && typeof value.actions[key] !== 'boolean') {
-      throw new TypeError(`actions.${key} must be boolean`);
+  for (const key of ['openSourceIds', 'reorganizeSourceIds', 'correctConflictIds'] as const) {
+    if (key in value.actions && value.actions[key] !== undefined) {
+      assertOpaqueIdList(value.actions[key], `actions.${key}`);
     }
-  }
-  if (value.actions.reorganize_notes === true && typeof value.actions.open_note !== 'string') {
-    throw new TypeError('actions.reorganize_notes requires actions.open_note');
   }
   if (typeof value.retrievalCount !== 'number' || !Number.isInteger(value.retrievalCount) || value.retrievalCount < 0 || value.retrievalCount > 100) {
     throw new TypeError('GroundedResultEvent retrievalCount must be 0..100');
@@ -2311,12 +2340,100 @@ function assertValidRelativePath(value: string, field: string): void {
   }
 }
 
+function assertIdList(value: unknown, field: string): asserts value is string[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  value.forEach((item: unknown, index: number) => {
+    assertNonEmptyString(item, `${field}[${index}]`);
+    if ((item as string).length > 1_024) throw new TypeError(`${field}[${index}] exceeds 1024 chars`);
+  });
+}
+
+/** Opaque contract IDs: reject empty/whitespace-only without trimming accepted values. */
+function assertOpaqueId(value: unknown, field: string): asserts value is string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new TypeError(`${field} must be a non-empty string`);
+  }
+  if (!value.trim()) {
+    throw new TypeError(`${field} must not be whitespace-only`);
+  }
+  if (value.length > 1_024) throw new TypeError(`${field} exceeds 1024 chars`);
+}
+
+function assertOpaqueIdList(value: unknown, field: string): asserts value is string[] {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seen = new Set<string>();
+  value.forEach((item: unknown, index: number) => {
+    assertOpaqueId(item, `${field}[${index}]`);
+    if (seen.has(item as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seen.add(item as string);
+  });
+}
+
+function assertGroundedResultClaimList(value: unknown, field: string): void {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenIds = new Set<string>();
+  value.forEach((item: unknown, index: number) => {
+    assertRecord(item, `${field}[${index}]`);
+    assertOpaqueId(item.id, `${field}[${index}].id`);
+    if (seenIds.has(item.id as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seenIds.add(item.id as string);
+    assertNonEmptyString(item.text, `${field}[${index}].text`);
+    if ((item.text as string).length > 500) throw new TypeError(`${field}[${index}].text exceeds 500 chars`);
+    assertOpaqueIdList(item.supportSourceIds, `${field}[${index}].supportSourceIds`);
+  });
+}
+
+function assertGroundedResultConflictList(value: unknown, field: string): void {
+  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
+    throw new TypeError(`${field} must be a dense array`);
+  }
+  if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenIds = new Set<string>();
+  value.forEach((item: unknown, index: number) => {
+    assertRecord(item, `${field}[${index}]`);
+    assertOpaqueId(item.id, `${field}[${index}].id`);
+    if (seenIds.has(item.id as string)) {
+      throw new TypeError(`${field} contains duplicate id`);
+    }
+    seenIds.add(item.id as string);
+    assertNonEmptyString(item.claim, `${field}[${index}].claim`);
+    assertNonEmptyString(item.reason, `${field}[${index}].reason`);
+    if ((item.claim as string).length > 500) throw new TypeError(`${field}[${index}].claim exceeds 500 chars`);
+    if ((item.reason as string).length > 500) throw new TypeError(`${field}[${index}].reason exceeds 500 chars`);
+    assertOpaqueIdList(item.sourceIds, `${field}[${index}].sourceIds`);
+  });
+}
+
 function assertGroundedResultProvenanceList(value: unknown, field: string): asserts value is GroundedResultProvenance[] {
   if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
     throw new TypeError(`${field} must be a dense array`);
   }
   if (value.length > 50) throw new TypeError(`${field} must have at most 50 entries`);
+  const seenSourceIds = new Set<string>();
   value.forEach((item: Record<string, unknown>, index: number) => {
+    assertRecord(item, `${field}[${index}]`);
+    assertOpaqueId(item.sourceId, `${field}[${index}].sourceId`);
+    if (seenSourceIds.has(item.sourceId as string)) {
+      throw new TypeError(`${field} contains duplicate sourceId`);
+    }
+    seenSourceIds.add(item.sourceId as string);
+    assertNonEmptyString(item.rootId, `${field}[${index}].rootId`);
+    if (item.authority !== 'canonical' && item.authority !== 'supplemental') {
+      throw new TypeError(`${field}[${index}].authority is invalid`);
+    }
     assertValidRelativePath(String(item.relativePath ?? ''), `${field}[${index}].relativePath`);
     assertNonEmptyString(item.title, `${field}[${index}].title`);
     if ((item.title as string).length > 500) throw new TypeError(`${field}[${index}].title exceeds 500 chars`);

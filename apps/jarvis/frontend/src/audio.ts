@@ -2,15 +2,22 @@ export interface ClapWakeDetectorOptions {
   refractoryMs?: number;
   noiseAdaptation?: number;
   initialNoiseFloor?: number;
+  /** Rejects blocks where sustained signal covers this fraction of samples. */
+  maxSustainedFraction?: number;
 }
 
 /**
  * Pure, block-based clap detector. Callers supply samples and a monotonic
  * timestamp, so detection is deterministic and does not retain raw audio.
+ *
+ * A clap is a sharp transient (high crest factor) followed quickly by silence.
+ * Sustained speech or tonal noise fills most of the block with energy and is
+ * rejected by the sustained-fraction gate.
  */
 export class ClapWakeDetector {
   private readonly refractoryMs: number;
   private readonly noiseAdaptation: number;
+  private readonly maxSustainedFraction: number;
   private noiseFloor: number;
   private lastClapAt = Number.NEGATIVE_INFINITY;
 
@@ -18,6 +25,7 @@ export class ClapWakeDetector {
     this.refractoryMs = options.refractoryMs ?? 800;
     this.noiseAdaptation = options.noiseAdaptation ?? 0.05;
     this.noiseFloor = options.initialNoiseFloor ?? 0.008;
+    this.maxSustainedFraction = options.maxSustainedFraction ?? 0.18;
   }
 
   process(samples: Float32Array, timestampMs: number): boolean {
@@ -37,14 +45,22 @@ export class ClapWakeDetector {
       rms >= Math.max(0.02, this.noiseFloor * 1.8) &&
       crestFactor >= 2.5;
 
-    if (transient) {
-      if (timestampMs - this.lastClapAt < this.refractoryMs) return false;
-      this.lastClapAt = timestampMs;
-      return true;
+    if (!transient) {
+      this.noiseFloor += (rms - this.noiseFloor) * this.noiseAdaptation;
+      return false;
     }
 
-    this.noiseFloor += (rms - this.noiseFloor) * this.noiseAdaptation;
-    return false;
+    // Discard sustained signals: speech / tones fill most of the block.
+    let countAboveFloor = 0;
+    const floor = Math.max(0.015, this.noiseFloor * 1.2);
+    for (const sample of samples) {
+      if (Math.abs(sample) > floor) countAboveFloor += 1;
+    }
+    if (countAboveFloor / samples.length > this.maxSustainedFraction) return false;
+
+    if (timestampMs - this.lastClapAt < this.refractoryMs) return false;
+    this.lastClapAt = timestampMs;
+    return true;
   }
 }
 
