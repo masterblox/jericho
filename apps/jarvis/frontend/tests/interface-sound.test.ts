@@ -43,7 +43,7 @@ describe('parseGroundedResultMessage', () => {
   it('accepts the v2 grounded_result contract and preserves identity metadata', () => {
     const parsed = parseGroundedResultMessage({
       schemaVersion: 2,
-      resultId: ' res-1 ',
+      resultId: 'res-1',
       phase: 'resolved',
       route: 'private_knowledge',
       summary: 'Isabella at MasterBlox',

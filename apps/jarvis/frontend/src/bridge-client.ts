@@ -85,6 +85,7 @@ export class BridgeClient {
   private turnState: VoiceTurnState = 'standby';
   private previewPlaying = false;
   private speechPlaying = false;
+  private wakePending = false;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
@@ -243,11 +244,13 @@ export class BridgeClient {
     }
     socket.send(JSON.stringify({ type: 'wake' }));
     this.turnState = 'greeting';
+    this.wakePending = true;
     this.events.onStatus?.('greeting');
   }
 
   private beginListening(): void {
-    if (this.turnState !== 'greeting') return;
+    if (this.turnState !== 'greeting' || !this.wakePending) return;
+    this.wakePending = false;
     this.turnState = 'active';
     this.mic.setMuted(false);
     this.events.onArmed?.(true);
@@ -379,12 +382,7 @@ export class BridgeClient {
         if (this.turnState === 'greeting') this.events.onStatus?.('greeting');
         break;
       case 'greeting_complete':
-        // hasGreeted fast-path can deliver this before wake() finishes moving
-        // standby/waiting → greeting. Promote so beginListening is not a no-op.
-        if (this.turnState === 'active') break;
-        if (this.turnState === 'standby' || this.turnState === 'waiting') {
-          this.turnState = 'greeting';
-        }
+        if (!this.wakePending || this.turnState !== 'greeting') break;
         this.beginListening();
         break;
       case 'interrupt':
@@ -447,6 +445,7 @@ export class BridgeClient {
   private enterStandby(options: { interrupt?: boolean } = {}): void {
     const changed = this.turnState !== 'standby';
     this.turnState = 'standby';
+    this.wakePending = false;
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;

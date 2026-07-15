@@ -215,3 +215,113 @@ test.describe('knowledge projection geometry', () => {
     await page.screenshot({ path: `tests/browser/screenshots/reduced-motion-${vp.width}x${vp.height}.png`, fullPage: false })
   })
 })
+
+test.describe('action terminal states', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/')
+    await passConsentGate(page)
+    await page.waitForSelector('.stage', { timeout: 10000 })
+    await page.waitForSelector('.core-sphere', { timeout: 10000 })
+  })
+
+  test('open succeeds via pointer and renders NOTE OPENED', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('.k-actions button', { hasText: 'OPEN NOTE' }).first().click()
+    await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
+    await expect(page.locator('.k-status')).not.toContainText('WORKING')
+  })
+
+  test('open fails via intercepted endpoint and renders ACTION FAILED', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      await route.fulfill({ status: 500, contentType: 'application/json', body: JSON.stringify({ error: 'ACTION FAILED' }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('.k-actions button', { hasText: 'OPEN NOTE' }).first().click()
+    await expect(page.locator('.k-status')).toContainText('ACTION FAILED')
+    await expect(page.locator('.k-status')).not.toContainText('WORKING')
+  })
+
+  test('keyboard Enter invokes same action as pointer click', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    const button = page.locator('.k-actions button', { hasText: 'OPEN NOTE' }).first()
+    await button.focus()
+    await button.press('Enter')
+    await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
+  })
+
+  test('gesture-target click invokes same action as pointer', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/open', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('[data-gesture-target^="knowledge:open-note"]').first().click()
+    await expect(page.locator('.k-status')).toContainText('NOTE OPENED')
+  })
+
+  test('correct preview succeeds and confirm button appears', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/correct/preview', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ preview: { id: 'prev-1', version: 1, disputedClaim: 'Test claim' } }) })
+    })
+    await page.route('**/api/v1/grounded-results/**/actions/correct/confirm', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('.k-actions button', { hasText: 'CORRECT' }).first().click()
+    await expect(page.locator('.k-status')).toContainText('CORRECTION PREVIEW READY')
+    await expect(page.locator('button', { hasText: 'CONFIRM CORRECTION' })).toBeVisible()
+
+    await page.locator('button', { hasText: 'CONFIRM CORRECTION' }).click()
+    await expect(page.locator('.k-status')).toContainText('CORRECTION CONFIRMED')
+  })
+
+  test('reorganize succeeds and proposal shows approve/reject', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/reorganize', async (route) => {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ proposal: { id: 'prop-1', version: 2, integrityHash: 'abc', summary: 'Group notes' } }),
+      })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('.k-actions button', { hasText: 'REORGANIZE' }).first().click()
+    await expect(page.locator('.k-status')).toContainText('REORGANIZATION PROPOSED')
+    await expect(page.locator('button', { hasText: 'APPROVE REORGANIZATION' })).toBeVisible()
+    await expect(page.locator('button', { hasText: 'REJECT REORGANIZATION' })).toBeVisible()
+  })
+
+  test('terminal failure renders error without leaving WORKING state', async ({ page }) => {
+    await page.route('**/api/v1/grounded-results/**/actions/reorganize', async (route) => {
+      await route.fulfill({ status: 403, contentType: 'application/json', body: JSON.stringify({ error: 'FORBIDDEN' }) })
+    })
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForSelector('.k-card--actions', { timeout: 5000 })
+    await page.waitForTimeout(600)
+
+    await page.locator('.k-actions button', { hasText: 'REORGANIZE' }).first().click()
+    await expect(page.locator('.k-status')).not.toContainText('WORKING')
+    await expect(page.locator('.k-status')).toContainText('FORBIDDEN')
+  })
+})

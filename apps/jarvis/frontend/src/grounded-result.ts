@@ -70,17 +70,16 @@ export function parseInterfaceSoundDetail(raw: unknown): InterfaceSoundDetail | 
   return resultId && isInterfaceSoundCue(d.cue) ? { resultId, cue: d.cue } : null;
 }
 
-/** Trim string fields for presentation; never invent or rewrite contract data. */
+/** Trim string fields for presentation; never invent or rewrite contract data.
+ *  Opaque IDs (resultId, sourceId, rootId, claim/conflict IDs, support/source
+ *  arrays, action arrays) are preserved exactly after shared validation. */
 function enrichForPresentation(event: GroundedResultEvent): GroundedResultEvent {
   const trim = (v: string) => v.trim();
   const out: GroundedResultEvent = {
     ...event,
-    resultId: trim(event.resultId),
     subject: trim(event.subject),
     provenance: event.provenance.map((p) => ({
       ...p,
-      sourceId: trim(p.sourceId),
-      rootId: trim(p.rootId),
       relativePath: trim(p.relativePath),
       title: trim(p.title),
       excerpt: typeof p.excerpt === 'string' ? p.excerpt.trim() : p.excerpt,
@@ -96,23 +95,16 @@ function enrichForPresentation(event: GroundedResultEvent): GroundedResultEvent 
   if (event.claims) {
     out.claims = event.claims.map((c) => ({
       ...c,
-      id: trim(c.id),
       text: trim(c.text),
-      supportSourceIds: c.supportSourceIds.map(trim),
     }));
   }
   if (event.conflicts) {
     out.conflicts = event.conflicts.map((c) => ({
       ...c,
-      id: trim(c.id),
       claim: trim(c.claim),
       reason: trim(c.reason),
-      sourceIds: c.sourceIds.map(trim),
     }));
   }
-  if (event.actions.openSourceIds) out.actions.openSourceIds = event.actions.openSourceIds.map(trim);
-  if (event.actions.reorganizeSourceIds) out.actions.reorganizeSourceIds = event.actions.reorganizeSourceIds.map(trim);
-  if (event.actions.correctConflictIds) out.actions.correctConflictIds = event.actions.correctConflictIds.map(trim);
   if (event.guided) out.guided = { test: 'isabella' };
   return out;
 }

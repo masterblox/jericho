@@ -60,11 +60,50 @@ describe('parseGroundedResultMessage v2 (shared contract)', () => {
     expect(r!.indexRevision).toBeUndefined()
   })
 
-  it('trims presentation fields without altering contract acceptance', () => {
-    const r = parseGroundedResultMessage({ ...V2, resultId: ' gr-1 ', subject: ' Isabella ' })
+  it('trims presentation fields without altering opaque IDs', () => {
+    const r = parseGroundedResultMessage({ ...V2, subject: ' Isabella ', fullName: ' Isabella Handel ' })
     expect(r).not.toBeNull()
     expect(r!.resultId).toBe('gr-1')
     expect(r!.subject).toBe('Isabella')
+    expect(r!.fullName).toBe('Isabella Handel')
+  })
+
+  it('preserves opaque IDs exactly after shared validation without trimming', () => {
+    const r = parseGroundedResultMessage({
+      schemaVersion: 2, resultId: 'id-with-dashes', phase: 'resolved', route: 'private_knowledge',
+      subject: 'X', confidence: 'strong',
+      provenance: [{ sourceId: 'src-a', rootId: 'root-x', authority: 'canonical', relativePath: 'x.md', title: 'X', excerpt: 'X.', score: 0.5 }],
+      actions: { openSourceIds: ['src-a'] },
+      retrievalCount: 0,
+    })
+    expect(r).not.toBeNull()
+    expect(r!.resultId).toBe('id-with-dashes')
+    expect(r!.provenance[0].sourceId).toBe('src-a')
+    expect(r!.provenance[0].rootId).toBe('root-x')
+    expect(r!.actions.openSourceIds).toEqual(['src-a'])
+  })
+
+  it('survives collision between two distinct result IDs without cross-contamination', () => {
+    const a = parseGroundedResultMessage({
+      schemaVersion: 2, resultId: 'col-a', phase: 'resolved', route: 'private_knowledge',
+      subject: 'X', confidence: 'strong',
+      provenance: [{ sourceId: 'src-a', rootId: 'r', authority: 'canonical', relativePath: 'x.md', title: 'X', excerpt: 'X.', score: 0.5 }],
+      actions: { openSourceIds: ['src-a'] }, retrievalCount: 0,
+    })
+    const b = parseGroundedResultMessage({
+      schemaVersion: 2, resultId: 'col-b', phase: 'ambiguous', route: 'clarification',
+      subject: 'Y', confidence: 'ambiguous',
+      provenance: [{ sourceId: 'src-b', rootId: 'r', authority: 'canonical', relativePath: 'y.md', title: 'Y', excerpt: 'Y.', score: 0.5 }],
+      actions: {}, retrievalCount: 0,
+    })
+    expect(a).not.toBeNull()
+    expect(b).not.toBeNull()
+    expect(a!.resultId).toBe('col-a')
+    expect(b!.resultId).toBe('col-b')
+    expect(a!.subject).toBe('X')
+    expect(b!.subject).toBe('Y')
+    expect(a!.phase).toBe('resolved')
+    expect(b!.phase).toBe('ambiguous')
   })
 
   it('rejects over-limit subject/claim/conflict/title (no truncation)', () => {
