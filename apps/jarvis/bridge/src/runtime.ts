@@ -138,7 +138,8 @@ export function createConnectorRuntime(
   const memoryIndex = config.memoryRoots.length
     ? new MemoryIndex({ roots: config.memoryRoots })
     : undefined;
-  memoryIndex?.refresh();
+  // Kick off the first vault index off the event loop; do not block Core startup.
+  void memoryIndex?.requestRefresh();
 
   const registry = new CaptureConnectorRegistry(connectors);
   const supervisor = new ConnectorSupervisor({
@@ -155,7 +156,7 @@ export function createConnectorRuntime(
     maxBackoffMs: Math.max(config.connectorPollIntervalMs, config.connectorPollIntervalMs * 8),
     ...(memoryIndex ? {
       onPoll: () => {
-        memoryIndex.refresh();
+        void memoryIndex.requestRefresh();
       },
     } : {}),
   });
@@ -171,7 +172,9 @@ export function createConnectorRuntime(
     start: async () => {
       await scheduler.start();
       if (memoryIndex && descriptors.length === 0) {
-        memoryTimer = setInterval(() => memoryIndex.refresh(), config.connectorPollIntervalMs);
+        memoryTimer = setInterval(() => {
+          void memoryIndex.requestRefresh();
+        }, config.connectorPollIntervalMs);
         memoryTimer.unref?.();
       }
     },
