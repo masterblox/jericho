@@ -379,6 +379,12 @@ export class BridgeClient {
         if (this.turnState === 'greeting') this.events.onStatus?.('greeting');
         break;
       case 'greeting_complete':
+        // hasGreeted fast-path can deliver this before wake() finishes moving
+        // standby/waiting → greeting. Promote so beginListening is not a no-op.
+        if (this.turnState === 'active') break;
+        if (this.turnState === 'standby' || this.turnState === 'waiting') {
+          this.turnState = 'greeting';
+        }
         this.beginListening();
         break;
       case 'interrupt':

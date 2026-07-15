@@ -190,6 +190,21 @@ describe('BridgeClient lifecycle', () => {
     expect(sentMessages(harness.socket)).toEqual([]);
   });
 
+  it('arms listening when greeting_complete arrives while still in standby', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+    // hasGreeted fast-path can deliver greeting_complete before wake() moves
+    // turnState out of standby.
+    harness.socket.message({ type: 'greeting_complete' });
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(false);
+    harness.emitChunk('active-audio');
+    expect(sentMessages(harness.socket)).toContainEqual({
+      type: 'audio',
+      data: 'active-audio',
+    });
+  });
+
   it('forwards only recognized guided test start signals', async () => {
     const onGuidedTestStart = vi.fn();
     const harness = createBridgeHarness({}, { onGuidedTestStart });

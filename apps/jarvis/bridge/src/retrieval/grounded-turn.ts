@@ -89,6 +89,8 @@ interface ActiveTurn {
 const FINAL_QUIET_MS = 250;
 const TURN_COMPLETE_GRACE_MS = 150;
 const SPECULATIVE_BUFFER_MS = 2_000;
+/** Live ASR often finalizes "Test" and "Isabella" as separate turns. */
+const GUIDED_FRAGMENT_WINDOW_MS = 12_000;
 
 /**
  * Single voice turn controller for grounded private intelligence.
@@ -103,6 +105,10 @@ export class GroundedTurnController {
   #processedTurnComplete = false;
   #guidedActive = false;
   #pendingTurnCompleteWithoutTranscript = false;
+  /** First half of a fragmented "Test Isabella" ASR pair. */
+  #pendingGuidedFragment: { kind: 'test'; at: number } | undefined;
+  /** Bare Isabella final seen recently (ASR often reverses fragment order). */
+  #recentBareIsabellaAt: number | undefined;
 
   constructor(ports: GroundedTurnPorts) {
     this.#ports = ports;
@@ -205,6 +211,11 @@ export class GroundedTurnController {
       return { mayDeactivate: false };
     }
     if (this.#turn.finalized) {
+      // Keep the gate armed while waiting for the second half of a fragmented
+      // "Test Isabella" pair; otherwise turnComplete after bare "test" mutes the mic.
+      if (this.#pendingGuidedFragment) {
+        return { mayDeactivate: false };
+      }
       // Guided start/stop and general turns finalize before Gemini's turnComplete.
       return {
         mayDeactivate: this.#turn.route !== 'private_knowledge' || this.#turn.groundedOutputSeen,
@@ -272,18 +283,13 @@ export class GroundedTurnController {
       turn.captureCommitted = true;
       this.commitSpokenCapture(turn.id, transcript);
     }
-    if (isGuidedStart(transcript)) {
-      this.#guidedActive = true;
-      this.#ports.send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
-      this.#ports.send({ type: 'guided_test_phase', test: 'isabella', phase: 'ready' });
-      this.#ports.onGuidedStart?.();
-      turn.guided = { test: 'isabella' };
-      turn.route = 'general';
-      turn.speculative = [];
+    const now = this.#ports.clock?.() ?? Date.now();
+    if (this.tryStartGuided(transcript, turn, now)) {
       return;
     }
     if (isGuidedStop(transcript)) {
       this.#guidedActive = false;
+      this.#pendingGuidedFragment = undefined;
       this.#ports.send({ type: 'guided_test_end', test: 'isabella' });
       this.#ports.onGuidedStop?.();
       turn.route = 'general';
@@ -597,6 +603,49 @@ export class GroundedTurnController {
     }
   }
 
+  private tryStartGuided(transcript: string, turn: ActiveTurn, now: number): boolean {
+    const pending = this.#pendingGuidedFragment;
+    if (pending && now - pending.at > GUIDED_FRAGMENT_WINDOW_MS) {
+      this.#pendingGuidedFragment = undefined;
+    }
+    if (
+      this.#recentBareIsabellaAt
+      && now - this.#recentBareIsabellaAt > GUIDED_FRAGMENT_WINDOW_MS
+    ) {
+      this.#recentBareIsabellaAt = undefined;
+    }
+    // Pair either order: test→Isabella (pending cue) or Isabella→test (recent bare).
+    // Do not consume bare Isabella alone — ASR often reduces "Who is Isabella" to that.
+    const pairedForward =
+      this.#pendingGuidedFragment?.kind === 'test' && isGuidedIsabellaFragment(transcript);
+    const pairedReverse =
+      isGuidedTestFragment(transcript)
+      && this.#recentBareIsabellaAt !== undefined
+      && now - this.#recentBareIsabellaAt <= GUIDED_FRAGMENT_WINDOW_MS;
+    if (isGuidedStart(transcript) || pairedForward || pairedReverse) {
+      this.#pendingGuidedFragment = undefined;
+      this.#recentBareIsabellaAt = undefined;
+      this.#guidedActive = true;
+      this.#ports.send({ type: 'guided_test_start', test: 'isabella', phase: 'ready' });
+      this.#ports.send({ type: 'guided_test_phase', test: 'isabella', phase: 'ready' });
+      this.#ports.onGuidedStart?.();
+      turn.guided = { test: 'isabella' };
+      turn.route = 'general';
+      turn.speculative = [];
+      return true;
+    }
+    if (isGuidedTestFragment(transcript)) {
+      this.#pendingGuidedFragment = { kind: 'test', at: now };
+      turn.route = 'general';
+      turn.speculative = [];
+      return true;
+    }
+    if (isGuidedIsabellaFragment(transcript)) {
+      this.#recentBareIsabellaAt = now;
+    }
+    return false;
+  }
+
   private beginGrounding(): void {
     if (!this.#turn || this.#turn.groundingState !== 'idle') return;
     this.#turn.groundingState = 'retrieving';
@@ -802,8 +851,34 @@ export function privateSubject(transcript: string): string | undefined {
   return undefined;
 }
 
+function normalizeGuidedTranscript(transcript: string): string {
+  return transcript
+    // Gemini sometimes tags non-speech as "<noise>" inside the final text.
+    .replace(/<[^>\n]+>/gu, ' ')
+    .replace(/[?!]+/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/[.]+$/u, '')
+    .trim();
+}
+
 function isGuidedStart(transcript: string): boolean {
-  return /^test isabella[.!?]?$/iu.test(transcript);
+  // Live ASR drops, reorders, or appends clauses around "Test Isabella".
+  const t = normalizeGuidedTranscript(transcript);
+  return /^test(?:ing)?\s+isabel(?:la|a)?\b/iu.test(t)
+    || /^isabel(?:la|a)?\s+test(?:ing)?\b/iu.test(t)
+    || /^(?:start|begin|run|launch)\s+(?:the\s+)?isabel(?:la|a)?\s+test\b/iu.test(t)
+    || /^please\s+test(?:ing)?\s+isabel(?:la|a)?\b/iu.test(t);
+}
+
+function isGuidedTestFragment(transcript: string): boolean {
+  return /^test(?:ing)?$/iu.test(normalizeGuidedTranscript(transcript));
+}
+
+function isGuidedIsabellaFragment(transcript: string): boolean {
+  // Bare subject finals Gemini emits when it drops the leading "Test".
+  // Native audio often shortens to "Isabela" / "Isabel".
+  return /^isabel(?:la|a)?$/iu.test(normalizeGuidedTranscript(transcript));
 }
 
 function isGuidedStop(transcript: string): boolean {

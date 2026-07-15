@@ -1039,6 +1039,77 @@ describe('review regressions', () => {
     expect(terminals[0]?.guided).toEqual({ test: 'isabella' });
   });
 
+  it('guided start accepts ASR fragments test + Isabella across turns', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 32) });
+    stores.push(store);
+    const sent: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      send: (message) => sent.push(message),
+      instruct: () => undefined,
+      onGuidedStart: () => undefined,
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'test. <noise>' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(false);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(false);
+    expect(controller.onTurnComplete().mayDeactivate).toBe(false);
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Isabela.' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(true);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+  });
+
+  it('guided start accepts reversed ASR fragments Isabella then test', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 34) });
+    stores.push(store);
+    const sent: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      send: (message) => sent.push(message),
+      instruct: () => undefined,
+      onGuidedStart: () => undefined,
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Isabella.' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(false);
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'test.' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(true);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(true);
+  });
+
+  it('bare Isabella alone does not start guided and stays available for private questions', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 33) });
+    stores.push(store);
+    const root = tempDir('jericho-guided-bare-');
+    writeFileSync(join(root, 'People.md'), '# Isabella Handel\nIsabella Handel works at MasterBlox.\n');
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const sent: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: (message) => sent.push(message),
+      instruct: () => undefined,
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Isabella.' }, 'final');
+    await controller.finalizeNow();
+    expect(controller.guidedActive).toBe(false);
+    expect(sent.some((message) => message.type === 'guided_test_start')).toBe(false);
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+    const terminals = sent.filter((message) => message.type === 'grounded_result' && message.phase !== 'retrieving');
+    expect(terminals.length).toBeGreaterThanOrEqual(1);
+    expect(terminals.some((message) => message.guided)).toBe(false);
+  });
+
   it('index refresh and correction confirm invalidate shared live identity caches', async () => {
     const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 31) });
     stores.push(store);
