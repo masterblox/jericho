@@ -16,6 +16,8 @@ import {
   type EventEnvelope,
   type GroundedResultEvent,
   type GroundedResultPhase,
+  type GroundedTurnMilestone,
+  type GroundedTurnProgressEvent,
   type IdentityAwareRetrievalResult,
   type JsonValue,
   type Proposal,
@@ -65,6 +67,8 @@ export interface GroundedTurnPorts {
   sessionGreeting?: { hasGreeted: boolean };
   /** Fired when a pending empty turnComplete grace settles with no transcript. */
   onTurnSettled?: () => void;
+  /** At-most-once progress per turn; never exposes transcript/subject/evidence. */
+  onProgress?: (event: GroundedTurnProgressEvent) => void;
 }
 
 interface ActiveTurn {
@@ -84,6 +88,8 @@ interface ActiveTurn {
   route?: 'private_knowledge' | 'general';
   guided?: { test: 'isabella' };
   finalized?: boolean;
+  captureId?: string;
+  progressSeen: Set<GroundedTurnMilestone>;
 }
 
 const FINAL_QUIET_MS = 250;
@@ -167,6 +173,7 @@ export class GroundedTurnController {
       turnCompleteSeen: pendingTurnComplete,
       seenTranscriptChunks: new Set(),
       speculative: [],
+      progressSeen: new Set(),
     };
   }
 
@@ -310,6 +317,7 @@ export class GroundedTurnController {
     if (classifyPrivateQuestion(transcript)) {
       turn.route = 'private_knowledge';
       turn.speculative = [];
+      this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
       await this.runPrivateRetrieval(transcript, guided);
     } else {
       turn.route = 'general';
@@ -330,6 +338,7 @@ export class GroundedTurnController {
     turn.guided = guided;
     turn.groundingState = 'retrieving';
     turn.resultId = turn.resultId ?? randomUUID();
+    this.publishProgress(turn, 'retrieval_started', { resultId: turn.resultId });
     turn.speculative = [];
     this.#ports.interrupt?.();
 
@@ -340,6 +349,7 @@ export class GroundedTurnController {
     if (!index?.available) {
       const unavailable = this.publishPhase('unavailable', { subject, ...(guided ? { guided } : {}) });
       this.persistResult(unavailable);
+      this.publishProgress(turn, 'terminal_result_sent', { resultId: turn.resultId });
       this.narrateUnavailable(transcript);
       turn.groundingState = 'answering';
       turn.retrievalCompleted = true;
@@ -388,6 +398,7 @@ export class GroundedTurnController {
       this.#cache.set(cacheKey, { evidence, hits, event });
       this.#ports.send({ type: 'grounded_result', ...event as unknown as Record<string, unknown> });
       this.persistResult(event);
+      this.publishProgress(turn, 'terminal_result_sent', { resultId: turn.resultId });
       if (!turn.narrationStarted) {
         turn.narrationStarted = true;
         if (guided) this.#ports.onGuidedResult?.(event, evidence);
@@ -398,6 +409,7 @@ export class GroundedTurnController {
     } catch {
       const unavailable = this.publishPhase('unavailable', { subject, ...(guided ? { guided } : {}) });
       this.persistResult(unavailable);
+      this.publishProgress(turn, 'terminal_result_sent', { resultId: turn.resultId });
       this.narrateUnavailable(transcript);
       turn.groundingState = 'answering';
       turn.retrievalCompleted = true;
@@ -652,6 +664,7 @@ export class GroundedTurnController {
       turn.captureCommitted = true;
       this.commitSpokenCapture(turn.id, stitchedTranscript);
     }
+    this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
     this.#guidedActive = true;
     turn.guided = { test: 'isabella' };
     turn.route = 'general';
@@ -703,6 +716,16 @@ export class GroundedTurnController {
     // A non-fragment utterance abandons any incomplete guided hold.
     if (pending) this.clearGuidedFragments();
     return 'none';
+  }
+
+  private publishProgress(
+    turn: ActiveTurn,
+    milestone: GroundedTurnMilestone,
+    ids: { captureId?: string; resultId?: string } = {},
+  ): void {
+    if (turn.progressSeen.has(milestone)) return;
+    turn.progressSeen.add(milestone);
+    this.#ports.onProgress?.({ turnId: turn.id, milestone, ...ids });
   }
 
   private beginGrounding(): void {
@@ -804,6 +827,7 @@ export class GroundedTurnController {
           observedAt: occurredAt,
         }],
       });
+      if (this.#turn) this.#turn.captureId = result.event.id;
       this.#ports.onCapture?.(result.event.id);
     } catch {
       this.#ports.send({ type: 'error', message: 'spoken capture unavailable' });

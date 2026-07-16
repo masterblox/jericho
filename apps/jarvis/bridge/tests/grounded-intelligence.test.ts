@@ -1716,3 +1716,175 @@ describe('large-corpus refresh responsiveness', () => {
     expect(sent.filter((message) => message.type === 'guided_test_start')).toHaveLength(1);
   });
 });
+
+describe('grounded turn progress milestones', () => {
+  it('emits capture_committed, retrieval_started, and terminal_result_sent in order', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 11) });
+    stores.push(store);
+    const root = tempDir('gt-progress');
+    directories.push(root);
+    const carlosNote = join(root, 'Carlos Prada.md');
+    writeFileSync(carlosNote, 'Carlos Prada is the founder.');
+    const isabellaNote = join(root, 'Isabella Handel.md');
+    writeFileSync(isabellaNote, `Isabella Handel works at MasterBlox. Married to Francisco.`);
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const progress: Record<string, unknown>[] = [];
+    const sent: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: (message) => sent.push(message),
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+
+    const milestones = progress.map((p) => p.milestone);
+    expect(milestones).toEqual([
+      'capture_committed',
+      'retrieval_started',
+      'terminal_result_sent',
+    ]);
+    expect(new Set(progress.map((p) => p.turnId)).size).toBe(1);
+    const retrievalEvent = progress.find((p) => p.milestone === 'retrieval_started');
+    const terminalEvent = progress.find((p) => p.milestone === 'terminal_result_sent');
+    expect(retrievalEvent?.resultId).toBeTruthy();
+    expect(terminalEvent?.resultId).toBeTruthy();
+    expect(retrievalEvent?.resultId).toBe(terminalEvent?.resultId);
+    const captureEvent = progress.find((p) => p.milestone === 'capture_committed');
+    expect(captureEvent?.captureId).toBeTruthy();
+  });
+
+  it('does not emit progress for general conversation', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 12) });
+    stores.push(store);
+    const progress: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      send: () => undefined,
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Hello' }, 'final');
+    await controller.finalizeNow();
+    expect(progress).toHaveLength(0);
+  });
+
+  it('does not duplicate milestones on duplicate turnComplete', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 13) });
+    stores.push(store);
+    const root = tempDir('gt-progress-2');
+    directories.push(root);
+    writeFileSync(join(root, 'Isabella Handel.md'), 'Isabella Handel works at MasterBlox.');
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const progress: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: () => undefined,
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    controller.onTurnComplete();
+    controller.onTurnComplete(); // duplicate
+    await controller.finalizeNow();
+    const milestones = progress.map((p) => p.milestone);
+    expect(milestones).toEqual([
+      'capture_committed',
+      'retrieval_started',
+      'terminal_result_sent',
+    ]);
+  });
+
+  it('does not emit capture_committed when retrieval is unavailable', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 14) });
+    stores.push(store);
+    const progress: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      send: () => undefined,
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+    // Still emits capture_committed (capture works), retrieval_started, and terminal_result_sent (unavailable)
+    const milestones = progress.map((p) => p.milestone);
+    expect(milestones).toContain('capture_committed');
+  });
+
+  it('progress events expose no transcript, subject, evidence, excerpt, path, or claim', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 15) });
+    stores.push(store);
+    const root = tempDir('gt-progress-3');
+    directories.push(root);
+    writeFileSync(join(root, 'Isabella Handel.md'), 'Isabella Handel works at MasterBlox.');
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const progress: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: () => undefined,
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+    for (const p of progress) {
+      const forbidden = ['transcript', 'subject', 'evidence', 'excerpt', 'path', 'claim'];
+      for (const key of forbidden) {
+        expect(p, `progress event must not contain ${key}`).not.toHaveProperty(key);
+      }
+    }
+  });
+
+  it('emits at most once per milestone across two private turns', async () => {
+    const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 16) });
+    stores.push(store);
+    const root = tempDir('gt-progress-4');
+    directories.push(root);
+    writeFileSync(join(root, 'Isabella Handel.md'), 'Isabella Handel works at MasterBlox.');
+    writeFileSync(join(root, 'Alice.md'), 'Alice works at Acme.');
+    const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+    index.refresh();
+    const progress: Record<string, unknown>[] = [];
+    const controller = new GroundedTurnController({
+      store,
+      memoryIndex: index,
+      send: () => undefined,
+      instruct: () => undefined,
+      onProgress: (event) => progress.push(event as unknown as Record<string, unknown>),
+    });
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Isabella' }, 'final');
+    await controller.finalizeNow();
+    controller.beginTurn();
+    controller.ingestTranscription({ text: 'Who is Alice' }, 'final');
+    await controller.finalizeNow();
+    // Two turns, each with 3 milestones
+    expect(progress).toHaveLength(6);
+    const turn1 = progress.slice(0, 3);
+    const turn2 = progress.slice(3, 6);
+    expect(new Set(turn1.map((p) => p.turnId)).size).toBe(1);
+    expect(new Set(turn2.map((p) => p.turnId)).size).toBe(1);
+    expect(turn1[0]!.turnId).not.toBe(turn2[0]!.turnId);
+    for (const chunk of [turn1, turn2]) {
+      expect(chunk.map((p) => p.milestone)).toEqual([
+        'capture_committed',
+        'retrieval_started',
+        'terminal_result_sent',
+      ]);
+    }
+  });
+});
