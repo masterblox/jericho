@@ -10,6 +10,7 @@ import { GoogleGenAI, Modality, type Session } from '@google/genai';
 import { WebSocket, WebSocketServer } from 'ws';
 
 import {
+  CALIBRATION_PHRASES,
   CorrectionConfirmStatus,
   DecisionOutcome,
   IdentityReviewDisposition,
@@ -24,6 +25,7 @@ import {
   SourceType,
   RouteType,
   assertGroundedResultEvent,
+  type CalibrationPhraseId,
   type CorrectionConfirmRequest,
   type CorrectionConfirmResponse,
   type CorrectionPreviewRequest,
@@ -38,6 +40,7 @@ import {
   type GuidedTestPhase,
   type GroundedResultEvent,
   type GroundedResultPhase,
+  type GroundedTurnProgressEvent,
   type IdentityAwareRetrievalResult,
   type JsonValue,
   type MissionDecisionRequest,
@@ -1597,6 +1600,10 @@ function openVoiceSession(
     generation: number;
   } | undefined;
 
+  let calibrationPhrase:
+    | { phraseId: CalibrationPhraseId; timer: ReturnType<typeof setTimeout> }
+    | undefined;
+
   const activeGuidedTest = () => {
     if (isGuidedExpired(guidedTest)) guidedTest = undefined;
     return guidedTest;
@@ -1804,6 +1811,25 @@ function openVoiceSession(
             turnPorts.ingestTranscription(message.serverContent?.interimInputTranscription, 'interim');
             turnPorts.ingestTranscription(message.serverContent?.inputTranscription, 'final');
           }
+          // Handle calibration phrase audio before the !active guard.
+          if (calibrationPhrase) {
+            for (const part of message.serverContent?.modelTurn?.parts ?? []) {
+              if (part.inlineData?.data) {
+                send({
+                  type: 'calibration_phrase_audio',
+                  mimeType: part.inlineData.mimeType ?? 'audio/pcm;rate=24000',
+                  data: part.inlineData.data,
+                });
+              }
+            }
+            if (message.serverContent?.turnComplete) {
+              const phrase = calibrationPhrase;
+              if (phrase?.timer) clearTimeout(phrase.timer);
+              calibrationPhrase = undefined;
+              send({ type: 'calibration_phrase', status: 'complete', phraseId: phrase?.phraseId });
+            }
+            return;
+          }
           if (!active) return;
           if (message.serverContent?.interrupted) send({ type: 'interrupt' });
           for (const part of message.serverContent?.modelTurn?.parts ?? []) {
@@ -1993,6 +2019,44 @@ function openVoiceSession(
   });
   send({ type: 'mode_change', mode: currentMode, name: personas[currentMode].name });
   send({ type: 'armed', armed: false });
+
+  const handleCalibrationPhrase = (message: Record<string, unknown>) => {
+    const phraseId = String(message.phraseId ?? '') as CalibrationPhraseId;
+    if (!(phraseId in CALIBRATION_PHRASES)) {
+      send({ type: 'calibration_phrase', status: 'unavailable', reason: 'unknown_phrase_id' });
+      return;
+    }
+    if (active || greetingActive || greetingPending || preview || calibrationPhrase) {
+      send({ type: 'calibration_phrase', status: 'unavailable', reason: 'session_busy' });
+      return;
+    }
+    if (!session) {
+      send({ type: 'calibration_phrase', status: 'unavailable', reason: 'gemini_unavailable' });
+      return;
+    }
+
+    const phraseGeneration = generation;
+    const timer = setTimeout(() => {
+      if (calibrationPhrase?.timer === timer) {
+        calibrationPhrase = undefined;
+        send({ type: 'calibration_phrase', status: 'unavailable', reason: 'phrase_timeout' });
+      }
+    }, 8_000);
+    timer.unref?.();
+
+    calibrationPhrase = { phraseId, timer };
+    send({ type: 'calibration_phrase', status: 'started', phraseId });
+
+    session.sendClientContent({
+      turns: [{
+        role: 'user',
+        parts: [{ text: CALIBRATION_PHRASES[phraseId] }],
+      }],
+      turnComplete: true,
+    });
+    void phraseGeneration;
+  };
+
   connect(currentVoice);
   webSocket.on('message', (raw) => {
     try {
@@ -2050,6 +2114,9 @@ function openVoiceSession(
       if (message.type === 'standby') {
         deactivate();
       }
+      if (message.type === 'calibration_phrase') {
+        handleCalibrationPhrase(message);
+      }
     } catch { /* invalid client frame */ }
   });
   webSocket.on('close', () => {
@@ -2057,6 +2124,8 @@ function openVoiceSession(
     generation += 1;
     if (preview?.timer) clearTimeout(preview.timer);
     preview = undefined;
+    if (calibrationPhrase?.timer) clearTimeout(calibrationPhrase.timer);
+    calibrationPhrase = undefined;
     if (activeTimer) clearTimeout(activeTimer);
     if (personaRevertTimer) clearTimeout(personaRevertTimer);
     session?.close();

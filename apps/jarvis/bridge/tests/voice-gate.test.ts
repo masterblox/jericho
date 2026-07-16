@@ -579,6 +579,170 @@ describe('voice socket privacy gate', () => {
   });
 });
 
+describe('calibration phrase WebSocket transport', () => {
+  it('speaks a known calibration phrase and emits started/audio/complete', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+
+    callbacks!.onmessage({
+      serverContent: {
+        modelTurn: {
+          parts: [{ inlineData: { data: 'fake-audio', mimeType: 'audio/pcm;rate=24000' } }],
+        },
+      },
+    });
+    callbacks!.onmessage({ serverContent: { turnComplete: true } });
+    await flushIo();
+
+    const calibrationMessages = messages().filter(
+      (m: Record<string, unknown>) => String(m.type ?? '').startsWith('calibration_phrase'),
+    );
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase' && m.status === 'started'))
+      .toBe(true);
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase_audio'))
+      .toBe(true);
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase' && m.status === 'complete'))
+      .toBe(true);
+    expect(session.sendRealtimeInput).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown phrase ID with unavailable', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'unknown_id' }));
+    await vi.waitFor(() => {
+      const phraseMsgs = messages().filter(
+        (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+      );
+      return phraseMsgs.length > 0;
+    });
+    expect(session.sendClientContent).not.toHaveBeenCalled();
+  });
+
+  it('rejects calibration phrase during an active turn', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    // Activate a wake, simulate greeting
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    // Simulate greeting complete
+    callbacks!.onmessage({ serverContent: { turnComplete: true } });
+    await flushIo();
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => {
+      const msgs = messages();
+      const err = msgs.find(
+        (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+      );
+      expect(err).toBeTruthy();
+    });
+  });
+
+  it('rejects concurrent calibration phrase', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_2' }));
+    await flushIo();
+
+    const unavailable = messages().filter(
+      (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+    );
+    expect(unavailable.length).toBe(1);
+  });
+
+  it('sends the exact allowlisted text to Gemini once', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_3' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    const call = session.sendClientContent.mock.calls[0]?.[0];
+    expect(call?.turns?.[0]?.parts?.[0]?.text).toBe('Who is Isabella Handel?');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('spouse');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('married');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('wife');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('husband');
+  });
+});
+
 async function startVoiceServer(
   voiceConnect: VoiceConnect,
   voiceActiveTurnMs = 1_000,
