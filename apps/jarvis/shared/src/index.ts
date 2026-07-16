@@ -462,6 +462,108 @@ export interface GroundedResultEvent {
   };
 }
 
+// ── Native audio calibration contracts ──
+
+export const CALIBRATION_PHRASES = {
+  voice_range_1: 'Jericho, calibrate my voice.',
+  voice_range_2: 'Show me the grounded result.',
+  voice_range_3: 'Who is Isabella Handel?',
+} as const;
+
+export type CalibrationPhraseId = keyof typeof CALIBRATION_PHRASES;
+
+export type ActiveCalibrationPhase = 'room' | 'speech' | 'clap' | 'live_canary';
+
+export type CalibrationPhase =
+  | 'idle'
+  | ActiveCalibrationPhase
+  | 'review'
+  | 'saved'
+  | 'failed';
+
+export const CALIBRATION_FAILURE_REASONS = [
+  'mic_denied',
+  'device_lost',
+  'speaker_unavailable',
+  'excessive_ambient_noise',
+  'clipping',
+  'insufficient_speech_energy',
+  'invalid_clap',
+  'gemini_connection_failed',
+  'memory_unavailable',
+  'event_duplication',
+  'event_mismatch',
+  'phase_timeout',
+  'decision_scope_conflict',
+  'profile_write_failed',
+] as const;
+
+export type CalibrationFailureReason =
+  (typeof CALIBRATION_FAILURE_REASONS)[number];
+
+export const PHASE_FAILURE_SUBSETS: Readonly<Record<CalibrationPhase, readonly CalibrationFailureReason[]>> = {
+  idle: [],
+  room: ['mic_denied', 'device_lost', 'excessive_ambient_noise', 'phase_timeout'],
+  speech: ['mic_denied', 'device_lost', 'speaker_unavailable', 'clipping', 'insufficient_speech_energy', 'phase_timeout'],
+  clap: ['mic_denied', 'device_lost', 'invalid_clap', 'phase_timeout'],
+  live_canary: ['mic_denied', 'device_lost', 'gemini_connection_failed', 'memory_unavailable', 'event_duplication', 'event_mismatch', 'phase_timeout'],
+  review: ['decision_scope_conflict', 'profile_write_failed'],
+  saved: [],
+  failed: [],
+};
+
+export type GroundedTurnMilestone =
+  | 'capture_committed'
+  | 'retrieval_started'
+  | 'terminal_result_sent';
+
+export const GROUNDED_TURN_MILESTONES: readonly GroundedTurnMilestone[] = [
+  'capture_committed',
+  'retrieval_started',
+  'terminal_result_sent',
+] as const;
+
+export interface GroundedTurnProgressEvent {
+  turnId: string;
+  milestone: GroundedTurnMilestone;
+  captureId?: string;
+  resultId?: string;
+}
+
+export interface AudioWindowMetrics {
+  durationMs: number;
+  sampleCount: number;
+  blockCount: number;
+  rmsMin: number;
+  rmsMax: number;
+  rmsMean: number;
+  rmsP95: number;
+  peakMax: number;
+  clipCount: number;
+  clippedSampleFraction: number;
+  sustainedEnergyFraction: number;
+}
+
+export interface CalibrationFixProposalRequest {
+  schemaVersion: 1;
+  sessionId: string;
+  buildSha: string;
+  micDeviceHash?: string;
+  failedPhase: ActiveCalibrationPhase | 'review';
+  failureReason: CalibrationFailureReason;
+  aggregateMetrics: Partial<AudioWindowMetrics>;
+  correlatedResultId?: string;
+}
+
+export interface CalibrationFixProposalResponse {
+  proposalId: string;
+  status: 'pending_review';
+  createdAt: string;
+  replayed: boolean;
+}
+
+// ── End calibration contracts ──
+
 export interface Freshness {
   observedAt: IsoTimestamp;
   validAt?: IsoTimestamp;
@@ -2442,6 +2544,113 @@ function assertGroundedResultProvenanceList(value: unknown, field: string): asse
       throw new TypeError(`${field}[${index}].score must be 0..1`);
     }
   });
+}
+
+export function assertGroundedTurnProgressEvent(value: unknown): asserts value is GroundedTurnProgressEvent {
+  assertRecord(value, 'GroundedTurnProgressEvent');
+  const allowed = new Set(['turnId', 'milestone', 'captureId', 'resultId']);
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) throw new TypeError(`GroundedTurnProgressEvent: unknown field "${key}"`);
+  }
+  if (typeof value.turnId !== 'string' || !value.turnId.trim()) {
+    throw new TypeError('GroundedTurnProgressEvent turnId must be non-empty');
+  }
+  if (value.turnId.length > 1024) throw new TypeError('GroundedTurnProgressEvent turnId exceeds 1024 chars');
+  const validMilestones = new Set<string>(GROUNDED_TURN_MILESTONES);
+  if (!validMilestones.has(String(value.milestone ?? ''))) {
+    throw new TypeError('GroundedTurnProgressEvent milestone is invalid');
+  }
+  if ('captureId' in value && value.captureId !== undefined) {
+    if (typeof value.captureId !== 'string' || !value.captureId.trim()) {
+      throw new TypeError('GroundedTurnProgressEvent captureId must be non-empty');
+    }
+  }
+  if ('resultId' in value && value.resultId !== undefined) {
+    if (typeof value.resultId !== 'string' || !value.resultId.trim()) {
+      throw new TypeError('GroundedTurnProgressEvent resultId must be non-empty');
+    }
+  }
+}
+
+const VALID_FAILED_PHASES = new Set<string>(['room', 'speech', 'clap', 'live_canary', 'review']);
+const VALID_FAILURE_REASONS = new Set<string>(CALIBRATION_FAILURE_REASONS);
+
+function isActiveOrReviewPhase(phase: string): phase is ActiveCalibrationPhase | 'review' {
+  return VALID_FAILED_PHASES.has(phase);
+}
+
+const ALLOWED_PROPOSAL_FIELDS = new Set<string>([
+  'schemaVersion', 'sessionId', 'buildSha', 'micDeviceHash',
+  'failedPhase', 'failureReason', 'aggregateMetrics', 'correlatedResultId',
+]);
+
+const ALLOWED_METRIC_KEYS = new Set<string>([
+  'durationMs', 'sampleCount', 'blockCount',
+  'rmsMin', 'rmsMax', 'rmsMean', 'rmsP95',
+  'peakMax', 'clipCount', 'clippedSampleFraction', 'sustainedEnergyFraction',
+]);
+
+export function assertCalibrationFixProposalRequest(
+  value: unknown,
+): asserts value is CalibrationFixProposalRequest {
+  assertRecord(value, 'CalibrationFixProposalRequest');
+  for (const key of Object.keys(value)) {
+    if (!ALLOWED_PROPOSAL_FIELDS.has(key)) {
+      throw new TypeError(`CalibrationFixProposalRequest: forbidden or unknown field "${key}"`);
+    }
+  }
+  if (value.schemaVersion !== 1) {
+    throw new TypeError('CalibrationFixProposalRequest schemaVersion must be 1');
+  }
+  if (typeof value.sessionId !== 'string' || !value.sessionId.trim()) {
+    throw new TypeError('CalibrationFixProposalRequest sessionId must be non-empty');
+  }
+  if (value.sessionId.length > 128) {
+    throw new TypeError('CalibrationFixProposalRequest sessionId exceeds 128 chars');
+  }
+  if (typeof value.buildSha !== 'string' || !/^[a-f0-9]{7,40}$/.test(value.buildSha)) {
+    throw new TypeError('CalibrationFixProposalRequest buildSha must be 7-40 lowercase hex');
+  }
+  if ('micDeviceHash' in value && value.micDeviceHash !== undefined) {
+    if (typeof value.micDeviceHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.micDeviceHash)) {
+      throw new TypeError('CalibrationFixProposalRequest micDeviceHash must be 64 lowercase hex');
+    }
+  }
+  const failedPhase = String(value.failedPhase ?? '');
+  if (!isActiveOrReviewPhase(failedPhase)) {
+    throw new TypeError('CalibrationFixProposalRequest failedPhase is invalid');
+  }
+  const failureReason = String(value.failureReason ?? '') as CalibrationFailureReason;
+  if (!VALID_FAILURE_REASONS.has(failureReason)) {
+    throw new TypeError('CalibrationFixProposalRequest failureReason is invalid');
+  }
+  const allowedReasons = PHASE_FAILURE_SUBSETS[failedPhase] as readonly CalibrationFailureReason[];
+  if (!allowedReasons.includes(failureReason)) {
+    throw new TypeError(
+      `CalibrationFixProposalRequest failureReason "${failureReason}" not valid for phase "${failedPhase}"`,
+    );
+  }
+  assertRecord(value.aggregateMetrics, 'aggregateMetrics');
+  for (const key of Object.keys(value.aggregateMetrics)) {
+    if (!ALLOWED_METRIC_KEYS.has(key)) {
+      throw new TypeError(`aggregateMetrics: unknown field "${key}"`);
+    }
+    const metricValue = (value.aggregateMetrics as Record<string, unknown>)[key];
+    if (typeof metricValue !== 'number' || !Number.isFinite(metricValue) || metricValue < 0) {
+      throw new TypeError(`aggregateMetrics.${key} must be a non-negative finite number`);
+    }
+    if (metricValue > 1e6) {
+      throw new TypeError(`aggregateMetrics.${key} exceeds maximum`);
+    }
+  }
+  if ('correlatedResultId' in value && value.correlatedResultId !== undefined) {
+    if (typeof value.correlatedResultId !== 'string' || !value.correlatedResultId.trim()) {
+      throw new TypeError('CalibrationFixProposalRequest correlatedResultId must be non-empty');
+    }
+    if (value.correlatedResultId.length > 1024) {
+      throw new TypeError('CalibrationFixProposalRequest correlatedResultId exceeds 1024 chars');
+    }
+  }
 }
 
 export function assertCostRecord(value: unknown): asserts value is CostRecord {
