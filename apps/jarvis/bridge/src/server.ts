@@ -88,6 +88,12 @@ import {
   classifyPrivateQuestion,
   privateSubject,
 } from './retrieval/grounded-turn.js';
+import {
+  CalibrationProposalStore,
+  MAX_PROPOSAL_BODY_BYTES,
+  validateAndParseProposalBody,
+  validateIdempotencyKey,
+} from './calibration/fix-proposals.js';
 import type { MemoryIndex } from './retrieval/memory-index.js';
 import {
   IdentityResolutionCache,
@@ -284,6 +290,9 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     nowIso: () => options.clock?.() ?? new Date().toISOString(),
   });
   groundedActions.loadPersistedResults();
+
+  const calibrationProposals = new CalibrationProposalStore({ store: options.store });
+
   const invalidateLiveIdentityCaches = () => {
     identityCache.invalidate();
     groundedActions.invalidateIdentityCache();
@@ -711,6 +720,45 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         proposal,
         snapshot: buildCommandCenterSnapshot(options.store, now()),
       });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/v1/calibration/fix-proposals') {
+      const raw = await readRawBody(request, MAX_PROPOSAL_BODY_BYTES);
+      if ('statusCode' in raw) {
+        sendJson(response, raw.statusCode, { error: raw.error });
+        return;
+      }
+      const parsed = validateAndParseProposalBody(raw.body);
+      if (parsed.error) {
+        sendJson(response, parsed.statusCode, { error: parsed.error });
+        return;
+      }
+      const request_ = parsed.request!;
+      const keyHeader = request.headers['x-idempotency-key'] as string | undefined;
+      const keyValidation = validateIdempotencyKey(keyHeader ?? null, request_);
+      if (!keyValidation.valid) {
+        sendJson(response, keyValidation.statusCode, { error: keyValidation.message });
+        return;
+      }
+      try {
+        const result = calibrationProposals.create(request_, keyHeader!);
+        sendJson(response, result.statusCode, result.body);
+      } catch {
+        sendJson(response, 503, { error: 'proposal_persistence_unavailable' });
+      }
+      return;
+    }
+    const calibrationProposalMatch = url.pathname.match(
+      /^\/api\/v1\/calibration\/fix-proposals\/([^/]+)$/,
+    );
+    if (request.method === 'GET' && calibrationProposalMatch) {
+      const proposalId = decodedPathSegment(calibrationProposalMatch[1], 'invalid_proposal_id');
+      const result = calibrationProposals.getProposal(proposalId);
+      if (!result) {
+        sendJson(response, 404, { error: 'not_found' });
+        return;
+      }
+      sendJson(response, 200, result);
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/v1/reflection/run') {
@@ -2296,6 +2344,25 @@ async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise
     throw new HttpError(400, 'invalid_json_body');
   }
   return parsed as Record<string, unknown>;
+}
+
+async function readRawBody(
+  request: IncomingMessage,
+  maxBytes: number,
+): Promise<{ body: string } | { statusCode: number; error: string }> {
+  const contentLength = request.headers['content-length'];
+  if (contentLength && Number(contentLength) > maxBytes) {
+    return { statusCode: 413, error: 'request_body_too_large' };
+  }
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) return { statusCode: 413, error: 'request_body_too_large' };
+    chunks.push(buffer);
+  }
+  return { body: Buffer.concat(chunks).toString('utf8') };
 }
 
 function boundedInteger(raw: string | null, fallback: number, minimum: number, maximum: number): number {
