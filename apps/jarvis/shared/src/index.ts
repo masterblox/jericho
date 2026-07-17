@@ -2564,11 +2564,24 @@ export function assertGroundedTurnProgressEvent(value: unknown): asserts value i
     if (typeof value.captureId !== 'string' || !value.captureId.trim()) {
       throw new TypeError('GroundedTurnProgressEvent captureId must be non-empty');
     }
+    if (value.captureId.length > 1024) {
+      throw new TypeError('GroundedTurnProgressEvent captureId exceeds 1024 chars');
+    }
   }
   if ('resultId' in value && value.resultId !== undefined) {
     if (typeof value.resultId !== 'string' || !value.resultId.trim()) {
       throw new TypeError('GroundedTurnProgressEvent resultId must be non-empty');
     }
+    if (value.resultId.length > 1024) {
+      throw new TypeError('GroundedTurnProgressEvent resultId exceeds 1024 chars');
+    }
+  }
+  const milestone = String(value.milestone ?? '');
+  if (milestone === 'capture_committed' && !('captureId' in value && value.captureId)) {
+    throw new TypeError('GroundedTurnProgressEvent capture_committed requires captureId');
+  }
+  if ((milestone === 'retrieval_started' || milestone === 'terminal_result_sent') && !('resultId' in value && value.resultId)) {
+    throw new TypeError(`GroundedTurnProgressEvent ${milestone} requires resultId`);
   }
 }
 
@@ -2631,17 +2644,55 @@ export function assertCalibrationFixProposalRequest(
     );
   }
   assertRecord(value.aggregateMetrics, 'aggregateMetrics');
-  for (const key of Object.keys(value.aggregateMetrics)) {
+  const metrics = value.aggregateMetrics as Record<string, unknown>;
+  const countFields = ['durationMs', 'sampleCount', 'blockCount', 'clipCount'] as const;
+  const ratioFields = ['rmsMin', 'rmsMax', 'rmsMean', 'rmsP95', 'peakMax'] as const;
+  const fractionFields = ['clippedSampleFraction', 'sustainedEnergyFraction'] as const;
+  for (const key of Object.keys(metrics)) {
     if (!ALLOWED_METRIC_KEYS.has(key)) {
       throw new TypeError(`aggregateMetrics: unknown field "${key}"`);
     }
-    const metricValue = (value.aggregateMetrics as Record<string, unknown>)[key];
+    const metricValue = metrics[key];
     if (typeof metricValue !== 'number' || !Number.isFinite(metricValue) || metricValue < 0) {
       throw new TypeError(`aggregateMetrics.${key} must be a non-negative finite number`);
     }
-    if (metricValue > 1e6) {
-      throw new TypeError(`aggregateMetrics.${key} exceeds maximum`);
+    if ((countFields as readonly string[]).includes(key)) {
+      if (!Number.isSafeInteger(metricValue)) {
+        throw new TypeError(`aggregateMetrics.${key} must be a safe integer`);
+      }
+      if (metricValue > 1_000_000_000) {
+        throw new TypeError(`aggregateMetrics.${key} exceeds maximum`);
+      }
     }
+    if ((ratioFields as readonly string[]).includes(key)) {
+      if (metricValue > 1) {
+        throw new TypeError(`aggregateMetrics.${key} must be 0..1`);
+      }
+    }
+    if ((fractionFields as readonly string[]).includes(key)) {
+      if (metricValue > 1) {
+        throw new TypeError(`aggregateMetrics.${key} must be 0..1`);
+      }
+    }
+  }
+  const hasRms = (key: string) => key in metrics && typeof metrics[key] === 'number';
+  if (hasRms('rmsMin') && hasRms('rmsMax') && (metrics.rmsMin as number) > (metrics.rmsMax as number)) {
+    throw new TypeError('aggregateMetrics rmsMin must not exceed rmsMax');
+  }
+  if (hasRms('rmsMin') && hasRms('rmsMean') && (metrics.rmsMin as number) > (metrics.rmsMean as number)) {
+    throw new TypeError('aggregateMetrics rmsMin must not exceed rmsMean');
+  }
+  if (hasRms('rmsMean') && hasRms('rmsMax') && (metrics.rmsMean as number) > (metrics.rmsMax as number)) {
+    throw new TypeError('aggregateMetrics rmsMean must not exceed rmsMax');
+  }
+  if (hasRms('rmsMean') && hasRms('rmsP95') && (metrics.rmsMean as number) > (metrics.rmsP95 as number)) {
+    throw new TypeError('aggregateMetrics rmsMean must not exceed rmsP95');
+  }
+  if (hasRms('rmsP95') && hasRms('rmsMax') && (metrics.rmsP95 as number) > (metrics.rmsMax as number)) {
+    throw new TypeError('aggregateMetrics rmsP95 must not exceed rmsMax');
+  }
+  if (hasRms('rmsMax') && hasRms('peakMax') && (metrics.rmsMax as number) > (metrics.peakMax as number)) {
+    throw new TypeError('aggregateMetrics rmsMax must not exceed peakMax');
   }
   if ('correlatedResultId' in value && value.correlatedResultId !== undefined) {
     if (typeof value.correlatedResultId !== 'string' || !value.correlatedResultId.trim()) {
@@ -3054,4 +3105,35 @@ function isCanonicalRfc3339(value: string): boolean {
     return false;
   }
   return Number.isFinite(Date.parse(value));
+}
+
+/**
+ * Deterministic recursive canonical JSON. Sorts object keys, then
+ * recursively canonicalizes values. Produces a single LF-terminated
+ * string with no trailing whitespace.
+ *
+ * Frontend calibration code must reuse this identical algorithm so
+ * that idempotency keys computed on both sides match.
+ */
+export function canonicalJson(value: unknown): string {
+  return canonicalJsonString(value);
+}
+
+function canonicalJsonString(value: unknown): string {
+  if (value === null) return 'null';
+  if (typeof value === 'boolean') return String(value);
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) throw new TypeError('canonicalJson: non-finite number');
+    return Number.isInteger(value) ? String(value) : JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJsonString).join(',')}]`;
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value as Record<string, unknown>).sort();
+    const entries = keys.map((key) => `${JSON.stringify(key)}:${canonicalJsonString((value as Record<string, unknown>)[key])}`);
+    return `{${entries.join(',')}}`;
+  }
+  throw new TypeError('canonicalJson: unsupported type');
 }

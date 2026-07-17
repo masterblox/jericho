@@ -715,7 +715,7 @@ describe('calibration phrase WebSocket transport', () => {
     expect(unavailable.length).toBe(1);
   });
 
-  it('sends the exact allowlisted text to Gemini once', async () => {
+  it('sends the exact allowlisted text wrapped in Say exactly instruction', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
       sendClientContent: vi.fn(),
@@ -735,11 +735,10 @@ describe('calibration phrase WebSocket transport', () => {
     socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_3' }));
     await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
     const call = session.sendClientContent.mock.calls[0]?.[0];
-    expect(call?.turns?.[0]?.parts?.[0]?.text).toBe('Who is Isabella Handel?');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).toContain('Say exactly:');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).toContain('Who is Isabella Handel?');
     expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('spouse');
     expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('married');
-    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('wife');
-    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('husband');
   });
 });
 

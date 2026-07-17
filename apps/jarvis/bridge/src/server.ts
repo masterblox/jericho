@@ -291,7 +291,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   });
   groundedActions.loadPersistedResults();
 
-  const calibrationProposals = new CalibrationProposalStore({ store: options.store });
+  const calibrationProposals = new CalibrationProposalStore({
+    store: options.store,
+    clock: () => ({ nowMs: Date.now(), nowIso: now() }),
+  });
 
   const invalidateLiveIdentityCaches = () => {
     identityCache.invalidate();
@@ -723,6 +726,11 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/v1/calibration/fix-proposals') {
+      const contentType = request.headers['content-type'] ?? '';
+      if (!isJsonContentType(contentType)) {
+        sendJson(response, 400, { error: 'content-type must be application/json' });
+        return;
+      }
       const raw = await readRawBody(request, MAX_PROPOSAL_BODY_BYTES);
       if ('statusCode' in raw) {
         sendJson(response, raw.statusCode, { error: raw.error });
@@ -1867,6 +1875,7 @@ function openVoiceSession(
                   type: 'calibration_phrase_audio',
                   mimeType: part.inlineData.mimeType ?? 'audio/pcm;rate=24000',
                   data: part.inlineData.data,
+                  phraseId: calibrationPhrase.phraseId,
                 });
               }
             }
@@ -2069,6 +2078,13 @@ function openVoiceSession(
   send({ type: 'armed', armed: false });
 
   const handleCalibrationPhrase = (message: Record<string, unknown>) => {
+    const allowedKeys = new Set(['type', 'phraseId']);
+    for (const key of Object.keys(message)) {
+      if (!allowedKeys.has(key)) {
+        send({ type: 'calibration_phrase', status: 'unavailable', reason: 'invalid_message' });
+        return;
+      }
+    }
     const phraseId = String(message.phraseId ?? '') as CalibrationPhraseId;
     if (!(phraseId in CALIBRATION_PHRASES)) {
       send({ type: 'calibration_phrase', status: 'unavailable', reason: 'unknown_phrase_id' });
@@ -2098,11 +2114,10 @@ function openVoiceSession(
     session.sendClientContent({
       turns: [{
         role: 'user',
-        parts: [{ text: CALIBRATION_PHRASES[phraseId] }],
+        parts: [{ text: `Say exactly: "${CALIBRATION_PHRASES[phraseId]}"` }],
       }],
       turnComplete: true,
     });
-    void phraseGeneration;
   };
 
   connect(currentVoice);
@@ -2344,6 +2359,13 @@ async function readJsonBody(request: IncomingMessage, maxBytes: number): Promise
     throw new HttpError(400, 'invalid_json_body');
   }
   return parsed as Record<string, unknown>;
+}
+
+function isJsonContentType(header: string): boolean {
+  const normalized = header.toLowerCase().trim();
+  if (normalized === 'application/json') return true;
+  if (normalized.startsWith('application/json;')) return true;
+  return false;
 }
 
 async function readRawBody(

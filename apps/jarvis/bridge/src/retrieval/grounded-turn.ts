@@ -301,8 +301,8 @@ export class GroundedTurnController {
       return;
     }
     if (!turn.captureCommitted) {
-      turn.captureCommitted = true;
-      this.commitSpokenCapture(turn.id, transcript);
+      const captureId = this.commitSpokenCapture(turn.id, transcript);
+      turn.captureCommitted = captureId !== undefined;
     }
     if (isGuidedStop(transcript)) {
       this.#guidedActive = false;
@@ -317,7 +317,9 @@ export class GroundedTurnController {
     if (classifyPrivateQuestion(transcript)) {
       turn.route = 'private_knowledge';
       turn.speculative = [];
-      this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
+      if (turn.captureCommitted && turn.captureId) {
+        this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
+      }
       await this.runPrivateRetrieval(transcript, guided);
     } else {
       turn.route = 'general';
@@ -661,10 +663,12 @@ export class GroundedTurnController {
     void now;
     this.clearGuidedFragments();
     if (!turn.captureCommitted) {
-      turn.captureCommitted = true;
-      this.commitSpokenCapture(turn.id, stitchedTranscript);
+      const captureId = this.commitSpokenCapture(turn.id, stitchedTranscript);
+      turn.captureCommitted = captureId !== undefined;
     }
-    this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
+    if (turn.captureCommitted && turn.captureId) {
+      this.publishProgress(turn, 'capture_committed', { captureId: turn.captureId });
+    }
     this.#guidedActive = true;
     turn.guided = { test: 'isabella' };
     turn.route = 'general';
@@ -803,7 +807,7 @@ export class GroundedTurnController {
     }
   }
 
-  private commitSpokenCapture(turnId: string, transcript: string): void {
+  private commitSpokenCapture(turnId: string, transcript: string): string | undefined {
     const occurredAt = this.#ports.nowIso?.() ?? new Date().toISOString();
     try {
       const sourceEventId = `live-turn:${turnId}`;
@@ -829,8 +833,10 @@ export class GroundedTurnController {
       });
       if (this.#turn) this.#turn.captureId = result.event.id;
       this.#ports.onCapture?.(result.event.id);
+      return result.event.id;
     } catch {
       this.#ports.send({ type: 'error', message: 'spoken capture unavailable' });
+      return undefined;
     }
   }
 

@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import {
   assertCalibrationFixProposalRequest,
+  canonicalJson,
   type CalibrationFixProposalRequest,
   type CalibrationFixProposalResponse,
 } from '@jericho/shared';
@@ -52,10 +53,6 @@ async function bootstrapServer() {
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex');
-}
-
-function canonicalJson(obj: unknown): string {
-  return JSON.stringify(obj, Object.keys(obj as Record<string, unknown>).sort());
 }
 
 function requestDigest(request: CalibrationFixProposalRequest): string {
@@ -347,6 +344,71 @@ describe('calibration fix proposals — boundary', () => {
         authorization: `Bearer ${TOKEN}`,
         'x-idempotency-key': key,
       },
+      body: JSON.stringify(request),
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it('rejects missing content-type', async () => {
+    await bootstrapServer();
+    const request: CalibrationFixProposalRequest = {
+      schemaVersion: 1, sessionId: 's', buildSha: '77d18fb',
+      failedPhase: 'room', failureReason: 'mic_denied', aggregateMetrics: {},
+    };
+    const key = requestDigest(request);
+    const res = await fetch(serviceUrl('/api/v1/calibration/fix-proposals'), {
+      method: 'POST',
+      headers: { authorization: `Bearer ${TOKEN}`, 'x-idempotency-key': key },
+      body: JSON.stringify(request),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  it('different metrics produce different proposal IDs', async () => {
+    await bootstrapServer();
+    const r1: CalibrationFixProposalRequest = {
+      schemaVersion: 1, sessionId: 's1', buildSha: '77d18fb',
+      failedPhase: 'speech', failureReason: 'clipping',
+      aggregateMetrics: { rmsMin: 0.01, rmsMax: 0.05 },
+    };
+    const r2: CalibrationFixProposalRequest = {
+      schemaVersion: 1, sessionId: 's1', buildSha: '77d18fb',
+      failedPhase: 'speech', failureReason: 'clipping',
+      aggregateMetrics: { rmsMin: 0.02, rmsMax: 0.05 },
+    };
+
+    const k1 = requestDigest(r1);
+    const k2 = requestDigest(r2);
+    expect(k1).not.toBe(k2);
+
+    const res1 = await fetch(serviceUrl('/api/v1/calibration/fix-proposals'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, 'x-idempotency-key': k1 },
+      body: JSON.stringify(r1),
+    });
+    expect(res1.status).toBe(201);
+    const b1 = await res1.json() as CalibrationFixProposalResponse;
+
+    const res2 = await fetch(serviceUrl('/api/v1/calibration/fix-proposals'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${TOKEN}`, 'x-idempotency-key': k2 },
+      body: JSON.stringify(r2),
+    });
+    expect(res2.status).toBe(201);
+    const b2 = await res2.json() as CalibrationFixProposalResponse;
+    expect(b1.proposalId).not.toBe(b2.proposalId);
+  });
+
+  it('rejects extra fields in calibration phrase frame', async () => {
+    await bootstrapServer();
+    const request: CalibrationFixProposalRequest = {
+      schemaVersion: 1, sessionId: 's', buildSha: '77d18fb',
+      failedPhase: 'room', failureReason: 'mic_denied', aggregateMetrics: {},
+    };
+    const key = requestDigest(request);
+    const res = await fetch(serviceUrl('/api/v1/calibration/fix-proposals'), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json; charset=utf-8', authorization: `Bearer ${TOKEN}`, 'x-idempotency-key': key },
       body: JSON.stringify(request),
     });
     expect(res.status).toBe(201);

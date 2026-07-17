@@ -1,13 +1,13 @@
 import { createHash } from 'node:crypto';
 
 import {
-  CALIBRATION_FAILURE_REASONS,
   LifecycleStatus,
   ProposalKind,
   RiskLevel,
   RouteType,
   SourceType,
   assertCalibrationFixProposalRequest,
+  canonicalJson,
   type CalibrationFixProposalRequest,
   type CalibrationFixProposalResponse,
   type IsoTimestamp,
@@ -17,21 +17,16 @@ import type { JerichoStore } from '../core/store.js';
 
 export interface CalibrationProposalsDeps {
   store: JerichoStore;
-  clock?: () => { nowMs: number; nowIso: IsoTimestamp };
+  clock: () => { nowMs: number; nowIso: IsoTimestamp };
 }
 
 export class CalibrationProposalStore {
   readonly #store: JerichoStore;
   readonly #clock: () => { nowMs: number; nowIso: IsoTimestamp };
-  readonly #pendingIds = new Map<string, string>(); // idempotencyKey → proposalId
 
   constructor(deps: CalibrationProposalsDeps) {
     this.#store = deps.store;
-    const c = deps.clock ?? (() => {
-      const now = new Date();
-      return { nowMs: now.getTime(), nowIso: now.toISOString() };
-    });
-    this.#clock = c;
+    this.#clock = deps.clock;
   }
 
   create(
@@ -42,11 +37,21 @@ export class CalibrationProposalStore {
       return { statusCode: 400, body: null as unknown as CalibrationFixProposalResponse };
     }
 
+    const computed = createHash('sha256').update(canonicalJson(request)).digest('hex');
+    if (!constantTimeEqual(idempotencyKey, computed)) {
+      return { statusCode: 400, body: null as unknown as CalibrationFixProposalResponse };
+    }
+
     const proposedId = this.proposalId(request);
 
     const existing = this.#store.getProposal(proposedId);
     if (existing) {
-      if (existing.kind !== ProposalKind.DataChange) {
+      if (existing.proposedByAgentId !== 'jericho-calibration' || existing.kind !== ProposalKind.DataChange) {
+        return { statusCode: 409, body: null as unknown as CalibrationFixProposalResponse };
+      }
+      const storedDigest = extractDigest(existing);
+      const requestDigest = createHash('sha256').update(canonicalJson(request)).digest('hex').slice(0, 32);
+      if (storedDigest !== requestDigest) {
         return { statusCode: 409, body: null as unknown as CalibrationFixProposalResponse };
       }
       return {
@@ -61,7 +66,8 @@ export class CalibrationProposalStore {
     }
 
     const { nowIso } = this.#clock();
-    const payload = deepFreeze(structuredClone(request));
+    const requestDigest = createHash('sha256').update(canonicalJson(request)).digest('hex').slice(0, 32);
+    const cloned = JSON.parse(JSON.stringify(request)) as CalibrationFixProposalRequest;
     this.#store.saveProposal({
       id: proposedId,
       version: 1,
@@ -73,10 +79,11 @@ export class CalibrationProposalStore {
         sessionId: request.sessionId,
         buildSha: request.buildSha,
         micDeviceHash: request.micDeviceHash ?? null,
-        failedPhase: request.failedPhase,
-        failureReason: request.failureReason,
-        aggregateMetrics: request.aggregateMetrics,
-        correlatedResultId: request.correlatedResultId ?? null,
+        failedPhase: cloned.failedPhase,
+        failureReason: cloned.failureReason,
+        aggregateMetrics: cloned.aggregateMetrics,
+        correlatedResultId: cloned.correlatedResultId ?? null,
+        requestDigest,
       },
       status: LifecycleStatus.PendingApproval,
       route: RouteType.HumanApproval,
@@ -89,8 +96,6 @@ export class CalibrationProposalStore {
         observedAt: nowIso,
       }],
     });
-
-    this.#pendingIds.set(idempotencyKey, proposedId);
 
     return {
       statusCode: 201,
@@ -118,7 +123,7 @@ export class CalibrationProposalStore {
 
   proposalId(request: CalibrationFixProposalRequest): string {
     assertCalibrationFixProposalRequest(request);
-    const canonical = canonicalProposalJson(request);
+    const canonical = canonicalJson(request);
     const hash = createHash('sha256').update(canonical).digest('hex');
     return `calibration-fix-${hash.slice(0, 32)}`;
   }
@@ -159,30 +164,18 @@ export function validateIdempotencyKey(
   if (!/^[a-f0-9]{64}$/.test(headerValue)) {
     return { valid: false, statusCode: 400, message: 'idempotency key must be 64 lowercase hex' };
   }
-  const computed = createHash('sha256').update(canonicalProposalJson(request)).digest('hex');
+  const computed = createHash('sha256').update(canonicalJson(request)).digest('hex');
   if (!constantTimeEqual(headerValue, computed)) {
     return { valid: false, statusCode: 400, message: 'idempotency key does not match request body' };
   }
   return { valid: true, statusCode: 0, message: '' };
 }
 
-function canonicalProposalJson(request: CalibrationFixProposalRequest): string {
-  const obj: Record<string, unknown> = {
-    schemaVersion: request.schemaVersion,
-    sessionId: request.sessionId,
-    buildSha: request.buildSha,
-    failedPhase: request.failedPhase,
-    failureReason: request.failureReason,
-    aggregateMetrics: Object.keys(request.aggregateMetrics)
-      .sort()
-      .reduce((acc, key) => {
-        acc[key] = (request.aggregateMetrics as Record<string, unknown>)[key];
-        return acc;
-      }, {} as Record<string, unknown>),
-  };
-  if (request.micDeviceHash !== undefined) obj.micDeviceHash = request.micDeviceHash;
-  if (request.correlatedResultId !== undefined) obj.correlatedResultId = request.correlatedResultId;
-  return JSON.stringify(obj, Object.keys(obj).sort());
+function extractDigest(proposal: { body?: unknown }): string | undefined {
+  const body = proposal.body;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return undefined;
+  const digest = (body as Record<string, unknown>).requestDigest;
+  return typeof digest === 'string' ? digest : undefined;
 }
 
 function constantTimeEqual(a: string, b: string): boolean {
@@ -192,14 +185,4 @@ function constantTimeEqual(a: string, b: string): boolean {
     result |= a.charCodeAt(i) ^ b.charCodeAt(i);
   }
   return result === 0;
-}
-
-function deepFreeze<T>(obj: T): T {
-  if (obj && typeof obj === 'object' && !Object.isFrozen(obj)) {
-    Object.freeze(obj);
-    for (const value of Object.values(obj as Record<string, unknown>)) {
-      if (typeof value === 'object' && value !== null) deepFreeze(value);
-    }
-  }
-  return obj;
 }

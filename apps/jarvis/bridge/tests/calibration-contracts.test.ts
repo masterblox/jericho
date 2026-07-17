@@ -5,6 +5,7 @@ import {
   assertGroundedTurnProgressEvent,
   CALIBRATION_FAILURE_REASONS,
   CALIBRATION_PHRASES,
+  canonicalJson,
   type CalibrationFixProposalRequest,
   type CalibrationFailureReason,
   type CalibrationPhraseId,
@@ -315,5 +316,114 @@ describe('assertCalibrationFixProposalRequest', () => {
       ...validRequest,
       aggregateMetrics: { nested: { x: 1 } },
     })).toThrow();
+  });
+
+  describe('field-specific metric bounds', () => {
+    it('rejects clippedSampleFraction above 1', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { clippedSampleFraction: 99 },
+      })).toThrow();
+    });
+
+    it('rejects sampleCount that is not a safe integer', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { sampleCount: 1.5 },
+      })).toThrow();
+    });
+
+    it('rejects rmsMin above 1', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { rmsMin: 1.5 },
+      })).toThrow();
+    });
+
+    it('rejects rmsMin exceeding rmsMax', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { rmsMin: 0.5, rmsMax: 0.3 },
+      })).toThrow();
+    });
+
+    it('rejects rmsMean exceeding rmsMax', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { rmsMean: 0.5, rmsMax: 0.3 },
+      })).toThrow();
+    });
+
+    it('rejects rmsP95 exceeding rmsMax', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { rmsP95: 0.9, rmsMax: 0.3 },
+      })).toThrow();
+    });
+
+    it('rejects peakMax below rmsMax', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: { rmsMax: 0.8, peakMax: 0.3 },
+      })).toThrow();
+    });
+
+    it('accepts valid coherent metrics', () => {
+      expect(() => assertCalibrationFixProposalRequest({
+        ...validRequest,
+        aggregateMetrics: {
+          durationMs: 5000, sampleCount: 80000, blockCount: 20, clipCount: 0,
+          rmsMin: 0.005, rmsMean: 0.012, rmsP95: 0.020, rmsMax: 0.030, peakMax: 0.85,
+          clippedSampleFraction: 0, sustainedEnergyFraction: 0.05,
+        },
+      })).not.toThrow();
+    });
+  });
+
+  describe('GroundedTurnProgressEvent milestone-specific IDs', () => {
+    it('rejects capture_committed without captureId', () => {
+      expect(() => assertGroundedTurnProgressEvent({
+        turnId: 'turn-1',
+        milestone: 'capture_committed',
+      })).toThrow();
+    });
+
+    it('rejects retrieval_started without resultId', () => {
+      expect(() => assertGroundedTurnProgressEvent({
+        turnId: 'turn-1',
+        milestone: 'retrieval_started',
+      })).toThrow();
+    });
+
+    it('rejects terminal_result_sent without resultId', () => {
+      expect(() => assertGroundedTurnProgressEvent({
+        turnId: 'turn-1',
+        milestone: 'terminal_result_sent',
+      })).toThrow();
+    });
+  });
+
+  describe('canonicalJson', () => {
+    it('produces different strings for different nested metric values', () => {
+      const a = canonicalJson({ aggregateMetrics: { rmsMin: 0.1, rmsMax: 0.3 } });
+      const b = canonicalJson({ aggregateMetrics: { rmsMin: 0.2, rmsMax: 0.3 } });
+      expect(a).not.toBe(b);
+    });
+
+    it('produces same string regardless of key order', () => {
+      const a = canonicalJson({ b: 1, a: 2, nested: { d: 4, c: 3 } });
+      const b = canonicalJson({ a: 2, b: 1, nested: { c: 3, d: 4 } });
+      expect(a).toBe(b);
+    });
+
+    it('produces different strings for different proposal requests', () => {
+      const r1 = canonicalJson({ ...validRequest, aggregateMetrics: {} });
+      const r2 = canonicalJson({ ...validRequest, aggregateMetrics: { rmsMin: 0.1 } });
+      expect(r1).not.toBe(r2);
+    });
+
+    it('rejects non-finite numbers', () => {
+      expect(() => canonicalJson({ x: Number.NaN })).toThrow();
+    });
   });
 });
