@@ -20,18 +20,27 @@ export type HeldGestureAction =
     outcome: 'approved' | 'rejected';
     approval: ActiveApprovalScope;
   }
-  | { type: 'cancel-pending' };
+  | { type: 'cancel-pending' }
+  | { type: 'calibration-decision'; outcome: 'apply' | 'discard' };
 
 export interface HeldGestureInput {
   left?: TrackedHandFrame;
   right?: TrackedHandFrame;
   now: number;
   activeApproval?: ActiveApprovalScope;
+  activeCalibrationDecision?: boolean;
   cancelEnabled: boolean;
+}
+
+export interface HeldGestureProgress {
+  target: 'mission' | 'calibration';
+  outcome: 'approved' | 'rejected' | 'apply' | 'discard';
+  ratio: number;
 }
 
 type Candidate =
   | { type: 'approve' | 'reject'; approval: ActiveApprovalScope }
+  | { type: 'cal-apply' | 'cal-discard' }
   | { type: 'cancel' };
 
 /** Deterministic recognition only: callers own every resulting side effect. */
@@ -63,11 +72,40 @@ export class HeldGestureInterpreter {
     this.latched = true;
     this.lastFiredAt = input.now;
     if (candidate.type === 'cancel') return [{ type: 'cancel-pending' }];
+    if (candidate.type === 'cal-apply') return [{ type: 'calibration-decision', outcome: 'apply' }];
+    if (candidate.type === 'cal-discard') return [{ type: 'calibration-decision', outcome: 'discard' }];
+    const approvalCandidate = candidate as { type: 'approve' | 'reject'; approval: ActiveApprovalScope };
     return [{
       type: 'approval-decision',
-      outcome: candidate.type === 'approve' ? 'approved' : 'rejected',
-      approval: { ...candidate.approval },
+      outcome: approvalCandidate.type === 'approve' ? 'approved' : 'rejected',
+      approval: { ...approvalCandidate.approval },
     }];
+  }
+
+  getProgress(input: HeldGestureInput): HeldGestureProgress | null {
+    if (!this.candidate) return null;
+    const elapsed = input.now - this.candidateSince;
+    const ratio = Math.min(1, Math.max(0, elapsed / GESTURE_HOLD_MS));
+
+    if (this.candidate.type === 'cancel') return null;
+
+    if (this.candidate.type === 'approve' || this.candidate.type === 'reject') {
+      return {
+        target: 'mission',
+        outcome: this.candidate.type === 'approve' ? 'approved' : 'rejected',
+        ratio,
+      };
+    }
+
+    if (this.candidate.type === 'cal-apply' || this.candidate.type === 'cal-discard') {
+      return {
+        target: 'calibration',
+        outcome: this.candidate.type === 'cal-apply' ? 'apply' : 'discard',
+        ratio,
+      };
+    }
+
+    return null;
   }
 
   reset(): void {
@@ -85,6 +123,19 @@ function classify(input: HeldGestureInput): Candidate | null {
     && isFreshGesture(input.right, 'Open_Palm')
   ) return { type: 'cancel' };
 
+  // Calibration decision: thumb up/down during REVIEW
+  if (input.activeCalibrationDecision) {
+    // Fail closed when both calibration AND mission approval active
+    if (input.activeApproval) return null;
+    const thumbs = [input.left, input.right]
+      .filter((hand): hand is TrackedHandFrame => hand?.fresh === true)
+      .map((hand) => hand.recognizedGesture)
+      .filter((gesture): gesture is 'Thumb_Up' | 'Thumb_Down' =>
+        gesture === 'Thumb_Up' || gesture === 'Thumb_Down');
+    if (!thumbs.length || new Set(thumbs).size !== 1) return null;
+    return { type: thumbs[0] === 'Thumb_Up' ? 'cal-apply' : 'cal-discard' };
+  }
+
   if (!input.activeApproval) return null;
   const thumbs = [input.left, input.right]
     .filter((hand): hand is TrackedHandFrame => hand?.fresh === true)
@@ -100,8 +151,8 @@ function classify(input: HeldGestureInput): Candidate | null {
 
 function candidateKey(candidate: Candidate | null): string {
   if (!candidate) return '';
-  if (candidate.type === 'cancel') return 'cancel';
-  const { missionId, planHash, version } = candidate.approval;
+  if (candidate.type === 'cancel' || candidate.type === 'cal-apply' || candidate.type === 'cal-discard') return candidate.type;
+  const { missionId, planHash, version } = (candidate as { approval: ActiveApprovalScope }).approval;
   return `${candidate.type}:${missionId}:${planHash}:${version}`;
 }
 
