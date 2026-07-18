@@ -99,6 +99,9 @@ export function VoiceCalibrationCard() {
     </div>
     <BreakdownRow label="PREVIEW" value={previewStatus.toUpperCase()} />
     <div className="voice-calibration__actions">
+      <button type="button" onClick={() => document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }))}>CALIBRATE ROOM + MIC</button>
+    </div>
+    <div className="voice-calibration__actions">
       <button type="button" data-gesture-target="voice:cancel" onClick={cancel} disabled={previewStatus !== 'playing'}>CANCEL PREVIEW</button>
       <button type="button" className="ok" data-gesture-target="voice:confirm" onClick={confirm}>CONFIRM VOICE</button>
     </div>

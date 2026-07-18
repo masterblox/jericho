@@ -4,6 +4,7 @@ import { ParticleField } from './components/ParticleField'
 import { AgentsProjection, BrainProjection, FleetLifecycle, IdCluster, TasksProjection } from './components/peripherals'
 import { StartupHealthCard } from './StartupHealthCard'
 import { VoiceCalibrationCard } from './VoiceCalibrationCard'
+import { NativeCalibrationCard } from './NativeCalibrationCard'
 import { KnowledgeProjection } from './KnowledgeProjection'
 
 export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand, knowledgeActions }) {
@@ -69,6 +70,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       <div className="layer layer-near">
         <StartupHealthCard health={health} />
         <KnowledgeProjection actions={knowledgeActions} />
+        <NativeCalibrationCard />
         {!summoned && <VoiceCalibrationCard />}
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
         {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
