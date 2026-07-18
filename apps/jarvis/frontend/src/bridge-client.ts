@@ -44,6 +44,25 @@ export interface BridgeClientDependencies {
 
 export type PersonaMode = 'jarvis' | 'megatron';
 
+export const CALIBRATION_PHRASES = {
+  voice_range_1: 'Jericho, calibrate my voice.',
+  voice_range_2: 'Show me the grounded result.',
+  voice_range_3: 'Who is Isabella Handel?',
+} as const;
+
+export type CalibrationPhraseId = keyof typeof CALIBRATION_PHRASES;
+
+const VALID_PHRASE_IDS = new Set<string>(Object.keys(CALIBRATION_PHRASES));
+
+export interface GroundedTurnProgressEvent {
+  turnId: string;
+  milestone: 'capture_committed' | 'retrieval_started' | 'terminal_result_sent';
+  captureId?: string;
+  resultId?: string;
+}
+
+const VALID_MILESTONES = new Set<string>(['capture_committed', 'retrieval_started', 'terminal_result_sent']);
+
 export interface BridgeEvents {
   onReady?: () => void;
   onVoices?: (voices: string[], active: string, meta?: { confirmed?: string; auditionSentence?: string }) => void;
@@ -66,6 +85,8 @@ export interface BridgeEvents {
   onStatus?: (status: string) => void;
   onError?: (msg: string) => void;
   onWake?: (source: 'clap' | 'manual') => void;
+  onCalibrationTurnProgress?: (event: GroundedTurnProgressEvent) => void;
+  onCalibrationNarration?: (event: { resultId: string; phase: 'started' | 'complete' }) => void;
 }
 
 const DEFAULT_ACTIVE_TURN_MS = 30_000;
@@ -89,6 +110,11 @@ export class BridgeClient {
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
   private bargeCooldown = 0;
+
+  // calibration state
+  private canaryActive = false;
+  private pendingNarrationResultId: string | null = null;
+  private lastTerminalResultId: string | null = null;
 
   private readonly createWebSocket: (url: string) => BridgeWebSocketPort;
   private readonly activeTurnMs: number;
@@ -194,6 +220,23 @@ export class BridgeClient {
     }
   }
 
+  speakCalibrationPhrase(phraseId: CalibrationPhraseId): void {
+    if (!VALID_PHRASE_IDS.has(phraseId)) {
+      throw new Error(`Invalid calibration phrase: ${phraseId}`);
+    }
+    if (this.ws?.readyState === 1) {
+      this.ws.send(JSON.stringify({ type: 'calibration_phrase', phraseId }));
+    }
+  }
+
+  beginLiveCanary(): void {
+    this.canaryActive = true;
+  }
+
+  endLiveCanary(): void {
+    this.canaryActive = false;
+  }
+
   completeGuidedPhase(phase: string) {
     if (this.ws?.readyState === 1) {
       this.ws.send(JSON.stringify({ type: 'guided_phase_complete', phase }));
@@ -213,6 +256,9 @@ export class BridgeClient {
 
   /** Manual wake fallback. Clap detection enters through this same local gate. */
   wake(source: 'clap' | 'manual' = 'manual') {
+    // During live canary, suppress ordinary remote wake (clap is observed locally)
+    if (this.canaryActive && source === 'clap') return;
+
     const socket = this.ws;
     if (
       !this.started ||
@@ -390,7 +436,31 @@ export class BridgeClient {
         break;
       case 'grounded_result': {
         const result = parseGroundedResultMessage(msg);
-        if (result) this.events.onGroundedResult?.(result);
+        if (result) {
+          this.events.onGroundedResult?.(result);
+          // Track last terminal result for narration correlation
+          if (result.resultId) {
+            this.lastTerminalResultId = result.resultId;
+          }
+        }
+        break;
+      }
+      case 'grounded_turn_progress': {
+        if (typeof msg.turnId === 'string' && typeof msg.milestone === 'string' && VALID_MILESTONES.has(msg.milestone)) {
+          const event: GroundedTurnProgressEvent = {
+            turnId: msg.turnId,
+            milestone: msg.milestone as GroundedTurnProgressEvent['milestone'],
+          };
+          if (typeof msg.captureId === 'string') event.captureId = msg.captureId;
+          if (typeof msg.resultId === 'string') event.resultId = msg.resultId;
+          this.events.onCalibrationTurnProgress?.(event);
+
+          // Track narration result ID for terminal result
+          if (event.milestone === 'terminal_result_sent' && event.resultId) {
+            this.pendingNarrationResultId = event.resultId;
+            this.lastTerminalResultId = event.resultId;
+          }
+        }
         break;
       }
       case 'text':
@@ -446,7 +516,10 @@ export class BridgeClient {
     }
     this.mic.setMuted(true);
     if (options.interrupt) this.spk.interrupt();
-    if (options.interrupt || !this.spk.isPlaying()) this.publishSpeechPlaying(false);
+    if (options.interrupt || !this.spk.isPlaying()) {
+      this.publishSpeechPlaying(false);
+      this.pendingNarrationResultId = null;
+    }
     if (changed) {
       this.events.onArmed?.(false);
       this.events.onStatus?.('standby');
@@ -457,5 +530,15 @@ export class BridgeClient {
     if (this.speechPlaying === playing) return;
     this.speechPlaying = playing;
     this.events.onSpeechPlaying?.(playing);
+
+    // Grounded narration correlation
+    if (this.pendingNarrationResultId && this.lastTerminalResultId === this.pendingNarrationResultId) {
+      if (playing) {
+        this.events.onCalibrationNarration?.({ resultId: this.pendingNarrationResultId, phase: 'started' });
+      } else {
+        this.events.onCalibrationNarration?.({ resultId: this.pendingNarrationResultId, phase: 'complete' });
+        this.pendingNarrationResultId = null;
+      }
+    }
   }
 }
