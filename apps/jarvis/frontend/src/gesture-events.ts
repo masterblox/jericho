@@ -22,3 +22,15 @@ export type NucleusCameraDetail =
 export interface NucleusDepthDetail {
   delta: -1 | 1;
 }
+
+export const JERICHO_CALIBRATION_DECISION_EVENT = 'jericho:calibration-decision';
+export const JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT = 'jericho:calibration-hold-progress';
+
+export interface CalibrationDecisionDetail {
+  outcome: 'apply' | 'discard';
+}
+
+export interface CalibrationHoldProgressDetail {
+  outcome: 'apply' | 'discard';
+  ratio: number;
+}
