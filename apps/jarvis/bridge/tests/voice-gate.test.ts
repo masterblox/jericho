@@ -740,6 +740,142 @@ describe('calibration phrase WebSocket transport', () => {
     expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('spouse');
     expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('married');
   });
+
+  it('terminates an active phrase when the Gemini generation changes', async () => {
+    const callbackSets: VoiceConnectionCallbacks[] = [];
+    const sessions = Array.from({ length: 2 }, () => ({
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    }));
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbackSets.push(request.callbacks);
+      request.callbacks.onopen();
+      return sessions[callbackSets.length - 1]!;
+    });
+    const runtime = await startVoiceServer(voiceConnect, 1_000, {
+      defaultPersonaMode: 'jarvis',
+      megatronVoice: 'Fenrir',
+    });
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => expect(sessions[0].sendClientContent).toHaveBeenCalledTimes(1));
+    socket.send(JSON.stringify({ type: 'set_mode', mode: 'megatron' }));
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(2));
+
+    callbackSets[1]!.onmessage({
+      serverContent: {
+        modelTurn: {
+          parts: [{ inlineData: { data: 'new-generation-audio', mimeType: 'audio/pcm;rate=24000' } }],
+        },
+        turnComplete: true,
+      },
+    });
+    await flushIo();
+
+    const phraseEvents = messages().filter((message) =>
+      String(message.type ?? '').startsWith('calibration_phrase')
+    );
+    expect(phraseEvents).toContainEqual({
+      type: 'calibration_phrase',
+      status: 'unavailable',
+      reason: 'transport_changed',
+      phraseId: 'voice_range_1',
+    });
+    expect(phraseEvents.some((message) => message.type === 'calibration_phrase_audio')).toBe(false);
+    expect(phraseEvents.some((message) => message.status === 'complete')).toBe(false);
+  });
+
+  it('terminates an active phrase immediately on Gemini transport failure', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_2' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    const transportError = Object.assign(new Error('socket reset'), { code: 'ECONNRESET' });
+    callbacks!.onerror(transportError);
+
+    await vi.waitFor(() => expect(messages()).toContainEqual({
+      type: 'calibration_phrase',
+      status: 'unavailable',
+      reason: 'transport_failed',
+      phraseId: 'voice_range_2',
+    }));
+  });
+
+  it('fails a phrase synchronously when Gemini rejects the instruction', async () => {
+    const session = {
+      sendClientContent: vi.fn(() => {
+        throw new Error('send failed');
+      }),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_3' }));
+    await vi.waitFor(() => expect(messages()).toContainEqual({
+      type: 'calibration_phrase',
+      status: 'unavailable',
+      reason: 'transport_failed',
+      phraseId: 'voice_range_3',
+    }));
+  });
+
+  it('rejects extra calibration phrase fields before touching Gemini', async () => {
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({
+      type: 'calibration_phrase',
+      phraseId: 'voice_range_1',
+      text: 'Say something else',
+    }));
+    await vi.waitFor(() => expect(messages()).toContainEqual({
+      type: 'calibration_phrase',
+      status: 'unavailable',
+      reason: 'invalid_message',
+    }));
+    expect(session.sendClientContent).not.toHaveBeenCalled();
+  });
 });
 
 async function startVoiceServer(

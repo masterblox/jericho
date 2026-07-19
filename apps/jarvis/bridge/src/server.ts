@@ -1339,22 +1339,27 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         ) {
           invalidateLiveIdentityCaches();
         }
+        const storedPreview = options.store.getCorrectionPreview(input.previewId);
+        if (!storedPreview) {
+          throw new CorrectionDecisionConflictError(storeResult.correctionId, 'preview not found after confirmation');
+        }
+        const noteEffect = storedPreview.preview.obsidianEffects;
 
         let obsidianReceipt: ObsidianReceipt | undefined;
         if (storeResult.status === CorrectionConfirmStatus.Confirmed) {
           try {
             if (!options.correctionNoteWriter) throw new Error('Correction note writer is unavailable');
             obsidianReceipt = options.correctionNoteWriter.write({
-              relativePath: input.canonicalNotePath,
-              expectedHash: input.canonicalNoteHash,
-              fieldsToAdd: input.obsidianFieldsToAdd,
+              relativePath: noteEffect.notePath,
+              expectedHash: noteEffect.noteHash,
+              fieldsToAdd: noteEffect.fieldsToAdd,
               now: decidedAt,
             });
             options.store.finalizeCorrectionObsidian(storeResult.correctionId, obsidianReceipt);
           } catch (noteError) {
             const failedReceipt: ObsidianReceipt = {
               status: 'failed',
-              notePath: input.canonicalNotePath,
+              notePath: noteEffect.notePath,
               fieldsWritten: [],
               completedAt: decidedAt,
               error: noteError instanceof Error ? noteError.message : String(noteError),
@@ -1657,7 +1662,11 @@ function openVoiceSession(
   } | undefined;
 
   let calibrationPhrase:
-    | { phraseId: CalibrationPhraseId; timer: ReturnType<typeof setTimeout> }
+    | {
+        phraseId: CalibrationPhraseId;
+        timer: ReturnType<typeof setTimeout>;
+        generation: number;
+      }
     | undefined;
 
   const activeGuidedTest = () => {
@@ -1667,6 +1676,21 @@ function openVoiceSession(
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
+  };
+  const finishCalibrationPhrase = (
+    status: 'complete' | 'unavailable',
+    reason?: 'phrase_timeout' | 'transport_changed' | 'transport_failed',
+  ) => {
+    const phrase = calibrationPhrase;
+    if (!phrase) return;
+    clearTimeout(phrase.timer);
+    calibrationPhrase = undefined;
+    send({
+      type: 'calibration_phrase',
+      status,
+      phraseId: phrase.phraseId,
+      ...(reason ? { reason } : {}),
+    });
   };
   let settleGate: (() => void) | undefined;
   const turnPorts = new GroundedTurnController({
@@ -1821,6 +1845,7 @@ function openVoiceSession(
     if (personaRevertTimer) clearTimeout(personaRevertTimer);
     personaRevertTimer = undefined;
     if (clientClosed) return;
+    if (calibrationPhrase) finishCalibrationPhrase('unavailable', 'transport_changed');
     const connectionGeneration = ++generation;
     if (active && !optionsConnect.previewId) deactivate();
     session?.close();
@@ -1868,7 +1893,7 @@ function openVoiceSession(
             turnPorts.ingestTranscription(message.serverContent?.inputTranscription, 'final');
           }
           // Handle calibration phrase audio before the !active guard.
-          if (calibrationPhrase) {
+          if (calibrationPhrase?.generation === connectionGeneration) {
             for (const part of message.serverContent?.modelTurn?.parts ?? []) {
               if (part.inlineData?.data) {
                 send({
@@ -1880,10 +1905,7 @@ function openVoiceSession(
               }
             }
             if (message.serverContent?.turnComplete) {
-              const phrase = calibrationPhrase;
-              if (phrase?.timer) clearTimeout(phrase.timer);
-              calibrationPhrase = undefined;
-              send({ type: 'calibration_phrase', status: 'complete', phraseId: phrase?.phraseId });
+              finishCalibrationPhrase('complete');
             }
             return;
           }
@@ -1946,6 +1968,9 @@ function openVoiceSession(
         },
         onerror: (error?: unknown) => {
           if (connectionGeneration === generation) {
+            if (calibrationPhrase?.generation === connectionGeneration) {
+              finishCalibrationPhrase('unavailable', 'transport_failed');
+            }
             if (handleVoiceTransportError(error, {
               onTransient: () => {
                 if (preview?.generation === connectionGeneration) {
@@ -1968,6 +1993,9 @@ function openVoiceSession(
         },
         onclose: () => {
           if (!clientClosed && connectionGeneration === generation) {
+            if (calibrationPhrase?.generation === connectionGeneration) {
+              finishCalibrationPhrase('unavailable', 'transport_failed');
+            }
             if (preview?.generation === connectionGeneration) {
               finishPreview('cancelled');
               return;
@@ -1985,6 +2013,9 @@ function openVoiceSession(
       session = connected;
       attachGeminiSessionTransportGuard(connected, (error) => {
         if (connectionGeneration !== generation) return;
+        if (calibrationPhrase?.generation === connectionGeneration) {
+          finishCalibrationPhrase('unavailable', 'transport_failed');
+        }
         handleVoiceTransportError(error, {
           onTransient: () => {
             send({ type: 'error', message: 'voice unavailable' });
@@ -2011,6 +2042,9 @@ function openVoiceSession(
       if (greetingPending && active) requestWakeGreeting();
     }).catch((cause: unknown) => {
       if (connectionGeneration === generation) {
+        if (calibrationPhrase?.generation === connectionGeneration) {
+          finishCalibrationPhrase('unavailable', 'transport_failed');
+        }
         if (preview?.generation === connectionGeneration) {
           finishPreview('unavailable');
           return;
@@ -2102,22 +2136,25 @@ function openVoiceSession(
     const phraseGeneration = generation;
     const timer = setTimeout(() => {
       if (calibrationPhrase?.timer === timer) {
-        calibrationPhrase = undefined;
-        send({ type: 'calibration_phrase', status: 'unavailable', reason: 'phrase_timeout' });
+        finishCalibrationPhrase('unavailable', 'phrase_timeout');
       }
     }, 8_000);
     timer.unref?.();
 
-    calibrationPhrase = { phraseId, timer };
+    calibrationPhrase = { phraseId, timer, generation: phraseGeneration };
     send({ type: 'calibration_phrase', status: 'started', phraseId });
 
-    session.sendClientContent({
-      turns: [{
-        role: 'user',
-        parts: [{ text: `Say exactly: "${CALIBRATION_PHRASES[phraseId]}"` }],
-      }],
-      turnComplete: true,
-    });
+    try {
+      session.sendClientContent({
+        turns: [{
+          role: 'user',
+          parts: [{ text: `Say exactly: "${CALIBRATION_PHRASES[phraseId]}"` }],
+        }],
+        turnComplete: true,
+      });
+    } catch {
+      finishCalibrationPhrase('unavailable', 'transport_failed');
+    }
   };
 
   connect(currentVoice);

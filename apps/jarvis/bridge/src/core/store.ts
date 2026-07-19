@@ -897,6 +897,12 @@ interface CorrectionNoteBinding {
   fieldsToAdd: Record<string, string>;
 }
 
+interface StoredCorrectionPreview {
+  preview: CorrectionPreview;
+  input: CorrectionPreviewInput;
+  storedAt: string;
+}
+
 export class JerichoStore {
   readonly #database: DatabaseSync;
   readonly #masterCrypto: CoreCrypto;
@@ -927,6 +933,7 @@ export class JerichoStore {
         `jericho-store:${this.#storeUuid}`,
       );
       this.#migratePrivateLookupColumns();
+      this.#purgeLegacyPlaintextCorrectionPreviews();
     } catch (error) {
       this.#database.close();
       throw error;
@@ -1442,12 +1449,15 @@ export class JerichoStore {
       if (!this.getEntity(input.proposedToEntityId!)) throw new Error(`Entity ${input.proposedToEntityId} does not exist`);
     }
 
-    const previewHash = correctionPreviewHash({
-      entityId: input.entityId,
-      claimPattern: input.claimPattern,
-      canonicalNoteHash: input.canonicalNoteHash,
-      canonicalNotePath: input.canonicalNotePath,
-    });
+    const previewHash = correctionPreviewHash(input);
+    const previewId = `correction-preview-${previewHash.slice(0, 32)}`;
+    const existing = this.#retrieveCorrectionPreview(previewId);
+    if (existing) {
+      if (correctionPreviewHash(existing.input) !== previewHash) {
+        throw new CorrectionDecisionConflictError(previewId, 'collides with different authoritative effects');
+      }
+      return existing.preview;
+    }
     const exclusion: IdentityExclusion = {
       id: `identity-exclusion-${previewHash.slice(0, 56)}`,
       entityId: input.entityId,
@@ -1468,7 +1478,7 @@ export class JerichoStore {
       : [];
 
     const preview: CorrectionPreview = {
-      id: `correction-preview-${previewHash.slice(0, 32)}`,
+      id: previewId,
       version: 1,
       previewHash,
       disputedClaim: input.claimPattern,
@@ -1525,6 +1535,40 @@ export class JerichoStore {
     validateRelativePath(input.canonicalNotePath);
 
     const correctionId = `correction-${input.previewHash.slice(0, 32)}`;
+    const storedPreview = this.#retrieveCorrectionPreview(input.previewId);
+    if (!storedPreview) throw new CorrectionDecisionConflictError(correctionId, 'preview not found');
+    if (storedPreview.preview.version !== input.previewVersion) {
+      throw new CorrectionDecisionConflictError(correctionId, 'has a stale integrity binding');
+    }
+    const expectedHash = correctionPreviewHash(storedPreview.input);
+    if (
+      input.previewId !== storedPreview.preview.id
+      || storedPreview.preview.previewHash !== expectedHash
+      || input.previewHash !== expectedHash
+      || input.entityId !== storedPreview.input.entityId
+      || input.claimPattern !== storedPreview.input.claimPattern
+      || input.canonicalNoteHash !== storedPreview.input.canonicalNoteHash
+      || input.canonicalNotePath !== storedPreview.input.canonicalNotePath
+      || canonicalJson(input.obsidianFieldsToAdd) !== canonicalJson(storedPreview.input.obsidianFieldsToAdd)
+    ) {
+      throw new CorrectionDecisionConflictError(correctionId, 'binding does not match the exact preview');
+    }
+    const plannedRelations = storedPreview.preview.coreEffects.relationsToCreate;
+    if (plannedRelations.length > 0) {
+      if (plannedRelations.length !== 1) {
+        throw new CorrectionDecisionConflictError(correctionId, 'preview contains an unsupported relation set');
+      }
+      const [planned] = plannedRelations;
+      if (
+        input.fromEntityId !== planned.fromEntityId
+        || input.toEntityId !== planned.toEntityId
+        || input.relationType !== planned.type
+      ) {
+        throw new CorrectionDecisionConflictError(correctionId, 'relation binding does not match the exact preview');
+      }
+    } else if (input.fromEntityId || input.toEntityId || input.relationType) {
+      throw new CorrectionDecisionConflictError(correctionId, 'exclusion-only preview cannot create relations');
+    }
 
     const existingReceipt = this.#findCorrectionReceipt(correctionId);
     if (existingReceipt) {
@@ -1563,21 +1607,6 @@ export class JerichoStore {
       if (!entity) throw new CorrectionDecisionConflictError(correctionId, 'source entity is unavailable');
       if (entity.type !== EntityType.Person) throw new CorrectionDecisionConflictError(correctionId, 'entity is not a Person');
 
-      const storedPreview = this.#retrieveCorrectionPreview(input.previewId);
-      if (!storedPreview) throw new CorrectionDecisionConflictError(correctionId, 'preview not found');
-      if (storedPreview.preview.version !== input.previewVersion) {
-        throw new CorrectionDecisionConflictError(correctionId, 'has a stale integrity binding');
-      }
-      const expectedHash = correctionPreviewHash({
-        entityId: input.entityId,
-        claimPattern: input.claimPattern,
-        canonicalNoteHash: input.canonicalNoteHash,
-        canonicalNotePath: input.canonicalNotePath,
-      });
-      if (input.previewHash !== expectedHash) {
-        throw new CorrectionDecisionConflictError(correctionId, 'binding does not match the exact preview');
-      }
-
       const correction: CorrectionDecision = {
         id: correctionId,
         previewId: input.previewId,
@@ -1600,19 +1629,8 @@ export class JerichoStore {
       const relationsCreated: string[] = [];
       const exclusionsApplied: string[] = [];
 
-      const plannedRelations = storedPreview.preview.coreEffects.relationsToCreate;
       if (plannedRelations.length > 0) {
         for (const planned of plannedRelations) {
-          if (
-            input.fromEntityId && input.toEntityId && input.relationType
-            && (
-              input.fromEntityId !== planned.fromEntityId
-              || input.toEntityId !== planned.toEntityId
-              || input.relationType !== planned.type
-            )
-          ) {
-            throw new CorrectionDecisionConflictError(correctionId, 'relation binding does not match the exact preview');
-          }
           const fromEntity = this.getEntity(planned.fromEntityId);
           const toEntity = this.getEntity(planned.toEntityId);
           if (!fromEntity || !toEntity) {
@@ -1647,8 +1665,6 @@ export class JerichoStore {
             }
           }
         }
-      } else if (input.fromEntityId || input.toEntityId || input.relationType) {
-        throw new CorrectionDecisionConflictError(correctionId, 'exclusion-only preview cannot create relations');
       }
 
       const exclusionId = `identity-exclusion-${correctionId.slice(0, 56)}`;
@@ -1685,9 +1701,9 @@ export class JerichoStore {
       };
       this.#writeCorrectionReceipt(coreReceipt);
       this.#writeCorrectionNoteBinding(correctionId, {
-        canonicalNotePath: input.canonicalNotePath,
-        canonicalNoteHash: input.canonicalNoteHash,
-        fieldsToAdd: input.obsidianFieldsToAdd,
+        canonicalNotePath: storedPreview.input.canonicalNotePath,
+        canonicalNoteHash: storedPreview.input.canonicalNoteHash,
+        fieldsToAdd: storedPreview.input.obsidianFieldsToAdd,
       });
 
       this.#appendChangeLog({
@@ -4125,11 +4141,29 @@ export class JerichoStore {
   }
 
   #storeCorrectionPreview(preview: CorrectionPreview, input: CorrectionPreviewInput): void {
-    const data = JSON.stringify({ preview, input, storedAt: new Date().toISOString() });
+    const name = `correction_preview:${preview.id}`;
+    const stored: StoredCorrectionPreview = {
+      preview,
+      input,
+      storedAt: new Date().toISOString(),
+    };
+    const encrypted = this.#crypto.encryptJson(
+      stored,
+      correctionPreviewAssociatedData(this.#storeUuid, preview.id),
+    );
     this.#database.prepare(`
       INSERT INTO store_metadata (name, value) VALUES (?, ?)
-      ON CONFLICT (name) DO UPDATE SET value = excluded.value
-    `).run(`correction_preview:${preview.id}`, Buffer.from(data, 'utf8'));
+      ON CONFLICT (name) DO NOTHING
+    `).run(name, encrypted);
+
+    const persisted = this.#retrieveCorrectionPreview(preview.id);
+    if (
+      !persisted
+      || persisted.preview.previewHash !== preview.previewHash
+      || correctionPreviewHash(persisted.input) !== correctionPreviewHash(input)
+    ) {
+      throw new CorrectionDecisionConflictError(preview.id, 'collides with a different stored preview');
+    }
   }
 
   #retrieveCorrectionPreview(previewId: string): { preview: CorrectionPreview; input: CorrectionPreviewInput } | undefined {
@@ -4138,12 +4172,40 @@ export class JerichoStore {
     `).get(`correction_preview:${previewId}`);
     if (!row) return undefined;
     try {
-      const raw = row.value;
-      const text = decodeDbValue(raw);
-      const stored = JSON.parse(text);
+      const stored = this.#crypto.decryptJson<StoredCorrectionPreview>(
+        asBuffer(row.value),
+        correctionPreviewAssociatedData(this.#storeUuid, previewId),
+      );
+      assertStoredCorrectionPreview(stored, previewId);
       return { preview: stored.preview, input: stored.input };
-    } catch {
-      return undefined;
+    } catch (cause) {
+      throw new Error(`Correction preview ${previewId} is corrupt`, { cause });
+    }
+  }
+
+  #purgeLegacyPlaintextCorrectionPreviews(): void {
+    const rows = this.#database.prepare(`
+      SELECT name, value FROM store_metadata
+      WHERE name LIKE 'correction_preview:%'
+    `).all();
+    for (const row of rows) {
+      const name = String(row.name);
+      const previewId = name.slice('correction_preview:'.length);
+      try {
+        const stored = this.#crypto.decryptJson<StoredCorrectionPreview>(
+          asBuffer(row.value),
+          correctionPreviewAssociatedData(this.#storeUuid, previewId),
+        );
+        assertStoredCorrectionPreview(stored, previewId);
+      } catch (cause) {
+        try {
+          const legacy = JSON.parse(decodeDbValue(row.value)) as unknown;
+          if (!isRecord(legacy) || !isRecord(legacy.preview) || !isRecord(legacy.input)) throw cause;
+          this.#database.prepare('DELETE FROM store_metadata WHERE name = ?').run(name);
+        } catch {
+          throw new Error(`Correction preview ${previewId} is corrupt`, { cause });
+        }
+      }
     }
   }
 
@@ -6208,15 +6270,58 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function correctionPreviewHash(input: {
-  entityId: string;
-  claimPattern: string;
-  canonicalNoteHash: string;
-  canonicalNotePath: string;
-}): string {
+function correctionPreviewHash(input: CorrectionPreviewInput): string {
   return createHash('sha256')
-    .update(`${input.entityId}:${input.claimPattern}:${input.canonicalNoteHash}:${input.canonicalNotePath}`)
+    .update(canonicalJson({
+      entityId: input.entityId,
+      claimPattern: input.claimPattern,
+      sourceProvenance: input.sourceProvenance,
+      proposedFromEntityId: input.proposedFromEntityId ?? null,
+      proposedToEntityId: input.proposedToEntityId ?? null,
+      proposedRelationType: input.proposedRelationType ?? null,
+      canonicalNoteHash: input.canonicalNoteHash,
+      canonicalNotePath: input.canonicalNotePath,
+      obsidianFieldsToAdd: input.obsidianFieldsToAdd,
+      obsidianFieldsToRemove: input.obsidianFieldsToRemove,
+      groundedResultId: input.groundedResultId ?? null,
+      groundedConflictId: input.groundedConflictId ?? null,
+    }))
     .digest('hex');
+}
+
+function correctionPreviewAssociatedData(storeUuid: string, previewId: string): string {
+  return canonicalJson([
+    'jericho-correction-preview',
+    1,
+    storeUuid,
+    previewId,
+  ]);
+}
+
+function assertStoredCorrectionPreview(
+  value: unknown,
+  previewId: string,
+): asserts value is StoredCorrectionPreview {
+  if (!isRecord(value) || !isRecord(value.preview) || !isRecord(value.input)) {
+    throw new TypeError('Stored correction preview must contain preview and input records');
+  }
+  if (value.preview.id !== previewId) {
+    throw new TypeError('Stored correction preview identity mismatch');
+  }
+  if (typeof value.preview.previewHash !== 'string' || !/^[a-f0-9]{64}$/.test(value.preview.previewHash)) {
+    throw new TypeError('Stored correction preview hash is invalid');
+  }
+  if (!Number.isInteger(value.preview.version) || Number(value.preview.version) < 1) {
+    throw new TypeError('Stored correction preview version is invalid');
+  }
+  if (typeof value.storedAt !== 'string' || !Number.isFinite(Date.parse(value.storedAt))) {
+    throw new TypeError('Stored correction preview timestamp is invalid');
+  }
+  const input = value.input as unknown as CorrectionPreviewInput;
+  const expectedHash = correctionPreviewHash(input);
+  if (value.preview.previewHash !== expectedHash) {
+    throw new TypeError('Stored correction preview authority binding is invalid');
+  }
 }
 
 function decodeDbValue(raw: unknown): string {

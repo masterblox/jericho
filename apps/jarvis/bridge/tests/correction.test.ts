@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -184,6 +185,96 @@ describe('CorrectionPreview (store)', () => {
       obsidianFieldsToRemove: [],
     })).toThrow('Path traversal');
   });
+
+  it('binds the preview ID and hash to every authoritative effect', () => {
+    const store = openStore();
+    store.upsertEntity(makeEntity());
+    store.upsertEntity(makeEntity({ id: 'entity-carlos', canonicalName: 'Carlos Prada' }));
+    store.upsertEntity(makeEntity({ id: 'entity-francisco', canonicalName: 'Francisco Varela' }));
+
+    const common = {
+      entityId: 'entity-isabella',
+      claimPattern: "Francisco's wife",
+      sourceProvenance: sourceProvenance(),
+      proposedToEntityId: 'entity-isabella',
+      proposedRelationType: RelationType.SpouseOf,
+      canonicalNotePath: 'people/Isabella Handel.md',
+      canonicalNoteHash: canonicalNoteHash(),
+      obsidianFieldsToRemove: [] as string[],
+    };
+    const reviewed = store.createCorrectionPreview({
+      ...common,
+      proposedFromEntityId: 'entity-carlos',
+      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+    });
+    const differentRelation = store.createCorrectionPreview({
+      ...common,
+      proposedFromEntityId: 'entity-francisco',
+      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+    });
+    const differentNoteEffect = store.createCorrectionPreview({
+      ...common,
+      proposedFromEntityId: 'entity-carlos',
+      obsidianFieldsToAdd: { spouse: 'Francisco Varela' },
+    });
+
+    expect(differentRelation.id).not.toBe(reviewed.id);
+    expect(differentRelation.previewHash).not.toBe(reviewed.previewHash);
+    expect(differentNoteEffect.id).not.toBe(reviewed.id);
+    expect(differentNoteEffect.previewHash).not.toBe(reviewed.previewHash);
+
+    const confirmed = store.confirmCorrection({
+      previewId: reviewed.id,
+      previewHash: reviewed.previewHash,
+      previewVersion: reviewed.version,
+      entityId: 'entity-isabella',
+      claimPattern: "Francisco's wife",
+      fromEntityId: 'entity-carlos',
+      toEntityId: 'entity-isabella',
+      relationType: RelationType.SpouseOf,
+      canonicalNoteHash: canonicalNoteHash(),
+      canonicalNotePath: 'people/Isabella Handel.md',
+      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
+      decidedBy: 'carlos',
+      decidedAt: T2,
+    });
+    expect(confirmed.status).toBe(CorrectionConfirmStatus.Confirmed);
+    expect(store.listRelations({
+      fromEntityId: 'entity-carlos',
+      toEntityId: 'entity-isabella',
+      type: RelationType.SpouseOf,
+    })).toHaveLength(1);
+    expect(store.listRelations({
+      fromEntityId: 'entity-francisco',
+      toEntityId: 'entity-isabella',
+      type: RelationType.SpouseOf,
+    })).toHaveLength(0);
+  });
+
+  it('stores preview bodies encrypted instead of plaintext metadata', () => {
+    const databasePath = join(tempDir(), 'core.db');
+    const store = new JerichoStore({ path: databasePath, key: KEY });
+    store.upsertEntity(makeEntity());
+    const preview = store.createCorrectionPreview({
+      entityId: 'entity-isabella',
+      claimPattern: "Francisco's wife",
+      sourceProvenance: sourceProvenance(),
+      canonicalNotePath: 'people/Isabella Handel.md',
+      canonicalNoteHash: canonicalNoteHash(),
+      obsidianFieldsToAdd: {},
+      obsidianFieldsToRemove: [],
+    });
+    store.close();
+
+    const database = new DatabaseSync(databasePath, { readOnly: true });
+    const row = database.prepare('SELECT value FROM store_metadata WHERE name = ?')
+      .get(`correction_preview:${preview.id}`);
+    database.close();
+    expect(row).toBeDefined();
+    const storedBytes = Buffer.from(row!.value as Uint8Array);
+    expect(storedBytes.toString('utf8')).not.toContain("Francisco's wife");
+    expect(storedBytes.toString('utf8')).not.toContain('Isabella Handel.md');
+  });
 });
 
 describe('Core confirm (store)', () => {
@@ -216,7 +307,7 @@ describe('Core confirm (store)', () => {
       relationType: RelationType.SpouseOf,
       canonicalNoteHash: canonicalNoteHash(),
       canonicalNotePath: 'note.md',
-      obsidianFieldsToAdd: {},
+      obsidianFieldsToAdd: { spouse: 'Carlos Prada' },
       decidedBy: 'carlos',
       decidedAt: T2,
     });
