@@ -1,112 +1,114 @@
 import React from 'react'
 import { Chip, JerichoCard } from './components/JerichoCard'
 
-// Generic grounded-knowledge constellation. Listens for the runtime's
-// GroundedResultEvent and materializes native cards around the reactor:
-// no dialog, no backdrop, no alternate dashboard. Cards persist until
-// dismissed (edge eject, Escape, both-palms cancel) or replaced.
 export const GROUNDED_RESULT_EVENT = 'jericho:grounded-result'
 export const INTERFACE_SOUND_EVENT = 'jericho:interface-sound'
 export const INTERFACE_SOUND_TOGGLE_EVENT = 'jericho:interface-sound-toggle'
 export const INTERFACE_SOUND_MUTED_KEY = 'jericho.interfaceSound.muted.v1'
 export const CANCEL_PENDING_EVENT = 'jericho:cancel-pending'
 
-const SATELLITE_DELAY_MS = 120
-const EDGE_EJECT_PX = 48
+const STAGGER_MS = 80
+const CARD_GAP = 20
+const STAGE_PADDING = 24
+const EXCLUSION_EXPAND = 28
+const CARD_MIN_W = 220
+const CARD_MAX_W = 320
+
 const TERMINAL_PHASES = new Set(['resolved', 'ambiguous', 'unavailable'])
 
-const readMuted = () => {
-  try { return localStorage.getItem(INTERFACE_SOUND_MUTED_KEY) === 'true' } catch { return false }
+const readMuted = () => { try { return localStorage.getItem(INTERFACE_SOUND_MUTED_KEY) === 'true' } catch { return false } }
+const prefersReducedMotion = () => { try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { return false } }
+
+function computeSphereExclusion(coreEl, stageEl) {
+  if (!coreEl || !stageEl) return { left: 0, right: 0, top: 0, bottom: 0 }
+  // Axis-aligned Core rectangle expanded by EXCLUSION_EXPAND — matches Playwright gate.
+  const cr = coreEl.getBoundingClientRect(); const sr = stageEl.getBoundingClientRect()
+  return {
+    left: cr.left - sr.left - EXCLUSION_EXPAND,
+    right: cr.right - sr.left + EXCLUSION_EXPAND,
+    top: cr.top - sr.top - EXCLUSION_EXPAND,
+    bottom: cr.bottom - sr.top + EXCLUSION_EXPAND,
+  }
 }
 
-const prefersReducedMotion = () => {
-  try { return window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { return false }
+function rectsSeparate(a, b, gap) {
+  const dx = a.x < b.x ? b.x - (a.x + a.w) : a.x - (b.x + b.w)
+  const dy = a.y < b.y ? b.y - (a.y + a.h) : a.y - (b.y + b.h)
+  if (dx >= gap || dy >= gap) return true
+  return dx >= 0 && dy >= 0 && Math.hypot(Math.max(0, dx), Math.max(0, dy)) >= gap
 }
 
-const nearViewportEdge = point => Boolean(point)
-  && (point.x <= EDGE_EJECT_PX || point.y <= EDGE_EJECT_PX
-    || point.x >= window.innerWidth - EDGE_EJECT_PX || point.y >= window.innerHeight - EDGE_EJECT_PX)
+function placeCards(stageW, stageH, exclusion, cardIds) {
+  const cardW = Math.max(CARD_MIN_W, Math.min(CARD_MAX_W, stageW - 2 * STAGE_PADDING))
+  const leftSpace = exclusion.left - STAGE_PADDING
+  const rightSpace = stageW - exclusion.right - STAGE_PADDING
 
-// Draggable positioning shell: pointer drag and gesture drag update the
-// card offset; releasing within EDGE_EJECT_PX of a viewport edge ejects
-// this card only. Delete/Backspace on the focused card is keyboard parity.
-function ConstellationCard({ cardId, className, label, onEject, children }) {
-  const [offset, setOffset] = React.useState({ x: 0, y: 0 })
-  const element = React.useRef(null)
-  const press = React.useRef(null)
-  const offsetRef = React.useRef(offset)
-  offsetRef.current = offset
+  if (leftSpace >= cardW + CARD_GAP && rightSpace >= cardW + CARD_GAP && cardIds.length === 3) {
+    // Prefer scrollHeight so a prior maxHeight clamp cannot hide true content size.
+    const measured = cardIds.map(id => {
+      const el = document.querySelector(`[data-knowledge-card="${id}"]`)
+      if (!el) return { id, h: 200 }
+      const boxH = el.getBoundingClientRect().height
+      return { id, h: Math.max(boxH, el.scrollHeight || 0) }
+    })
+    const natActH = measured.find(m => m.id === 'actions')?.h ?? 140
+    const natPrimH = measured.find(m => m.id === 'primary')?.h ?? 200
+    const natProvH = measured.find(m => m.id === 'provenance')?.h ?? 200
 
-  const release = (point, moved) => {
-    if (moved && nearViewportEdge(point)) onEject(cardId)
-  }
+    // Reserve a bottom band so actions stay ≥24px inside the stage under side cards.
+    const actH = Math.min(natActH, Math.max(120, stageH - exclusion.bottom - CARD_GAP - STAGE_PADDING))
+    const maxSideBottom = stageH - STAGE_PADDING - actH - CARD_GAP
+    const maxSideH = Math.max(120, maxSideBottom - STAGE_PADDING)
+    // Primary must expose identity, confidence, and claims without internal scroll.
+    // Evidence may scroll internally but must keep a complete frame in-viewport.
+    const primH = Math.ceil(natPrimH)
+    if (maxSideBottom >= STAGE_PADDING + 120 && actH >= 100 && primH <= maxSideH + 0.5) {
+      const provH = Math.min(Math.ceil(natProvH), maxSideH)
+      const midY = exclusion.top + (exclusion.bottom - exclusion.top) / 2
+      let primY = midY - primH / 2
+      let provY = midY - provH / 2
+      primY = Math.max(STAGE_PADDING, Math.min(primY, maxSideBottom - primH))
+      provY = Math.max(STAGE_PADDING, Math.min(provY, maxSideBottom - provH))
+      const lowerSideBottom = Math.max(primY + primH, provY + provH)
+      const actionsY = Math.max(exclusion.bottom + CARD_GAP, lowerSideBottom + CARD_GAP)
+      const actionsX = STAGE_PADDING + (stageW - 2 * STAGE_PADDING - cardW) / 2
+      const fitsInStage = actionsY + actH <= stageH - STAGE_PADDING + 0.5
+        && primY >= STAGE_PADDING - 0.5
+        && provY >= STAGE_PADDING - 0.5
+        && primY + primH <= maxSideBottom + 0.5
+        && provY + provH <= maxSideBottom + 0.5
 
-  const onPointerDown = event => {
-    if (event.button !== undefined && event.button !== 0) return
-    if (event.target.closest?.('button, a, input, textarea, select')) return
-    try { event.currentTarget.setPointerCapture?.(event.pointerId) } catch { /* pointer capture is best-effort */ }
-    press.current = {
-      pointerId: event.pointerId,
-      startX: event.clientX, startY: event.clientY,
-      baseX: offsetRef.current.x, baseY: offsetRef.current.y,
-      moved: false,
-    }
-  }
-  const onPointerMove = event => {
-    const active = press.current
-    if (!active || active.pointerId !== event.pointerId) return
-    const x = active.baseX + event.clientX - active.startX
-    const y = active.baseY + event.clientY - active.startY
-    if (Math.abs(event.clientX - active.startX) + Math.abs(event.clientY - active.startY) > 4) active.moved = true
-    setOffset({ x, y })
-  }
-  const onPointerUp = event => {
-    const active = press.current
-    if (!active || active.pointerId !== event.pointerId) return
-    press.current = null
-    release({ x: event.clientX, y: event.clientY }, active.moved)
-  }
-
-  React.useEffect(() => {
-    const node = element.current
-    if (!node) return
-    const move = event => {
-      const delta = event.detail?.delta
-      if (delta) setOffset(current => ({ x: current.x + (delta.x ?? 0), y: current.y + (delta.y ?? 0) }))
-    }
-    const end = event => {
-      if (event.detail?.cancelled) return
-      release(event.detail?.point, true)
-    }
-    node.addEventListener('jericho:drag-move', move)
-    node.addEventListener('jericho:drag-end', end)
-    return () => {
-      node.removeEventListener('jericho:drag-move', move)
-      node.removeEventListener('jericho:drag-end', end)
-    }
-  }, [onEject, cardId])
-
-  return <div
-    ref={element}
-    className={`k-card ${className}`}
-    style={{ '--dx': `${offset.x}px`, '--dy': `${offset.y}px` }}
-    role="group"
-    aria-label={label}
-    tabIndex={0}
-    data-knowledge-card={cardId}
-    data-gesture-target={`knowledge:${cardId}`}
-    data-gesture-draggable="true"
-    onPointerDown={onPointerDown}
-    onPointerMove={onPointerMove}
-    onPointerUp={onPointerUp}
-    onKeyDown={event => {
-      if (event.key === 'Delete' || event.key === 'Backspace') {
-        if (event.target.closest?.('button, a, input, textarea, select')) return
-        event.preventDefault()
-        onEject(cardId)
+      if (fitsInStage) {
+        const primary = { id: 'primary', x: STAGE_PADDING, y: primY, w: cardW, h: primH }
+        const provenance = { id: 'provenance', x: stageW - STAGE_PADDING - cardW, y: provY, w: cardW, h: provH }
+        const actions = { id: 'actions', x: actionsX, y: actionsY, w: cardW, h: actH }
+        const pairsOk = rectsSeparate(primary, provenance, CARD_GAP)
+          && rectsSeparate(primary, actions, CARD_GAP)
+          && rectsSeparate(provenance, actions, CARD_GAP)
+        const coreClear = actions.y >= exclusion.bottom + CARD_GAP - 0.5
+          && primary.x + primary.w <= exclusion.left - CARD_GAP + 0.5
+          && provenance.x >= exclusion.right + CARD_GAP - 0.5
+        if (pairsOk && coreClear) {
+          return [
+            { id: 'primary', x: primary.x, y: primary.y, className: 'k-card--left', width: cardW, height: primH, maxHeight: primH },
+            { id: 'provenance', x: provenance.x, y: provenance.y, className: 'k-card--right', width: cardW, height: provH, maxHeight: provH },
+            { id: 'actions', x: actions.x, y: actions.y, className: 'k-card--bottom-center', width: cardW, height: actH, maxHeight: actH },
+          ]
+        }
       }
-    }}
-  >{children}</div>
+    }
+  }
+
+  const columnW = Math.max(CARD_MIN_W, Math.min(CARD_MAX_W, stageW - 2 * STAGE_PADDING))
+  return cardIds.map(id => ({ id, x: 0, y: 0, className: 'k-card--column', width: columnW, height: 0 }))
+}
+
+function KnowledgeCard({ cardId, className, label, onEject, style, children }) {
+  return React.createElement('div', {
+    className: `k-card ${className}`, style, role: 'group', 'aria-label': label, tabIndex: 0,
+    'data-knowledge-card': cardId, 'data-gesture-target': `knowledge:${cardId}`,
+    onKeyDown: (e) => { if ((e.key === 'Delete' || e.key === 'Backspace') && !e.target.closest?.('button, a, input, textarea, select')) { e.preventDefault(); onEject(cardId) } }
+  }, children)
 }
 
 export function KnowledgeProjection({ actions = {} }) {
@@ -117,296 +119,280 @@ export function KnowledgeProjection({ actions = {} }) {
   const [status, setStatus] = React.useState('')
   const [proposal, setProposal] = React.useState(null)
   const [correction, setCorrection] = React.useState(null)
-  const mutedRef = React.useRef(muted)
-  mutedRef.current = muted
-  const resultRef = React.useRef(null)
-  resultRef.current = result
+  const [activeConflictId, setActiveConflictId] = React.useState(null)
+  const mutedRef = React.useRef(muted); mutedRef.current = muted
+  const resultRef = React.useRef(null); resultRef.current = result
   const timers = React.useRef([])
   const emittedCues = React.useRef(new Set())
   const reducedMotion = prefersReducedMotion()
+  const [placement, setPlacement] = React.useState([])
+  const [exclusion, setExclusion] = React.useState({ left: 0, right: 0, top: 0, bottom: 0 })
 
   const cue = React.useCallback((resultId, name) => {
-    if (mutedRef.current) return
-    const key = `${resultId}:${name}`
-    if (emittedCues.current.has(key)) return
-    emittedCues.current.add(key)
+    if (mutedRef.current) return; const key = `${resultId}:${name}`
+    if (emittedCues.current.has(key)) return; emittedCues.current.add(key)
     document.dispatchEvent(new CustomEvent(INTERFACE_SOUND_EVENT, { detail: { resultId, cue: name } }))
   }, [])
 
-  const clearTimers = () => {
-    for (const timer of timers.current) clearTimeout(timer)
-    timers.current = []
-  }
-
+  const clearTimers = () => { for (const t of timers.current) clearTimeout(t); timers.current = [] }
   const dismissAll = React.useCallback(() => {
-    const current = resultRef.current
-    if (!current) return
-    clearTimers()
-    cue(current.resultId, 'dismiss')
+    const cur = resultRef.current; if (!cur) return; clearTimers(); cue(cur.resultId, 'dismiss')
     setResult(null); setStage(0); setEjected(new Set()); setStatus(''); setProposal(null); setCorrection(null)
+    setActiveConflictId(null); setPlacement([]); setExclusion({ left: 0, right: 0, top: 0, bottom: 0 })
   }, [cue])
 
+  const measure = React.useCallback(() => {
+    const coreEl = document.querySelector('.core-wrap'); const stageEl = document.querySelector('.stage')
+    if (!coreEl || !stageEl) return
+    const sr = stageEl.getBoundingClientRect(); const excl = computeSphereExclusion(coreEl, stageEl)
+    setExclusion(excl)
+
+    const cur = resultRef.current; const terminal = cur && TERMINAL_PHASES.has(cur.phase)
+    const provenance = cur?.provenance ?? []
+    const permitted = cur?.actions ?? {}
+    const hasOpen = Array.isArray(permitted.openSourceIds) && permitted.openSourceIds.length > 0
+    const hasReorg = Array.isArray(permitted.reorganizeSourceIds) && permitted.reorganizeSourceIds.length > 0
+    const hasCorrect = Array.isArray(permitted.correctConflictIds) && permitted.correctConflictIds.length > 0
+    const hasActions = hasOpen || hasReorg || hasCorrect
+
+    const cardIds = []
+    if (terminal) { cardIds.push('primary'); if (provenance.length > 0) cardIds.push('provenance'); if (hasActions) cardIds.push('actions') }
+    const positions = placeCards(sr.width, sr.height, excl, cardIds)
+    const placements = positions.map((pos, i) => ({
+      id: pos.id ?? cardIds[i], x: pos.x, y: pos.y, className: pos.className, width: pos.width,
+      maxHeight: pos.maxHeight, delayMs: reducedMotion ? 0 : i * STAGGER_MS
+    }))
+    setPlacement(placements)
+  }, [reducedMotion])
+
+  React.useEffect(() => { window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure) }, [measure])
   React.useEffect(() => {
-    const onResult = event => {
+    const coreEl = document.querySelector('.core-wrap'); const stageEl = document.querySelector('.stage')
+    const ro = new ResizeObserver(() => measure()); if (coreEl) ro.observe(coreEl); if (stageEl) ro.observe(stageEl)
+    return () => ro.disconnect()
+  }, [measure])
+
+  React.useEffect(() => {
+    const onResult = (event) => {
       const detail = event.detail
-      if (!detail || typeof detail.resultId !== 'string' || detail.resultId === '') return
-      const current = resultRef.current
-      if (current && current.resultId === detail.resultId && current.phase === detail.phase) return
-      clearTimers()
-      setEjected(new Set()); setStatus(''); setProposal(null); setCorrection(null)
-      if (detail.phase === 'retrieving') {
-        // Sphere pulse only — no cards until evidence lands.
-        setResult(detail); setStage(0)
-        cue(detail.resultId, 'retrieve')
-        return
-      }
+      if (!detail || typeof detail.resultId !== 'string' || !detail.resultId) return
+      const cur = resultRef.current; if (cur && cur.resultId === detail.resultId && cur.phase === detail.phase) return
+      clearTimers(); setEjected(new Set()); setStatus(''); setProposal(null); setCorrection(null); setActiveConflictId(null)
+      if (detail.phase === 'retrieving') { setResult(detail); setStage(0); cue(detail.resultId, 'retrieve'); return }
       if (!TERMINAL_PHASES.has(detail.phase)) return
-      setResult(detail); setStage(1)
-      cue(detail.resultId, 'summon')
-      if ((detail.provenance ?? []).length > 0) {
-        timers.current.push(setTimeout(() => { setStage(previous => Math.max(previous, 2)); cue(detail.resultId, 'satellite') }, SATELLITE_DELAY_MS))
-      }
-      const actions = detail.actions ?? {}
-      if (actions.open_note || actions.reorganize_notes || actions.correct_identity) {
-        timers.current.push(setTimeout(() => { setStage(3); cue(detail.resultId, 'lock') }, SATELLITE_DELAY_MS * 2))
-      }
+      setResult(detail); setStage(1); cue(detail.resultId, 'summon')
+      if ((detail.provenance ?? []).length > 0) timers.current.push(setTimeout(() => { setStage((p) => Math.max(p, 2)); cue(detail.resultId, 'satellite') }, 120))
+      const perm = detail.actions ?? {}
+      if ((Array.isArray(perm.openSourceIds) && perm.openSourceIds.length > 0) || (Array.isArray(perm.reorganizeSourceIds) && perm.reorganizeSourceIds.length > 0) || (Array.isArray(perm.correctConflictIds) && perm.correctConflictIds.length > 0))
+        timers.current.push(setTimeout(() => { setStage(3); cue(detail.resultId, 'lock') }, 240))
     }
     document.addEventListener(GROUNDED_RESULT_EVENT, onResult)
     return () => { document.removeEventListener(GROUNDED_RESULT_EVENT, onResult); clearTimers() }
   }, [cue])
 
-  // Both-palms cancellation dismisses the constellation unless an exact-plan
-  // approval is on screen — that approval owns the cancel gesture.
-  React.useEffect(() => {
-    const onCancel = () => {
-      if (!resultRef.current) return
-      if (document.querySelector('[data-jericho-active-approval="true"]')) return
-      dismissAll()
-    }
-    document.addEventListener(CANCEL_PENDING_EVENT, onCancel)
-    return () => document.removeEventListener(CANCEL_PENDING_EVENT, onCancel)
-  }, [dismissAll])
-
-  React.useEffect(() => {
-    const onKey = event => {
-      if (event.key !== 'Escape' || !resultRef.current) return
-      if (document.querySelector('.sphere-command:not([hidden])')) return
-      if (document.querySelector('.modal-backdrop')) return
-      event.preventDefault()
-      event.stopPropagation()
-      event.stopImmediatePropagation()
-      dismissAll()
-    }
-    window.addEventListener('keydown', onKey, true)
-    return () => window.removeEventListener('keydown', onKey, true)
-  }, [dismissAll])
-
-  React.useEffect(() => {
-    const onToggle = event => {
-      const next = typeof event.detail?.muted === 'boolean' ? event.detail.muted : !mutedRef.current
-      try { localStorage.setItem(INTERFACE_SOUND_MUTED_KEY, next ? 'true' : 'false') } catch { /* local-only preference */ }
-      setMuted(next)
-    }
-    document.addEventListener(INTERFACE_SOUND_TOGGLE_EVENT, onToggle)
-    return () => document.removeEventListener(INTERFACE_SOUND_TOGGLE_EVENT, onToggle)
-  }, [])
-
-  const toggleMuted = () => {
-    const next = !mutedRef.current
-    try { localStorage.setItem(INTERFACE_SOUND_MUTED_KEY, next ? 'true' : 'false') } catch { /* local-only preference */ }
-    setMuted(next)
-    document.dispatchEvent(new CustomEvent(INTERFACE_SOUND_TOGGLE_EVENT, { detail: { muted: next } }))
-  }
-
-  const eject = React.useCallback(cardId => {
-    const current = resultRef.current
-    if (!current) return
-    cue(current.resultId, 'dismiss')
-    setEjected(previous => new Set(previous).add(cardId))
-  }, [cue])
-
   const terminal = result && TERMINAL_PHASES.has(result.phase)
+  // Measure after state settles, then again after first render for measured heights
+  React.useEffect(() => { if (terminal && stage >= 1) { const t = setTimeout(() => measure(), 0); return () => clearTimeout(t) } }, [result, stage, terminal, measure])
+  React.useEffect(() => { if (placement.length > 0) { const t = setTimeout(() => measure(), 100); return () => clearTimeout(t) } }, [placement.length])
+
+  React.useEffect(() => {
+    const c = () => { if (!resultRef.current || document.querySelector('[data-jericho-active-approval="true"]')) return; dismissAll() }
+    document.addEventListener(CANCEL_PENDING_EVENT, c); return () => document.removeEventListener(CANCEL_PENDING_EVENT, c)
+  }, [dismissAll])
+  React.useEffect(() => {
+    const k = (e) => { if (e.key !== 'Escape' || !resultRef.current || document.querySelector('.sphere-command:not([hidden])') || document.querySelector('.modal-backdrop')) return; e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); dismissAll() }
+    window.addEventListener('keydown', k, true); return () => window.removeEventListener('keydown', k, true)
+  }, [dismissAll])
+  React.useEffect(() => {
+    const t = (e) => { const next = typeof e.detail?.muted === 'boolean' ? e.detail.muted : !mutedRef.current; try { localStorage.setItem(INTERFACE_SOUND_MUTED_KEY, next ? 'true' : 'false') } catch {}; setMuted(next) }
+    document.addEventListener(INTERFACE_SOUND_TOGGLE_EVENT, t); return () => document.removeEventListener(INTERFACE_SOUND_TOGGLE_EVENT, t)
+  }, [])
+  const toggleMuted = () => { const next = !mutedRef.current; try { localStorage.setItem(INTERFACE_SOUND_MUTED_KEY, next ? 'true' : 'false') } catch {}; setMuted(next); document.dispatchEvent(new CustomEvent(INTERFACE_SOUND_TOGGLE_EVENT, { detail: { muted: next } })) }
+  const eject = React.useCallback((id) => { const cur = resultRef.current; if (!cur) return; cue(cur.resultId, 'dismiss'); setEjected((p) => new Set(p).add(id)) }, [cue])
+
   const provenance = result?.provenance ?? []
   const permitted = result?.actions ?? {}
-  const hasActions = Boolean(permitted.open_note || permitted.reorganize_notes || permitted.correct_identity)
-  const cardIds = terminal
-    ? ['primary', ...(provenance.length ? ['provenance'] : []), ...(hasActions ? ['actions'] : [])]
-    : []
+  const claims = result?.claims ?? []
+  const conflicts = result?.conflicts ?? []
+  const hasActions = (Array.isArray(permitted.openSourceIds) && permitted.openSourceIds.length > 0) || (Array.isArray(permitted.reorganizeSourceIds) && permitted.reorganizeSourceIds.length > 0) || (Array.isArray(permitted.correctConflictIds) && permitted.correctConflictIds.length > 0)
 
-  // Every card individually ejected → the constellation is gone.
   React.useEffect(() => {
-    if (!terminal || cardIds.some(id => !ejected.has(id))) return
-    clearTimers()
-    setResult(null); setStage(0); setEjected(new Set()); setStatus(''); setProposal(null); setCorrection(null)
+    if (!terminal) return
+    const ids = ['primary', ...(provenance.length ? ['provenance'] : []), ...(hasActions ? ['actions'] : [])]
+    if (ids.every((id) => ejected.has(id))) { clearTimers(); setResult(null); setStage(0); setEjected(new Set()); setStatus(''); setProposal(null); setCorrection(null); setActiveConflictId(null); setPlacement([]) }
   }, [terminal, ejected])
 
-  const runAction = async (done, operation) => {
-    setStatus('WORKING')
+  const runAction = async (done, op) => { setStatus('WORKING'); try { await op(); setStatus(done) } catch (err) { setStatus(err instanceof Error ? err.message : 'ACTION FAILED') } }
+  const resultId_ = result?.resultId ?? ''
+  const identity = result?.fullName ?? result?.canonicalIdentity; const identityLabel = identity ?? (result?.subject ?? '')
+  const relationship = result?.relationship; const guided = result?.guided
+  const guidedChip = guided ? (result?.phase === 'resolved' ? 'PASS' : 'LIVE') : null
+  const employment = result?.employment ?? []
+
+  const openSourceIds = Array.isArray(permitted.openSourceIds) ? permitted.openSourceIds : []
+  const reorganizeSourceIds = Array.isArray(permitted.reorganizeSourceIds) ? permitted.reorganizeSourceIds : []
+  const correctConflictIds = Array.isArray(permitted.correctConflictIds) ? permitted.correctConflictIds : []
+
+  // Build label-data maps for provenance and conflicts
+  const provBySourceId = new Map(); for (const p of provenance) provBySourceId.set(p.sourceId, p)
+  const confById = new Map(); for (const c of conflicts) confById.set(c.id, c)
+
+  const open = (sourceId) => runAction('NOTE OPENED', () => actions.openMemory?.('', resultId_, sourceId) ?? Promise.reject(new Error('NO OPENER')))
+  const reorganize = (sourceId) => runAction('REORGANIZATION PROPOSED', async () => {
+    const resp = await actions.proposeNoteReorganization?.({ relativePath: '', title: '', resultId: resultId_, sourceId })
+    if (resp?.proposal) setProposal(resp.proposal); return resp
+  })
+  const correct = (conflictId) => runAction('CORRECTION PREVIEW READY', async () => {
+    setActiveConflictId(conflictId)
     try {
-      await operation()
-      setStatus(done)
-    } catch (error) {
-      setStatus(error instanceof Error ? error.message : 'ACTION FAILED')
-    }
+      const preview = await actions.correctIdentity?.(resultId_, conflictId)
+      setCorrection(preview)
+    } catch (err) { setActiveConflictId(null); throw err }
+  })
+  const confirmCorrection = () => {
+    if (!activeConflictId) return
+    runAction('CORRECTION CONFIRMED', () =>
+      actions.confirmCorrection?.(correction, resultId_, activeConflictId) ?? Promise.reject(new Error('NOT AVAILABLE')))
+  }
+  const decideReorg = (outcome) => runAction(`REORGANIZATION ${outcome.toUpperCase()}`, () => {
+    if (!actions.decideProposal || !proposal?.integrityHash) return Promise.reject(new Error('NOT AVAILABLE'))
+    return actions.decideProposal({ proposalId: proposal.id, proposalHash: proposal.integrityHash, version: proposal.version, outcome, reason: `${outcome === 'approved' ? 'Approved' : 'Rejected'} grounded knowledge reorganization preview` })
+  })
+
+  const provenanceByRoot = new Map()
+  for (const entry of provenance) { const rootId = entry.rootId ?? entry.relativePath?.split('/')[0] ?? 'unknown'; const g = provenanceByRoot.get(rootId) ?? []; g.push(entry); provenanceByRoot.set(rootId, g) }
+
+  const placementById = new Map(placement.map((p) => [p.id, p]))
+  const isColumn = placement.length > 0 && placement.every(p => p?.className?.includes?.('column'))
+  const columnTop = isColumn ? Math.max(24, exclusion.bottom + CARD_GAP) : 0
+  const stageEl = typeof document !== 'undefined' ? document.querySelector('.stage') : null
+  const stageH = stageEl ? stageEl.getBoundingClientRect().height : 900
+  const columnH = isColumn ? Math.max(200, stageH - columnTop) : 0
+
+  const getPlacementStyle = (cardId) => {
+    const p = placementById.get(cardId); if (!p) return {}
+    const s = { '--kw': `${p.width}px`, '--kx': `${p.x}px`, '--ky': `${p.y}px`, '--kdelay': `${p.delayMs}ms` }
+    if (p.maxHeight) s['--kmaxh'] = `${p.maxHeight}px`
+    if (reducedMotion) s.animation = 'k-fade 220ms ease-out both'; return s
   }
 
-  const identity = result?.fullName ?? result?.canonicalIdentity ?? null
-  const relationship = result?.relationship ?? null
-  const employment = (result?.employment ?? []).map(item => typeof item === 'string' ? item : item?.org ?? '')
-  const guided = result?.guided ?? null
-  const guidedChip = guided ? (result?.phase === 'resolved' ? 'PASS' : 'LIVE') : null
-  const primaryPath = permitted.open_note ?? provenance[0]?.relativePath
-  const excerpt = provenance[0]?.excerpt
-  const subject = result?.subject ?? ''
+  const phaseStr = result?.phase ?? 'idle'; const routeStr = String(result?.route ?? '').toUpperCase()
+  const allCards = []
 
-  const openNote = () => runAction('NOTE OPENED', () => primaryPath
-    ? actions.openMemory(primaryPath)
-    : Promise.reject(new Error('NO SOURCE NOTE')))
-  const reorganize = () => runAction('REORGANIZATION PROPOSED', async () => {
-    if (!primaryPath) throw new Error('NO SOURCE NOTE')
-    if (!actions.proposeNoteReorganization) throw new Error('NOT AVAILABLE')
-    const response = await actions.proposeNoteReorganization({ relativePath: primaryPath, title: identity ?? subject })
-    setProposal(response?.proposal ?? null)
-    return response
-  })
-  const correct = () => runAction('CORRECTION PREVIEW READY', async () => {
-    if (!actions.correctIdentity) throw new Error('NOT AVAILABLE')
-    setCorrection(await actions.correctIdentity())
-  })
-  const confirmCorrection = () => runAction('CORRECTION CONFIRMED', () => actions.confirmCorrection
-    ? actions.confirmCorrection(correction)
-    : Promise.reject(new Error('NOT AVAILABLE')))
-  const decideReorganization = outcome => runAction(`REORGANIZATION ${outcome.toUpperCase()}`, () => {
-    if (!actions.decideProposal || !proposal?.integrityHash) return Promise.reject(new Error('NOT AVAILABLE'))
-    return actions.decideProposal({
-      proposalId: proposal.id,
-      proposalHash: proposal.integrityHash,
-      version: proposal.version,
-      outcome,
-      reason: `${outcome === 'approved' ? 'Approved' : 'Rejected'} grounded knowledge reorganization preview`,
-    })
-  })
+  const actionLabel = (type, id) => {
+    if (type === 'open' || type === 'reorg') {
+      const p = provBySourceId.get(id)
+      return p ? `${type === 'open' ? 'OPEN' : 'REORGANIZE'} ${p.title ?? p.relativePath ?? id}` : `${type === 'open' ? 'OPEN NOTE' : 'REORGANIZE'}`
+    }
+    const c = confById.get(id)
+    return c ? `CORRECT ${c.claim?.slice(0, 40) ?? id}` : 'CORRECT'
+  }
 
-  return <div
-    className="knowledge-projection"
-    data-phase={result?.phase ?? 'idle'}
-    data-reduced-motion={reducedMotion ? 'true' : undefined}
-    aria-label="Grounded knowledge projection"
-  >
-    <button
-      type="button"
-      className="k-sound-toggle micro"
-      aria-pressed={muted}
-      aria-label="Interface sound"
-      data-gesture-target="knowledge:sound-toggle"
-      onClick={toggleMuted}
-    >{muted ? 'SND MUTED' : 'SND ON'}</button>
+  if (terminal && stage >= 1 && !ejected.has('primary')) {
+    const chips = []
+    if (guided && result?.phase === 'resolved') chips.push(React.createElement(Chip, { tone: 'ok', key: 'pass' }, 'PASS'))
+    if (relationship) chips.push(React.createElement(Chip, { key: 'rel' }, String(relationship).toUpperCase()))
+    for (const org of employment) chips.push(React.createElement(Chip, { key: `org-${org}` }, String(org).toUpperCase()))
 
-    {terminal && stage >= 1 && !ejected.has('primary') && <ConstellationCard
-      cardId="primary" className="k-card--primary" onEject={eject}
-      label={`Grounded ${result.phase} card`}
-    >
-      {result.phase === 'resolved' && <JerichoCard
-        eyebrow={`GROUNDED · ${String(result.route ?? 'RETRIEVAL').toUpperCase()}`}
-        source="OBSIDIAN"
-        chip={guided ? guidedChip : 'SOURCE-BACKED'}
-        chipTone="ok"
-        big={identity ?? subject}
-        label={guided ? 'PERSON · GUIDED TEST' : 'PERSON · GROUNDED KNOWLEDGE'}
-        provenance={`SOURCE · ${primaryPath ?? 'unknown'} · ${result.retrievalCount ?? 0} RETRIEVAL`}
-      >
-        <div className="k-chips">
-          {guided && <Chip tone="dim">TEST</Chip>}
-          {relationship && <Chip>{String(relationship).toUpperCase()}</Chip>}
-          {employment.filter(Boolean).map(org => <Chip key={org}>{org.toUpperCase()}</Chip>)}
-        </div>
-        {relationship && <p className="k-evidence micro">RELATION · {String(relationship).toUpperCase()}</p>}
-        {excerpt && <p className="k-excerpt">{excerpt}</p>}
-        {result.confidence && <p className="k-evidence micro">CONFIDENCE · {String(result.confidence).toUpperCase()}</p>}
-      </JerichoCard>}
+    allCards.push(React.createElement(KnowledgeCard, {
+      cardId: 'primary', key: 'primary', className: `k-card--primary ${placementById.get('primary')?.className ?? ''}`,
+      label: `Grounded ${result?.phase} card`, onEject: eject, style: getPlacementStyle('primary')
+    },
+      React.createElement(JerichoCard, {
+        eyebrow: `GROUNDED · ${routeStr}`, source: 'OBSIDIAN',
+        chip: guided ? guidedChip : (result?.phase === 'resolved' ? 'SOURCE-BACKED' : result?.phase === 'ambiguous' ? 'AMBIGUOUS' : 'UNAVAILABLE'),
+        chipTone: result?.phase === 'unavailable' ? 'fault' : 'ok',
+        big: result?.phase === 'unavailable' ? (identityLabel || 'NO EVIDENCE') : identityLabel,
+        label: guided ? 'PERSON · GUIDED TEST' : 'PERSON · GROUNDED KNOWLEDGE',
+        tone: result?.phase === 'unavailable' ? 'fault' : '',
+        provenance: `INDEX REV ${result?.indexRevision ?? ''} · ${result?.retrievalCount ?? 0} RETRIEVAL`
+      },
+        chips.length > 0 ? React.createElement('div', { className: 'k-chips', key: 'chips' }, ...chips) : null,
+        result?.confidence ? React.createElement('p', { className: 'k-evidence micro', key: 'conf' }, `CONFIDENCE · ${String(result.confidence).toUpperCase()}`) : null,
+        claims.length > 0 ? React.createElement('div', { className: 'k-supported', key: 'claims' },
+          React.createElement('p', { className: 'micro', style: { color: 'var(--cyan)', marginTop: 8 } }, 'CLAIMS'),
+          ...claims.map((c) => React.createElement('p', { key: c.id, className: 'k-excerpt' }, c.text))
+        ) : null,
+        result?.phase === 'unavailable' ? React.createElement('p', { className: 'k-excerpt', key: 'unavail' }, (result?.summary) ?? 'The vault returned no canonical evidence for this subject.') : null
+      )
+    ))
+  }
 
-      {result.phase === 'ambiguous' && <JerichoCard
-        eyebrow={`GROUNDED · ${String(result.route ?? 'RETRIEVAL').toUpperCase()}`}
-        source="OBSIDIAN"
-        chip={guided ? guidedChip : 'AMBIGUOUS'}
-        chipTone="dim"
-        big={subject}
-        label="AMBIGUOUS EVIDENCE · BINDINGS KEPT SEPARATE"
-        provenance={`${provenance.length} EVIDENCE PATHS · ${result.retrievalCount ?? 0} RETRIEVAL`}
-      >
-        {guided && <div className="k-chips"><Chip tone="dim">TEST</Chip></div>}
-        {excerpt && <p className="k-excerpt">{excerpt}</p>}
-        <ol className="k-candidates">
-          {provenance.map((entry, index) => <li key={entry.relativePath ?? index}>
-            <strong>{entry.title ?? 'AMBIGUOUS EVIDENCE'}</strong>
-            <span>{entry.relativePath ?? ''}</span>
-          </li>)}
-        </ol>
-      </JerichoCard>}
+  if (terminal && stage >= 2 && provenance.length > 0 && !ejected.has('provenance')) {
+    allCards.push(React.createElement(KnowledgeCard, {
+      cardId: 'provenance', key: 'provenance', className: `k-card--provenance ${placementById.get('provenance')?.className ?? ''}`,
+      label: 'Evidence card', onEject: eject, style: getPlacementStyle('provenance')
+    },
+      React.createElement(JerichoCard, {
+        eyebrow: 'EVIDENCE', source: 'VAULT', chip: guided ? guidedChip : undefined, chipTone: 'ok',
+        label: `${provenance.length} SOURCE · GROUPED BY ROOT${conflicts.length > 0 ? ' · CONFLICTS DETECTED' : ''}`,
+        provenance: 'EVERY CLAIM IS PATH-BACKED'
+      },
+        ...[...provenanceByRoot].map(([rootId, entries]) =>
+          React.createElement('div', { key: rootId, style: { marginBottom: 10 } },
+            React.createElement('p', { className: 'micro', style: { color: 'var(--cyan)', borderBottom: '1px solid var(--stroke-dim)', paddingBottom: 3 } }, `ROOT · ${rootId} · ${String(entries[0]?.authority ?? '').toUpperCase()}`),
+            React.createElement('ol', { className: 'k-provenance' },
+              ...entries.map((e) => React.createElement('li', { key: e.sourceId }, React.createElement('code', null, e.relativePath), React.createElement('span', { className: 'micro' }, e.title)))
+            )
+          )
+        ),
+        conflicts.length > 0 ? React.createElement('div', { key: 'confs', style: { marginTop: 10 } },
+          React.createElement('p', { className: 'micro', style: { color: 'var(--fault)' } }, 'CONFLICTS'),
+          ...conflicts.map((c) => React.createElement('p', { key: c.id, className: 'k-excerpt', style: { color: 'var(--fault)' } }, `${c.claim} — ${c.reason}`))
+        ) : null
+      )
+    ))
+  }
 
-      {result.phase === 'unavailable' && <JerichoCard
-        tone="fault"
-        eyebrow={`GROUNDED · ${String(result.route ?? 'RETRIEVAL').toUpperCase()}`}
-        source="OBSIDIAN"
-        chip={guided ? guidedChip : 'UNAVAILABLE'}
-        chipTone="fault"
-        big={subject || 'NO EVIDENCE'}
-        label="NO CANONICAL EVIDENCE · NOTHING FABRICATED"
-        provenance={`${result.retrievalCount ?? 0} RETRIEVAL`}
-      >
-        {guided && <div className="k-chips"><Chip tone="dim">TEST</Chip></div>}
-        <p className="k-excerpt">{result.reason ?? 'The vault returned no canonical evidence for this subject.'}</p>
-      </JerichoCard>}
-    </ConstellationCard>}
+  if (terminal && stage >= 3 && hasActions && !ejected.has('actions')) {
+    allCards.push(React.createElement(KnowledgeCard, {
+      cardId: 'actions', key: 'actions', className: `k-card--actions ${placementById.get('actions')?.className ?? ''}`,
+      label: 'Actions plate', onEject: eject, style: getPlacementStyle('actions')
+    },
+      React.createElement(JerichoCard, {
+        eyebrow: 'PERMITTED ACTIONS', source: 'JERICHO CORE', chip: guided ? guidedChip : undefined, chipTone: 'ok',
+        label: 'REVIEW-GATED · NOTHING WRITTEN WITHOUT APPROVAL', provenance: 'AUTHENTICATED CORE CALLBACKS ONLY'
+      },
+        React.createElement('div', { className: 'k-actions' },
+          ...openSourceIds.map((sid) => {
+            const p = provBySourceId.get(sid)
+            return React.createElement('button', { type: 'button', key: `open-${sid}`, 'data-gesture-target': `knowledge:open-note:${sid}`, 'aria-label': actionLabel('open', sid), onClick: () => { void open(sid) } }, 'OPEN NOTE')
+          }),
+          ...reorganizeSourceIds.map((sid) => {
+            const p = provBySourceId.get(sid)
+            return React.createElement('button', { type: 'button', key: `reorg-${sid}`, 'data-gesture-target': `knowledge:reorganize:${sid}`, 'aria-label': actionLabel('reorg', sid), onClick: () => { void reorganize(sid) } }, 'REORGANIZE')
+          }),
+          ...correctConflictIds.map((cid) => {
+            const c = confById.get(cid)
+            return React.createElement('button', { type: 'button', key: `corr-${cid}`, 'data-gesture-target': `knowledge:correct:${cid}`, 'aria-label': actionLabel('correct', cid), onClick: () => { void correct(cid) } }, 'CORRECT')
+          }),
+          correction ? React.createElement('button', { type: 'button', key: 'conf-corr', className: 'ok', 'data-gesture-target': 'knowledge:correct-confirm', onClick: () => { void confirmCorrection() } }, 'CONFIRM CORRECTION') : null
+        ),
+        proposal?.integrityHash ? React.createElement('div', { key: 'review', className: 'k-review', 'aria-label': 'Reorganization review' },
+          React.createElement('p', null, proposal.summary ?? 'Review the exact reorganization proposal before recording a decision.'),
+          React.createElement('div', { className: 'k-actions' },
+            React.createElement('button', { type: 'button', className: 'ok', onClick: () => { void decideReorg('approved') } }, 'APPROVE REORGANIZATION'),
+            React.createElement('button', { type: 'button', onClick: () => { void decideReorg('rejected') } }, 'REJECT REORGANIZATION')
+          )
+        ) : null,
+        correction ? React.createElement('div', { key: 'corr-eff', style: { marginTop: 8 } },
+          React.createElement('p', { className: 'micro', style: { color: 'var(--cyan)' } }, 'CORRECTION EFFECTS'),
+          correction.disputedClaim ? React.createElement('p', { className: 'k-excerpt' }, 'Exclude: ' + correction.disputedClaim) : null,
+          correction.coreEffects?.relationsToCreate?.[0]?.type ? React.createElement('p', { className: 'k-excerpt' }, `Relation: ${correction.coreEffects.relationsToCreate[0].type}`) : null
+        ) : null,
+        status ? React.createElement('p', { className: 'k-status micro', role: 'status', key: 'stat' }, status) : null
+      )
+    ))
+  }
 
-    {terminal && stage >= 2 && provenance.length > 0 && !ejected.has('provenance') && <ConstellationCard
-      cardId="provenance" className="k-card--provenance" onEject={eject}
-      label="Provenance card"
-    >
-      <JerichoCard
-        eyebrow="PROVENANCE"
-        source="VAULT"
-        chip={guided ? guidedChip : undefined}
-        chipTone="ok"
-        label={`${provenance.length} SOURCE ${provenance.length === 1 ? 'PATH' : 'PATHS'}`}
-        provenance="EVERY CLAIM IS PATH-BACKED"
-      >
-        <ol className="k-provenance">
-          {provenance.map(entry => <li key={entry.relativePath}>
-            <code>{entry.relativePath}</code>
-            {entry.title && <span className="micro">{entry.title}</span>}
-          </li>)}
-        </ol>
-      </JerichoCard>
-    </ConstellationCard>}
+  const containerStyle = isColumn ? { position: 'absolute', left: 0, right: 0, top: `${columnTop}px`, height: `${columnH}px`, '--kmaxh': `${columnH}px`, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '20px', padding: '24px', overflowY: 'auto' } : undefined
 
-    {terminal && stage >= 3 && hasActions && !ejected.has('actions') && <ConstellationCard
-      cardId="actions" className="k-card--actions" onEject={eject}
-      label="Permitted actions plate"
-    >
-      <JerichoCard
-        eyebrow="PERMITTED ACTIONS"
-        source="JERICHO CORE"
-        chip={guided ? guidedChip : undefined}
-        chipTone="ok"
-        label="REVIEW-GATED · NOTHING WRITTEN WITHOUT APPROVAL"
-        provenance="AUTHENTICATED CORE CALLBACKS ONLY"
-      >
-        <div className="k-actions">
-          {permitted.open_note && <button type="button" data-gesture-target="knowledge:open-note" onClick={() => void openNote()}>OPEN NOTE</button>}
-          {permitted.reorganize_notes && <button type="button" data-gesture-target="knowledge:reorganize" onClick={() => void reorganize()}>REORGANIZE</button>}
-          {permitted.correct_identity && <button type="button" data-gesture-target="knowledge:correct" onClick={() => void correct()}>CORRECT</button>}
-          {correction && <button type="button" className="ok" data-gesture-target="knowledge:correct-confirm" onClick={() => void confirmCorrection()}>CONFIRM CORRECTION</button>}
-        </div>
-        {proposal?.integrityHash && <div className="k-review" aria-label="Reorganization review">
-          <p>{proposal.summary ?? 'Review the exact reorganization proposal before recording a decision.'}</p>
-          <div className="k-actions">
-            <button type="button" className="ok" onClick={() => void decideReorganization('approved')}>APPROVE REORGANIZATION</button>
-            <button type="button" onClick={() => void decideReorganization('rejected')}>REJECT REORGANIZATION</button>
-          </div>
-        </div>}
-        {status && <p className="k-status micro" role="status">{status}</p>}
-      </JerichoCard>
-    </ConstellationCard>}
-  </div>
+  return React.createElement('div', {
+    className: 'knowledge-projection', 'data-phase': phaseStr,
+    'data-reduced-motion': reducedMotion ? 'true' : undefined,
+    'aria-label': 'Grounded knowledge projection',
+  },
+    React.createElement('button', { type: 'button', className: 'k-sound-toggle micro', 'aria-pressed': muted, 'aria-label': 'Interface sound', 'data-gesture-target': 'knowledge:sound-toggle', onClick: toggleMuted, key: 'sound' }, muted ? 'SND MUTED' : 'SND ON'),
+    allCards.length > 0 ? (isColumn ? React.createElement('div', { className: 'k-column-flow', key: 'flow', style: containerStyle }, ...allCards) : allCards) : null
+  )
 }

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WebSocket } from 'ws';
@@ -12,8 +12,8 @@ vi.mock('@google/genai', () => ({
   },
   Modality: { AUDIO: 'AUDIO' },
 }));
-
 import { JerichoStore } from '../src/core/store.js';
+import { MemoryIndex } from '../src/retrieval/memory-index.js';
 import { IntakeProcessor } from '../src/orchestration/intake.js';
 import {
   createJerichoServer,
@@ -26,13 +26,24 @@ const TOKEN = 'voice-gate-test-token';
 const openServers: Array<{ close(): Promise<void> }> = [];
 const openStores: JerichoStore[] = [];
 const openSockets: WebSocket[] = [];
+const openDirs: string[] = [];
 
 afterEach(async () => {
   for (const socket of openSockets.splice(0)) socket.close();
   for (const server of openServers.splice(0)) await server.close();
   for (const store of openStores.splice(0)) store.close();
+  for (const directory of openDirs.splice(0)) rmSync(directory, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
+
+function memoryFixture(): { index: MemoryIndex; root: string } {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'jericho-voice-mem-')));
+  openDirs.push(root);
+  writeFileSync(join(root, 'People Isabella Handel.md'), '# Isabella Handel\nIsabella Handel works at MasterBlox.\n');
+  const index = new MemoryIndex({ roots: [{ id: 'obsidian', path: root, authority: 'canonical' }] });
+  index.refresh();
+  return { index, root };
+}
 
 describe('voice socket privacy gate', () => {
   it('speaks wake through Gemini, drops greeting-time input, then keeps listening', async () => {
@@ -239,8 +250,8 @@ describe('voice socket privacy gate', () => {
       serverContent: { inputTranscription: { text: 'for Jericho' } },
     });
 
-    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1));
-    expect(runtime.store.listEvents({ limit: 10 })[0]).toMatchObject({
+    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 }).filter((event) => event.type === 'local.capture.spoken')).toHaveLength(1));
+    expect(runtime.store.listEvents({ limit: 10 }).find((event) => event.type === 'local.capture.spoken')).toMatchObject({
       source: 'local:spoken',
       type: 'local.capture.spoken',
       payload: { transcript: 'Build a multi-step project for Jericho' },
@@ -325,16 +336,8 @@ describe('voice socket privacy gate', () => {
       request.callbacks.onopen();
       return session;
     });
-    const search = vi.fn(async () => ({
-      cached: false,
-      results: [{
-        path: 'People/Isabella Handel.md',
-        title: 'Isabella Handel',
-        excerpt: 'Carlos\'s wife and a team member at MasterBlox Capital.',
-        score: 1,
-      }],
-    }));
-    const runtime = await startVoiceServer(voiceConnect, 5_000, { vaultSearch: { search } });
+    const { index } = memoryFixture();
+    const runtime = await startVoiceServer(voiceConnect, 5_000, { memoryIndex: index });
     const socket = await connectSocket(runtime.port);
     const messages = collectMessages(socket);
     socket.send(JSON.stringify({ type: 'wake' }));
@@ -349,37 +352,47 @@ describe('voice socket privacy gate', () => {
       serverContent: { modelTurn: { parts: [{ inlineData: { data: 'speculative', mimeType: 'audio/pcm;rate=24000' } }] } },
     });
     expect(messages()).not.toContainEqual(expect.objectContaining({ data: 'speculative' }));
-    await vi.waitFor(() => expect(search).toHaveBeenCalledWith('Isabella', 8, expect.any(AbortSignal)));
     await vi.waitFor(() => expect(messages()).toContainEqual(expect.objectContaining({
       type: 'grounded_result', phase: 'resolved',
     })));
-    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 })).toHaveLength(1));
+    await vi.waitFor(() => expect(runtime.store.listEvents({ limit: 10 }).filter((event) => event.type === 'local.capture.spoken')).toHaveLength(1));
   });
 
-  it('greets at most once per browser voice session', async () => {
-    let callbacks: VoiceConnectionCallbacks | undefined;
-    const session = {
-      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
-    };
+  it('greets at most once across two WebSocket connections with one browser credential', async () => {
+    const sessions: Array<{
+      sendClientContent: ReturnType<typeof vi.fn>;
+      sendRealtimeInput: ReturnType<typeof vi.fn>;
+      sendToolResponse: ReturnType<typeof vi.fn>;
+      close: ReturnType<typeof vi.fn>;
+    }> = [];
+    const callbacksList: VoiceConnectionCallbacks[] = [];
     const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
-      callbacks = request.callbacks;
+      callbacksList.push(request.callbacks);
+      const session = {
+        sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+      };
+      sessions.push(session);
       request.callbacks.onopen();
       return session;
     });
     const runtime = await startVoiceServer(voiceConnect);
-    const socket = await connectSocket(runtime.port);
-    const messages = collectMessages(socket);
-    socket.send(JSON.stringify({ type: 'wake' }));
-    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
-    callbacks?.onmessage({ serverContent: { turnComplete: true } });
-    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'greeting_complete' }));
-    callbacks?.onmessage({ serverContent: { turnComplete: true } });
-    await vi.waitFor(() => expect(messages()).toContainEqual({ type: 'turn_complete' }));
+    const first = await connectSocket(runtime.port);
+    const firstMessages = collectMessages(first);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+    first.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(sessions[0]!.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacksList[0]?.onmessage({ serverContent: { turnComplete: true } });
+    await vi.waitFor(() => expect(firstMessages()).toContainEqual({ type: 'greeting_complete' }));
+    first.close();
 
-    socket.send(JSON.stringify({ type: 'wake' }));
+    const second = await connectSocket(runtime.port);
+    const secondMessages = collectMessages(second);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(2));
+    second.send(JSON.stringify({ type: 'wake' }));
     await flushIo();
-    expect(session.sendClientContent).toHaveBeenCalledTimes(1);
-    expect(messages().filter((message) => message.type === 'greeting_started')).toHaveLength(1);
+    expect(sessions[1]!.sendClientContent).not.toHaveBeenCalled();
+    expect(secondMessages()).toContainEqual({ type: 'greeting_complete' });
+    expect(secondMessages().filter((message) => message.type === 'greeting_started')).toHaveLength(0);
   });
 
   it('runs one identity-aware Isabella retrieval and does not replay the query', async () => {
@@ -392,16 +405,8 @@ describe('voice socket privacy gate', () => {
       request.callbacks.onopen();
       return session;
     });
-    const search = vi.fn(async () => ({
-      cached: false,
-      results: [{
-        path: 'People/Isabella Handel.md',
-        title: 'Isabella Handel',
-        excerpt: 'Works at MasterBlox; spouse of Carlos Prada.',
-        score: 0.99,
-      }],
-    }));
-    const runtime = await startVoiceServer(voiceConnect, 5_000, { vaultSearch: { search } });
+    const { index } = memoryFixture();
+    const runtime = await startVoiceServer(voiceConnect, 5_000, { memoryIndex: index });
     const socket = await connectSocket(runtime.port);
     const messages = collectMessages(socket);
     await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
@@ -419,15 +424,17 @@ describe('voice socket privacy gate', () => {
     callbacks?.onmessage({
       serverContent: { inputTranscription: { text: 'Who is Isabella?', finished: true } },
     });
-    await vi.waitFor(() => expect(search).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(messages()).toContainEqual(expect.objectContaining({
       type: 'guided_test_phase', phase: 'presenting',
     })));
+    const grounded = messages().filter((message) => message.type === 'grounded_result' && message.phase !== 'retrieving');
+    expect(grounded).toHaveLength(1);
     callbacks?.onmessage({
       serverContent: { inputTranscription: { text: 'Who is Isabella?', finished: true } },
     });
     await flushIo();
-    expect(search).toHaveBeenCalledTimes(1);
+    const groundedAfter = messages().filter((message) => message.type === 'grounded_result' && message.phase !== 'retrieving');
+    expect(groundedAfter).toHaveLength(1);
     const presenting = session.sendClientContent.mock.calls
       .map((call) => JSON.stringify(call[0]))
       .find((text) => /Narrate only the resolved evidence/i.test(text));
@@ -572,6 +579,169 @@ describe('voice socket privacy gate', () => {
   });
 });
 
+describe('calibration phrase WebSocket transport', () => {
+  it('speaks a known calibration phrase and emits started/audio/complete', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+
+    callbacks!.onmessage({
+      serverContent: {
+        modelTurn: {
+          parts: [{ inlineData: { data: 'fake-audio', mimeType: 'audio/pcm;rate=24000' } }],
+        },
+      },
+    });
+    callbacks!.onmessage({ serverContent: { turnComplete: true } });
+    await flushIo();
+
+    const calibrationMessages = messages().filter(
+      (m: Record<string, unknown>) => String(m.type ?? '').startsWith('calibration_phrase'),
+    );
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase' && m.status === 'started'))
+      .toBe(true);
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase_audio'))
+      .toBe(true);
+    expect(calibrationMessages.some((m) => m.type === 'calibration_phrase' && m.status === 'complete'))
+      .toBe(true);
+    expect(session.sendRealtimeInput).not.toHaveBeenCalled();
+  });
+
+  it('rejects an unknown phrase ID with unavailable', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'unknown_id' }));
+    await vi.waitFor(() => {
+      const phraseMsgs = messages().filter(
+        (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+      );
+      return phraseMsgs.length > 0;
+    });
+    expect(session.sendClientContent).not.toHaveBeenCalled();
+  });
+
+  it('rejects calibration phrase during an active turn', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    // Activate a wake, simulate greeting
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    // Simulate greeting complete
+    callbacks!.onmessage({ serverContent: { turnComplete: true } });
+    await flushIo();
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => {
+      const msgs = messages();
+      const err = msgs.find(
+        (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+      );
+      expect(err).toBeTruthy();
+    });
+  });
+
+  it('rejects concurrent calibration phrase', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_1' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_2' }));
+    await flushIo();
+
+    const unavailable = messages().filter(
+      (m) => m.type === 'calibration_phrase' && (m as Record<string, unknown>).status === 'unavailable',
+    );
+    expect(unavailable.length).toBe(1);
+  });
+
+  it('sends the exact allowlisted text wrapped in Say exactly instruction', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(),
+      sendRealtimeInput: vi.fn(),
+      sendToolResponse: vi.fn(),
+      close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const runtime = await startVoiceServer(voiceConnect);
+    const socket = await connectSocket(runtime.port);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledTimes(1));
+
+    socket.send(JSON.stringify({ type: 'calibration_phrase', phraseId: 'voice_range_3' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalled());
+    const call = session.sendClientContent.mock.calls[0]?.[0];
+    expect(call?.turns?.[0]?.parts?.[0]?.text).toContain('Say exactly:');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).toContain('Who is Isabella Handel?');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('spouse');
+    expect(call?.turns?.[0]?.parts?.[0]?.text).not.toContain('married');
+  });
+});
+
 async function startVoiceServer(
   voiceConnect: VoiceConnect,
   voiceActiveTurnMs = 1_000,
@@ -582,6 +752,7 @@ async function startVoiceServer(
     voicePreferencePath?: string;
     vaultSearch?: { search(query: string, limit: number, signal: AbortSignal): Promise<any> };
     obsidianSearch?: { search(query: string, limit: number): Promise<any> };
+    memoryIndex?: MemoryIndex;
   } | undefined = undefined,
 ) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });

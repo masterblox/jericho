@@ -12,10 +12,12 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
 
   React.useEffect(() => installJerichoApi(), [])
   React.useEffect(() => setDirectiveHandler(onDirective), [onDirective])
+
   // live roster only: agent selection follows persisted Core missions
   React.useEffect(() => {
     api.setAgents((liveData?.agents ?? []).map(agent => agent.id))
   }, [liveData])
+
   React.useEffect(() => {
     const open = event => {
       if (event.target?.closest?.('[data-gesture-target="core-command"]')) setCommandOpen(true)
@@ -23,8 +25,41 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
     document.addEventListener('jericho:context', open)
     return () => document.removeEventListener('jericho:context', open)
   }, [])
-  // Guided and natural grounded results render natively in the Scene's
-  // KnowledgeProjection. The command overlay is never opened for them.
+
+  // Guided lifecycle: start/resume/phase/end update native Scene state.
+  // The command overlay is never opened for guided or natural knowledge events.
+  React.useEffect(() => {
+    const onStart = event => {
+      const detail = event.detail
+      if (detail?.test) {
+        setCommandOpen(false)
+        api.startGuidedTest(detail.test)
+      }
+    }
+    const onResume = event => {
+      const detail = event.detail
+      if (detail?.test) {
+        setCommandOpen(false)
+        api.resumeGuidedTest(detail.test)
+      }
+    }
+    const onPhase = event => {
+      const detail = event.detail
+      if (detail?.phase) api.updateGuidedPhase(detail.phase)
+    }
+    const onEnd = () => api.endGuidedTest()
+
+    document.addEventListener('jericho:guided-test-start', onStart)
+    document.addEventListener('jericho:guided-test-resume', onResume)
+    document.addEventListener('jericho:guided-test-phase', onPhase)
+    document.addEventListener('jericho:guided-test-end', onEnd)
+    return () => {
+      document.removeEventListener('jericho:guided-test-start', onStart)
+      document.removeEventListener('jericho:guided-test-resume', onResume)
+      document.removeEventListener('jericho:guided-test-phase', onPhase)
+      document.removeEventListener('jericho:guided-test-end', onEnd)
+    }
+  }, [])
 
   // silent dev fallback — no visible affordance; the real inputs are hand + voice
   React.useEffect(() => {
@@ -34,7 +69,10 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
       const modalOpen = Boolean(state.directive)
       if (event.key === 'Escape') {
         if (modalOpen) api.cancelDispatch()
-        else api.summon('CORE')
+        else if (state.guidedTest) {
+          // Escape during guided test dismisses but preserves state
+          api.endGuidedTest()
+        } else api.summon('CORE')
         return
       }
       if (modalOpen) {
@@ -44,10 +82,11 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
       if (event.key === 'ArrowDown' || event.key === 'j') { event.preventDefault(); api.cycle(1) }
       else if (event.key === 'ArrowUp' || event.key === 'k') { event.preventDefault(); api.cycle(-1) }
       else if (VIEW_KEYS[event.key]) api.summon(VIEW_KEYS[event.key])
+      else if (event.key === '5' || event.key === 'V') api.summon('VOICE')
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [state.directive])
+  }, [state.directive, state.guidedTest])
 
   return (
     <main className="app" data-variant="workshop">
@@ -63,6 +102,7 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
         onVaultSearch={onVaultSearch}
         onOpenCommand={() => setCommandOpen(true)}
         knowledgeActions={commandActions}
+        guidedTest={state.guidedTest}
       />
       <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} actions={{
         ...commandActions,

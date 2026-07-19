@@ -1,296 +1,131 @@
 /**
- * Temporary frontend-local grounded-result wire parsing.
- *
- * The canonical `@jericho/shared` contract is still being repaired by another
- * worker. Keep this module isolated and replaceable — do not expand the local
- * protocol here; swap to shared imports once that SHA lands.
+ * Frontend grounded-result wire parsing.
+ * Validation is owned by shared assertGroundedResultEvent — this module only
+ * adapts the shared contract and applies presentation enrichment (trim).
  */
 
-/** DOM event published by JarvisRuntime for a bounded grounded-result payload. */
+import {
+  assertGroundedResultEvent,
+  type GroundedResultEvent,
+  type GroundedResultClaim,
+  type GroundedResultConflict,
+  type GroundedResultProvenance,
+  type GroundedResultAction,
+  type GroundedResultPhase,
+  type KnowledgeRoute,
+  type AnswerConfidence,
+  type MemoryRootAuthority,
+} from '@jericho/shared';
+
+export type {
+  GroundedResultEvent,
+  GroundedResultClaim,
+  GroundedResultConflict,
+  GroundedResultProvenance,
+  GroundedResultAction,
+  GroundedResultPhase,
+  MemoryRootAuthority,
+};
+
+/** Alias retained for existing frontend call sites. */
+export type GroundedResultPayload = GroundedResultEvent;
+export type GroundedResultRoute = KnowledgeRoute;
+export type GroundedResultConfidence = AnswerConfidence;
+export type GroundedResultProvenanceV2 = GroundedResultProvenance;
+export type GroundedResultActionsV2 = GroundedResultAction;
+
 export const GROUNDED_RESULT_EVENT = 'jericho:grounded-result';
-
-/** DOM event that asks the interface-sound engine to play a cinematic cue once. */
 export const INTERFACE_SOUND_EVENT = 'jericho:interface-sound';
-
-/** DOM event that toggles or sets the local interface-sound mute preference. */
 export const INTERFACE_SOUND_TOGGLE_EVENT = 'jericho:interface-sound-toggle';
-
-/** localStorage key for the interface-sound mute preference. */
 export const INTERFACE_SOUND_MUTE_KEY = 'jericho.interfaceSound.muted.v1';
-
-/** DOM event mirroring whether Jarvis speech playback is currently active. */
 export const SPEECH_PLAYING_EVENT = 'jericho:speech-playing';
 
-export const INTERFACE_SOUND_CUES = [
-  'retrieve',
-  'summon',
-  'satellite',
-  'lock',
-  'dismiss',
-] as const;
-
+export const INTERFACE_SOUND_CUES = ['retrieve', 'summon', 'satellite', 'lock', 'dismiss'] as const;
 export type InterfaceSoundCue = (typeof INTERFACE_SOUND_CUES)[number];
 
-export const GROUNDED_RESULT_PHASES = [
-  'retrieving',
-  'resolved',
-  'ambiguous',
-  'unavailable',
-] as const;
+export const GROUNDED_RESULT_PHASES = ['retrieving', 'resolved', 'ambiguous', 'unavailable'] as const;
+export const GROUNDED_RESULT_ROUTES = ['private_knowledge', 'core_operational', 'general', 'clarification'] as const;
+export const GROUNDED_RESULT_CONFIDENCES = ['strong', 'partial', 'ambiguous', 'none'] as const;
+export const MEMORY_ROOT_AUTHORITIES = ['canonical', 'supplemental'] as const;
 
-export type GroundedResultPhase = (typeof GROUNDED_RESULT_PHASES)[number];
+export interface InterfaceSoundDetail { resultId: string; cue: InterfaceSoundCue; }
+export interface GroundedParseError { field: string; message: string; value: unknown; }
 
-export const GROUNDED_RESULT_ROUTES = [
-  'private_knowledge',
-  'core_operational',
-  'general',
-  'clarification',
-] as const;
-
-export type GroundedResultRoute = (typeof GROUNDED_RESULT_ROUTES)[number];
-
-export const GROUNDED_RESULT_CONFIDENCES = [
-  'strong',
-  'partial',
-  'ambiguous',
-  'none',
-] as const;
-
-export type GroundedResultConfidence = (typeof GROUNDED_RESULT_CONFIDENCES)[number];
-
-/** Allowlisted subject kinds carried by grounded-result envelopes. */
-export const GROUNDED_SUBJECT_KINDS = [
-  'person',
-  'organization',
-  'project',
-  'decision',
-  'note',
-  'query',
-] as const;
-
-export type GroundedSubjectKind = (typeof GROUNDED_SUBJECT_KINDS)[number];
-
-export const GROUNDED_ACTION_IDS = [
-  'open_note',
-  'reorganize_notes',
-  'correct_identity',
-] as const;
-
-export type GroundedActionId = (typeof GROUNDED_ACTION_IDS)[number];
-
-export interface GroundedResultProvenance {
-  relativePath: string;
-  title: string;
-  excerpt: string;
-  score: number;
-}
-
-export interface GroundedResultActions {
-  open_note?: string;
-  reorganize_notes?: boolean;
-  correct_identity?: boolean;
-}
-
-/**
- * Bounded grounded-result envelope accepted from the voice bridge WebSocket
- * and re-published as `jericho:grounded-result`.
- */
-export interface GroundedResultPayload {
-  resultId: string;
-  phase: GroundedResultPhase;
-  route: GroundedResultRoute;
-  subject: string;
-  subjectKind?: GroundedSubjectKind;
-  confidence: GroundedResultConfidence;
-  canonicalIdentity?: string;
-  fullName?: string;
-  relationship?: string;
-  employment?: string[];
-  provenance: GroundedResultProvenance[];
-  actions: GroundedResultActions;
-  retrievalCount: number;
-  guided?: { test: 'isabella' };
-}
-
-export interface InterfaceSoundDetail {
-  resultId: string;
-  cue: InterfaceSoundCue;
-}
-
-const MAX_ID = 128;
-const MAX_SUBJECT = 256;
-const MAX_LABEL = 256;
-const MAX_EXCERPT = 480;
 const MAX_PATH = 1_024;
-const MAX_PROVENANCE = 16;
-const MAX_EMPLOYMENT = 8;
+const MAX_OPAQUE_ID = 1_024;
 
-export function isInterfaceSoundCue(value: unknown): value is InterfaceSoundCue {
-  return typeof value === 'string' && (INTERFACE_SOUND_CUES as readonly string[]).includes(value);
+export function isInterfaceSoundCue(v: unknown): v is InterfaceSoundCue {
+  return typeof v === 'string' && (INTERFACE_SOUND_CUES as readonly string[]).includes(v);
 }
 
-/** True when a vault-relative path is safe to surface in the UI. */
 export function isSafeRelativePath(value: string): boolean {
-  if (!value || value.length > MAX_PATH) return false;
-  if (value.includes('\\') || value.includes('\0')) return false;
-  if (value.startsWith('/') || value.startsWith('~/')) return false;
-  if (/^[a-zA-Z]:/.test(value)) return false;
-  const segments = value.split('/');
-  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return false;
-  return true;
+  if (!value || value.length > MAX_PATH || value.includes('\\') || value.includes('\0')) return false;
+  if (value.startsWith('/') || value.startsWith('~/') || /^[a-zA-Z]:/.test(value)) return false;
+  return !value.split('/').some((s) => !s || s === '.' || s === '..');
 }
 
-/** Parse and bound an untrusted bridge `grounded_result` message body. */
-export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const msg = raw as Record<string, unknown>;
-  const resultId = exactString(msg.resultId, MAX_ID);
-  const phase = allowlisted(msg.phase, GROUNDED_RESULT_PHASES);
-  const route = allowlisted(msg.route, GROUNDED_RESULT_ROUTES);
-  const subject = clipString(msg.subject, MAX_SUBJECT);
-  const confidence = allowlisted(msg.confidence, GROUNDED_RESULT_CONFIDENCES);
-  if (!resultId || !phase || !route || !subject || !confidence) return null;
-  if (typeof msg.retrievalCount !== 'number'
-    || !Number.isInteger(msg.retrievalCount)
-    || msg.retrievalCount < 0
-    || msg.retrievalCount > 10_000) {
-    return null;
-  }
-
-  const provenance = parseProvenanceList(msg.provenance);
-  if (!provenance) return null;
-  const actions = parseActions(msg.actions);
-  if (!actions) return null;
-
-  const payload: GroundedResultPayload = {
-    resultId,
-    phase,
-    route,
-    subject,
-    confidence,
-    provenance,
-    actions,
-    retrievalCount: msg.retrievalCount,
-  };
-
-  const subjectKind = allowlisted(msg.subjectKind, GROUNDED_SUBJECT_KINDS);
-  if (msg.subjectKind !== undefined && !subjectKind) return null;
-  if (subjectKind) payload.subjectKind = subjectKind;
-
-  const canonicalIdentity = clipString(msg.canonicalIdentity, MAX_LABEL);
-  if (msg.canonicalIdentity !== undefined && !canonicalIdentity) return null;
-  if (canonicalIdentity) payload.canonicalIdentity = canonicalIdentity;
-
-  const fullName = clipString(msg.fullName, MAX_LABEL);
-  if (msg.fullName !== undefined && !fullName) return null;
-  if (fullName) payload.fullName = fullName;
-
-  const relationship = clipString(msg.relationship, MAX_LABEL);
-  if (msg.relationship !== undefined && !relationship) return null;
-  if (relationship) payload.relationship = relationship;
-
-  const employment = parseEmployment(msg.employment);
-  if (msg.employment !== undefined && !employment) return null;
-  if (employment) payload.employment = employment;
-
-  if (msg.guided !== undefined) {
-    if (!msg.guided || typeof msg.guided !== 'object') return null;
-    const guided = msg.guided as Record<string, unknown>;
-    if (guided.test !== 'isabella') return null;
-    payload.guided = { test: 'isabella' };
-  }
-
-  return payload;
-}
-
+/** Preserve opaque resultId exactly; reject empty, whitespace-only, and over-limit IDs. */
 export function parseInterfaceSoundDetail(raw: unknown): InterfaceSoundDetail | null {
   if (!raw || typeof raw !== 'object') return null;
-  const detail = raw as Record<string, unknown>;
-  const resultId = exactString(detail.resultId, MAX_ID);
-  if (!resultId || !isInterfaceSoundCue(detail.cue)) return null;
-  return { resultId, cue: detail.cue };
+  const d = raw as Record<string, unknown>;
+  if (typeof d.resultId !== 'string') return null;
+  const resultId = d.resultId;
+  if (resultId.length === 0 || !resultId.trim() || resultId.length > MAX_OPAQUE_ID) return null;
+  return isInterfaceSoundCue(d.cue) ? { resultId, cue: d.cue } : null;
 }
 
-function parseProvenanceList(raw: unknown): GroundedResultProvenance[] | null {
-  if (!Array.isArray(raw)) return null;
-  const items: GroundedResultProvenance[] = [];
-  for (const entry of raw.slice(0, MAX_PROVENANCE)) {
-    if (!entry || typeof entry !== 'object') return null;
-    const value = entry as Record<string, unknown>;
-    const relativePath = exactString(value.relativePath, MAX_PATH);
-    const title = clipString(value.title, MAX_LABEL);
-    const excerpt = clipString(value.excerpt, MAX_EXCERPT);
-    if (!relativePath || !title || !excerpt) return null;
-    if (!isSafeRelativePath(relativePath)) return null;
-    if (typeof value.score !== 'number'
-      || !Number.isFinite(value.score)
-      || value.score < 0
-      || value.score > 1) {
-      return null;
-    }
-    items.push({
-      relativePath,
-      title,
-      excerpt,
-      score: value.score,
-    });
+/** Trim string fields for presentation; never invent or rewrite contract data.
+ *  Opaque IDs (resultId, sourceId, rootId, claim/conflict IDs, support/source
+ *  arrays, action arrays) are preserved exactly after shared validation. */
+function enrichForPresentation(event: GroundedResultEvent): GroundedResultEvent {
+  const trim = (v: string) => v.trim();
+  const out: GroundedResultEvent = {
+    ...event,
+    subject: trim(event.subject),
+    provenance: event.provenance.map((p) => ({
+      ...p,
+      relativePath: trim(p.relativePath),
+      title: trim(p.title),
+      excerpt: typeof p.excerpt === 'string' ? p.excerpt.trim() : p.excerpt,
+    })),
+    actions: { ...event.actions },
+  };
+  if (event.canonicalIdentity !== undefined) out.canonicalIdentity = trim(event.canonicalIdentity);
+  if (event.fullName !== undefined) out.fullName = trim(event.fullName);
+  if (event.relationship !== undefined) out.relationship = trim(event.relationship);
+  if (event.summary !== undefined) out.summary = trim(event.summary);
+  if (event.indexRevision !== undefined) out.indexRevision = trim(event.indexRevision);
+  if (event.employment) out.employment = event.employment.map(trim);
+  if (event.claims) {
+    out.claims = event.claims.map((c) => ({
+      ...c,
+      text: trim(c.text),
+    }));
   }
-  return items;
+  if (event.conflicts) {
+    out.conflicts = event.conflicts.map((c) => ({
+      ...c,
+      claim: trim(c.claim),
+      reason: trim(c.reason),
+    }));
+  }
+  if (event.guided) out.guided = { test: 'isabella' };
+  return out;
 }
 
-function parseActions(raw: unknown): GroundedResultActions | null {
-  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
-  const value = raw as Record<string, unknown>;
-  for (const key of Object.keys(value)) {
-    if (!(GROUNDED_ACTION_IDS as readonly string[]).includes(key)) return null;
-  }
-  const actions: GroundedResultActions = {};
-  if ('open_note' in value) {
-    const path = exactString(value.open_note, MAX_PATH);
-    if (!path || !isSafeRelativePath(path)) return null;
-    actions.open_note = path;
-  }
-  if ('reorganize_notes' in value) {
-    if (typeof value.reorganize_notes !== 'boolean') return null;
-    actions.reorganize_notes = value.reorganize_notes;
-  }
-  if ('correct_identity' in value) {
-    if (typeof value.correct_identity !== 'boolean') return null;
-    actions.correct_identity = value.correct_identity;
-  }
-  return actions;
+export function parseGroundedResultMessage(raw: unknown): GroundedResultPayload | null {
+  const r = parseGroundedResult(raw);
+  return r.success ? r.payload : null;
 }
 
-function parseEmployment(raw: unknown): string[] | null {
-  if (raw === undefined) return null;
-  if (!Array.isArray(raw)) return null;
-  const items: string[] = [];
-  for (const entry of raw.slice(0, MAX_EMPLOYMENT)) {
-    const value = clipString(entry, MAX_LABEL);
-    if (!value) return null;
-    items.push(value);
+export function parseGroundedResult(
+  raw: unknown,
+): { success: true; payload: GroundedResultPayload } | { success: false; errors: GroundedParseError[] } {
+  try {
+    assertGroundedResultEvent(raw);
+    return { success: true, payload: enrichForPresentation(raw) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { success: false, errors: [{ field: 'root', message, value: raw }] };
   }
-  return items;
-}
-
-function allowlisted<T extends string>(value: unknown, allowed: readonly T[]): T | undefined {
-  return typeof value === 'string' && (allowed as readonly string[]).includes(value)
-    ? value as T
-    : undefined;
-}
-
-/** Opaque IDs and paths: reject when overlength instead of truncating. */
-function exactString(value: unknown, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed || trimmed.length > max) return undefined;
-  return trimmed;
-}
-
-/** Human-facing labels may be clipped pending the shared contract. */
-function clipString(value: unknown, max: number): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const trimmed = value.trim();
-  if (!trimmed) return undefined;
-  return trimmed.length > max ? trimmed.slice(0, max) : trimmed;
 }

@@ -85,6 +85,7 @@ export class BridgeClient {
   private turnState: VoiceTurnState = 'standby';
   private previewPlaying = false;
   private speechPlaying = false;
+  private wakePending = false;
   // client-side barge-in VAD
   private noiseFloor = 0.012;
   private vadTimer: ReturnType<typeof setInterval> | null = null;
@@ -243,11 +244,13 @@ export class BridgeClient {
     }
     socket.send(JSON.stringify({ type: 'wake' }));
     this.turnState = 'greeting';
+    this.wakePending = true;
     this.events.onStatus?.('greeting');
   }
 
   private beginListening(): void {
-    if (this.turnState !== 'greeting') return;
+    if (this.turnState !== 'greeting' || !this.wakePending) return;
+    this.wakePending = false;
     this.turnState = 'active';
     this.mic.setMuted(false);
     this.events.onArmed?.(true);
@@ -313,7 +316,10 @@ export class BridgeClient {
       if (this.started && !this.disposed) this.retry = setTimeout(() => this.connect(), 1500);
     };
     socket.onerror = () => {
-      if (this.ws === socket) this.events.onError?.('websocket error');
+      if (this.ws !== socket) return;
+      // Transport failure must never leave the mic armed or wakePending set.
+      this.enterStandby({ interrupt: true });
+      this.events.onError?.('websocket error');
     };
   }
 
@@ -379,6 +385,7 @@ export class BridgeClient {
         if (this.turnState === 'greeting') this.events.onStatus?.('greeting');
         break;
       case 'greeting_complete':
+        if (!this.wakePending || this.turnState !== 'greeting') break;
         this.beginListening();
         break;
       case 'interrupt':
@@ -389,7 +396,8 @@ export class BridgeClient {
         this.enterStandby();
         break;
       case 'grounded_result': {
-        const result = parseGroundedResultMessage(msg);
+        const { type: _, ...payload } = msg;
+        const result = parseGroundedResultMessage(payload);
         if (result) this.events.onGroundedResult?.(result);
         break;
       }
@@ -424,7 +432,11 @@ export class BridgeClient {
         }
         break;
       case 'error':
-        if (this.turnState === 'greeting' || this.turnState === 'waiting') {
+        if (
+          this.turnState === 'greeting'
+          || this.turnState === 'waiting'
+          || this.turnState === 'active'
+        ) {
           this.enterStandby({ interrupt: true });
           this.events.onStatus?.('voice-unavailable');
         }
@@ -440,6 +452,7 @@ export class BridgeClient {
   private enterStandby(options: { interrupt?: boolean } = {}): void {
     const changed = this.turnState !== 'standby';
     this.turnState = 'standby';
+    this.wakePending = false;
     if (this.turnTimer) {
       clearTimeout(this.turnTimer);
       this.turnTimer = null;

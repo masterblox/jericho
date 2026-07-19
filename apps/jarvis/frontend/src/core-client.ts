@@ -313,6 +313,65 @@ export class CoreClient {
     );
   }
 
+  // --- grounded-result v2 actions ---
+
+  async openGroundedResult(resultId: string, sourceId: string): Promise<unknown> {
+    const response = await this.#fetch(
+      `/api/v1/grounded-results/${encodeURIComponent(resultId)}/actions/open`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ sourceId }),
+      },
+    );
+    if (!response.ok) throw new Error(await responseError(response, 'Grounded result open failed'));
+    return response.json();
+  }
+
+  async reorganizeGroundedResult(resultId: string, sourceId: string): Promise<unknown> {
+    const response = await this.#fetch(
+      `/api/v1/grounded-results/${encodeURIComponent(resultId)}/actions/reorganize`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ sourceId }),
+      },
+    );
+    if (!response.ok) throw new Error(await responseError(response, 'Grounded result reorganize failed'));
+    return response.json();
+  }
+
+  async correctIdentityPreview(resultId: string, conflictId: string): Promise<CorrectionPreviewResponse> {
+    const response = await this.#fetch(
+      `/api/v1/grounded-results/${encodeURIComponent(resultId)}/actions/correct/preview`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ conflictId }),
+      },
+    );
+    if (!response.ok) throw new Error(await responseError(response, 'Identity correction preview failed'));
+    return response.json() as Promise<CorrectionPreviewResponse>;
+  }
+
+  // Grounded correction confirmation: sends only opaque {conflictId, previewId}
+  async confirmGroundedResult(resultId: string, conflictId: string, previewId: string): Promise<unknown> {
+    const response = await this.#fetch(
+      `/api/v1/grounded-results/${encodeURIComponent(resultId)}/actions/correct/confirm`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'content-type': 'application/json', accept: 'application/json' },
+        body: JSON.stringify({ conflictId, previewId }),
+      },
+    );
+    if (!response.ok) throw new Error(await responseError(response, 'Grounded correction confirm failed'));
+    return response.json();
+  }
+
   async #postWithSnapshot(path: string, body: unknown, fallback: string): Promise<unknown> {
     const response = await this.#fetch(path, {
       method: 'POST',
