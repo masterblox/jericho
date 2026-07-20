@@ -14,6 +14,7 @@ import { mapHandToScreen } from './coords';
 import { DiagnosticRecorder } from './diagnostics';
 import { captureDragLayout, finishDragLayout, type DragLayoutOrigin } from './drag-layout';
 import { GestureCoordinator, type CoordinatorAction } from './gesture-coordinator';
+import { GrabSelectionState } from './grab-selection';
 import { nearestCardHit } from './hit-testing';
 import type { GestureFrame, Handedness, Landmark, TrackedHandFrame } from './gestures';
 import type { PointerAction, PointerTarget } from './pointer-controller';
@@ -55,9 +56,7 @@ export class HUD {
   private readonly coordinator = new GestureCoordinator();
   private readonly recorder = new DiagnosticRecorder();
   private readonly cards: HTMLElement[] = [];
-  private selected = -1;
-  private selectionBeforeGrab: number | null = null;
-  private grabPreviewId: string | null = null;
+  private readonly grabSelection = new GrabSelectionState();
   private readonly dragOrigins = new Map<string, DragLayoutOrigin>();
   private diagnostic = false;
   private cameraId = 'default';
@@ -300,9 +299,7 @@ export class HUD {
           action.targetId,
           captureDragLayout(element.style.left, element.style.top, rect.left, rect.top),
         );
-        this.selectionBeforeGrab = this.selected;
-        this.selected = -1;
-        this.grabPreviewId = action.targetId;
+        this.grabSelection.beginGrab(this.cards.indexOf(element));
         this.renderSelection();
         element.classList.add('grab-preview');
         element.classList.add('dragging');
@@ -323,12 +320,12 @@ export class HUD {
           element.style.left = finished.left;
           element.style.top = finished.top;
           element.classList.remove('dragging', 'grab-preview');
-          this.selected = this.selectionBeforeGrab ?? -1;
+          this.grabSelection.endGrab(this.cards.indexOf(element), true);
           this.renderSelection();
         } else {
           const visualBefore = element.getBoundingClientRect();
           element.classList.remove('dragging', 'grab-preview');
-          this.selected = this.cards.indexOf(element);
+          this.grabSelection.endGrab(this.cards.indexOf(element), false);
           this.renderSelection();
           const visualAfter = element.getBoundingClientRect();
           const left = Number.parseFloat(element.style.left);
@@ -338,8 +335,6 @@ export class HUD {
         }
       }
       this.dragOrigins.delete(action.targetId);
-      this.selectionBeforeGrab = null;
-      this.grabPreviewId = null;
       this.rightCursor.classList.remove('attached');
     }
   }
@@ -433,7 +428,7 @@ export class HUD {
 
   private activateRightTarget(id: string) {
     if (id.startsWith('card:')) {
-      this.selected = this.cards.findIndex((card) => card.dataset.cardId === id);
+      this.grabSelection.select(this.cards.findIndex((card) => card.dataset.cardId === id));
       this.renderSelection();
     } else if (id === 'calibrate-left') this.startCalibration('Left');
     else if (id === 'calibrate-right') this.startCalibration('Right');
@@ -444,7 +439,10 @@ export class HUD {
   }
 
   private renderSelection() {
-    this.cards.forEach((card, index) => card.classList.toggle('selected', index === this.selected));
+    this.cards.forEach((card, index) => {
+      card.classList.toggle('selected', index === this.grabSelection.selected);
+      card.classList.toggle('grab-preview', index === this.grabSelection.previewed);
+    });
   }
 
   private startCalibration(handedness: Handedness) {
