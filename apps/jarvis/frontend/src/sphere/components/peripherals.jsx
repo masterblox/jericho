@@ -117,6 +117,12 @@ export function TasksProjection({ tasks, fleet }) {
       label: issue.priority ? issue.priority.toUpperCase() : '', fault: false,
     })
   }
+  const approvalCards = [...columns.values()].flat().filter(card => card.approval)
+  const [selectedApprovalKey, setSelectedApprovalKey] = React.useState(null)
+  const activeApprovalKey = approvalCards.length === 1
+    ? approvalCards[0].key
+    : approvalCards.some(card => card.key === selectedApprovalKey) ? selectedApprovalKey : null
+
   return <div className="projection-kanban" aria-label="Task projection">
     {KANBAN_COLUMNS.map(name => {
       const cards = columns.get(name)
@@ -128,10 +134,14 @@ export function TasksProjection({ tasks, fleet }) {
               key={card.key}
               className={`kanban-card ${card.fault ? 'fault' : ''}`}
               data-gesture-target={card.key}
-              data-jericho-active-approval={card.approval ? 'true' : undefined}
+              data-jericho-active-approval={card.approval && card.key === activeApprovalKey ? 'true' : undefined}
               data-jericho-approval-mission-id={card.approval?.missionId}
               data-jericho-approval-plan-hash={card.approval?.planHash}
               data-jericho-approval-version={card.approval?.version}
+              tabIndex={card.approval ? 0 : undefined}
+              aria-selected={card.approval ? card.key === activeApprovalKey : undefined}
+              onClick={card.approval ? () => setSelectedApprovalKey(card.key) : undefined}
+              onFocus={card.approval ? () => setSelectedApprovalKey(card.key) : undefined}
             >
               <span className="micro">{card.source}{card.label ? ` · ${card.label}` : ''}</span>
               <p>{card.title}</p>

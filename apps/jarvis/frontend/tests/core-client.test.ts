@@ -32,6 +32,40 @@ describe('CoreClient', () => {
     client.stop();
   });
 
+  it('rejects malformed nested snapshots instead of admitting a shallow shell', async () => {
+    const malformed = {
+      ...snapshot(),
+      nucleus: { nodes: [{ id: 'node-without-binding' }], edges: [], activityPulses: [] },
+    };
+    const fetchPort = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(malformed), { status: 200 }),
+    );
+    const store = new CommandCenterStore();
+    const client = new CoreClient(store, {
+      fetch: fetchPort as typeof fetch,
+      createEventSource: () => new FakeEventSource(),
+    });
+
+    await client.start();
+
+    expect(store.getSnapshot()).toMatchObject({
+      status: 'unavailable', error: 'Jericho Core returned an invalid snapshot',
+    });
+    client.stop();
+  });
+
+  it('rejects malformed snapshots returned by authority-bearing mutations', async () => {
+    const malformed = { ...snapshot(), today: { date: 'not-a-date' } };
+    const fetchPort = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ snapshot: malformed }), { status: 200 }),
+    );
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+
+    await expect(client.cancelMission({
+      missionId: 'mission-1', planHash: 'a'.repeat(64), version: 2, reason: 'Stop',
+    })).rejects.toThrow(/invalid snapshot/i);
+  });
+
   it('uses the same-origin session cookie, follows ordered SSE revisions, refetches gaps, and disconnects cleanly', async () => {
     const responses = [
       snapshot({ lastChangeSequence: 1 }),

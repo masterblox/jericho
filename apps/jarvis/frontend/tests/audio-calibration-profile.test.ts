@@ -3,10 +3,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   AudioCalibrationProfileStore,
   computeDeviceHash,
-  deriveAudioCalibrationProfile,
+  deriveAudioCalibrationProfile as deriveProfile,
   validateAudioCalibrationProfile,
 } from '../src/audio-calibration-profile';
 import type { AudioWindowMetrics, ClapMeasurement } from '../src/audio';
+
+const RESULT_ID = 'result-synthetic-profile-1';
+const CREATED_AT = '2026-07-18T00:00:00.000Z';
+
+function deriveAudioCalibrationProfile(
+  room: AudioWindowMetrics,
+  speech: AudioWindowMetrics[],
+  claps: ClapMeasurement[],
+  deviceHash: string,
+  sampleRate: number,
+) {
+  return deriveProfile(room, speech, claps, deviceHash, sampleRate, RESULT_ID, CREATED_AT);
+}
 
 // Synthetic fixture data
 function roomMetrics(overrides: Partial<AudioWindowMetrics> = {}): AudioWindowMetrics {
@@ -88,14 +101,14 @@ describe('deriveAudioCalibrationProfile', () => {
     expect(profile.clapCrest).toBeLessThanOrEqual(10);
     expect(Number.isFinite(profile.clapSustainedEnergyLimit)).toBe(true);
     expect(profile.inputSampleRate).toBe(48_000);
-    expect(profile.phaseSampleCounts).toEqual({ room: 48, speech: 36, clap: 3 });
-    expect(profile.liveResultId).toBe('');
+    expect(profile.phaseSampleCounts).toEqual({ room: 240_000, speech: 432_000, clap: 3 });
+    expect(profile.liveResultId).toBe(RESULT_ID);
   });
 
   it('uses median to resist one outlier', () => {
     const room = roomMetrics();
     const speech = [
-      speechMetrics({ rmsMean: 0.50 }), // outlier
+      speechMetrics({ rmsMean: 0.50, rmsMax: 0.55, rmsP95: 0.52, peakMax: 0.70 }), // outlier
       speechMetrics({ rmsMean: 0.14 }),
       speechMetrics({ rmsMean: 0.12 }),
     ];
@@ -120,7 +133,7 @@ describe('deriveAudioCalibrationProfile', () => {
 
   it('clamps ambient noise floor to safe range', () => {
     // Very quiet room
-    const quiet = roomMetrics({ rmsP95: 0.0005 });
+    const quiet = roomMetrics({ rmsMin: 0.0001, rmsMean: 0.0003, rmsP95: 0.0005 });
     const speech = [speechMetrics(), speechMetrics(), speechMetrics()];
     const claps = [clapMeasurement(), clapMeasurement(), clapMeasurement()];
     const profile = deriveAudioCalibrationProfile(
@@ -131,7 +144,7 @@ describe('deriveAudioCalibrationProfile', () => {
     expect(profile.ambientNoiseFloor).toBeGreaterThanOrEqual(0.001);
 
     // Very noisy room
-    const noisy = roomMetrics({ rmsP95: 0.40 });
+    const noisy = roomMetrics({ rmsMax: 0.40, rmsMean: 0.20, rmsP95: 0.40, peakMax: 0.60 });
     const profile2 = deriveAudioCalibrationProfile(
       noisy, speech, claps,
       'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
@@ -156,6 +169,24 @@ describe('deriveAudioCalibrationProfile', () => {
       'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
       48_000,
     )).toThrow();
+
+    expect(() => deriveProfile(
+      roomMetrics(),
+      [speechMetrics(), speechMetrics(), speechMetrics()],
+      [clapMeasurement(), clapMeasurement(), clapMeasurement()],
+      'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      48_000,
+      '',
+    )).toThrow('correlated grounded result ID');
+
+    expect(() => deriveProfile(
+      roomMetrics(),
+      [speechMetrics(), speechMetrics(), speechMetrics(), speechMetrics()],
+      [clapMeasurement(), clapMeasurement(), clapMeasurement()],
+      'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      48_000,
+      RESULT_ID,
+    )).toThrow('exactly three');
   });
 });
 
@@ -366,6 +397,24 @@ describe('validateAudioCalibrationProfile', () => {
 
     (profile as any).ambientNoiseFloor = Number.POSITIVE_INFINITY;
     expect(validateAudioCalibrationProfile(profile)).toBe(false);
+  });
+
+  it('rejects unknown keys, out-of-range metrics, fractional counts, and empty result IDs', () => {
+    const valid = deriveAudioCalibrationProfile(
+      roomMetrics(),
+      [speechMetrics(), speechMetrics(), speechMetrics()],
+      [clapMeasurement(), clapMeasurement(), clapMeasurement()],
+      'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+      48_000,
+    );
+
+    expect(validateAudioCalibrationProfile({ ...valid, rawDeviceId: 'must-not-survive' })).toBe(false);
+    expect(validateAudioCalibrationProfile({ ...valid, clapPeak: 1.5 })).toBe(false);
+    expect(validateAudioCalibrationProfile({
+      ...valid,
+      phaseSampleCounts: { ...valid.phaseSampleCounts, room: 1.5 },
+    })).toBe(false);
+    expect(validateAudioCalibrationProfile({ ...valid, liveResultId: '   ' })).toBe(false);
   });
 });
 

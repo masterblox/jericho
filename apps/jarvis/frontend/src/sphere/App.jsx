@@ -26,6 +26,12 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
     return () => document.removeEventListener('jericho:context', open)
   }, [])
 
+  React.useEffect(() => {
+    const close = () => setCommandOpen(false)
+    document.addEventListener('jericho:close-command-overlay', close)
+    return () => document.removeEventListener('jericho:close-command-overlay', close)
+  }, [])
+
   // Guided lifecycle: start/resume/phase/end update native Scene state.
   // The command overlay is never opened for guided or natural knowledge events.
   React.useEffect(() => {

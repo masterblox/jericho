@@ -35,6 +35,8 @@ describe('parseCalibrationCommandDetail', () => {
     expect(parseCalibrationCommandDetail('string')).toBeNull();
     expect(parseCalibrationCommandDetail({})).toBeNull();
     expect(parseCalibrationCommandDetail({ action: 'unknown' })).toBeNull();
+    expect(parseCalibrationCommandDetail({ action: 'start', extra: true })).toBeNull();
+    expect(parseCalibrationCommandDetail({ action: 'start', command: 'exit' })).toBeNull();
   });
 });
 
@@ -50,5 +52,26 @@ describe('sanitizeCalibrationSnapshot', () => {
     const sanitized = sanitizeCalibrationSnapshot(snapshot);
     expect(sanitized).toEqual(snapshot);
     expect(sanitized).not.toBe(snapshot);
+  });
+
+  it('reconstructs the exact public snapshot without private or unknown fields', () => {
+    const unsafe = {
+      sessionId: 'test-2',
+      phase: 'failed',
+      failedPhase: 'room',
+      failureReason: 'mic_denied',
+      completedPhases: [],
+      speechChecks: [],
+      clapCount: 0,
+      rawDeviceId: 'secret-device',
+      transcript: 'private words',
+      credentials: 'token',
+    } as unknown as CalibrationSnapshot;
+    const sanitized = sanitizeCalibrationSnapshot(unsafe) as unknown as Record<string, unknown>;
+    expect(Object.keys(sanitized).sort()).toEqual([
+      'clapCount', 'completedPhases', 'failedPhase', 'failureReason',
+      'phase', 'sessionId', 'speechChecks',
+    ].sort());
+    expect(JSON.stringify(sanitized)).not.toMatch(/secret-device|private words|token/);
   });
 });

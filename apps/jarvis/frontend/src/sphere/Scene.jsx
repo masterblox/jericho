@@ -56,6 +56,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       data-core-state={coreState}
       data-mode={mode}
       data-agent={selectedAgent}
+      data-active-view={activeView}
       data-jericho-nucleus-space="true"
       data-guided={guidedTest?.active ? guidedTest.test : undefined}
       data-guided-phase={guidedTest?.phase ?? undefined}

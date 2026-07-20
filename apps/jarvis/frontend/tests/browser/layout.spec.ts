@@ -420,3 +420,123 @@ test.describe('action terminal states', () => {
     await expect(page.locator('.k-status')).toContainText('FORBIDDEN')
   })
 })
+
+const PROFILE_SUMMARY = {
+  schemaVersion: 1,
+  createdAt: '2026-07-19T00:00:00.000Z',
+  ambientNoiseFloor: 0.012,
+  speechActivationFloor: 0.041,
+  clapPeak: 0.82,
+  clapRms: 0.31,
+  clapCrest: 2.64,
+  clapSustainedEnergyLimit: 0.16,
+  inputSampleRate: 48_000,
+  liveResultId: 'grounded-isabella-2026-07-19',
+}
+
+const CALIBRATION_REVIEW = {
+  sessionId: 'calibration-browser-session',
+  phase: 'review',
+  microphoneLabel: 'MacBook Pro Microphone',
+  previousProfile: { ...PROFILE_SUMMARY, clapPeak: 0.74 },
+  candidateProfile: PROFILE_SUMMARY,
+  completedPhases: ['room', 'speech', 'clap', 'live_canary'],
+  speechChecks: [
+    { phraseId: 'voice_range_1', passed: true },
+    { phraseId: 'voice_range_2', passed: true },
+    { phraseId: 'voice_range_3', passed: true },
+  ],
+  clapCount: 3,
+  liveResultId: PROFILE_SUMMARY.liveResultId,
+  actionState: 'idle',
+}
+
+async function dispatchCalibration(page: Page, detail: Record<string, unknown>) {
+  await page.evaluate((snapshot) => {
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-state', { detail: snapshot }))
+  }, detail)
+}
+
+async function prepareCalibration(page: Page, reducedMotion = false) {
+  await page.goto('/')
+  await passConsentGate(page)
+  await page.waitForSelector('.stage', { timeout: 10_000 })
+  await page.waitForSelector('.core-sphere', { timeout: 10_000 })
+  if (reducedMotion) await page.emulateMedia({ reducedMotion: 'reduce' })
+  await dispatchCalibration(page, CALIBRATION_REVIEW)
+  await page.waitForSelector('.native-calibration[data-placement]', { timeout: 5_000 })
+  await page.waitForTimeout(reducedMotion ? 100 : 500)
+}
+
+async function assertCalibrationGeometry(page: Page) {
+  const viewport = page.viewportSize()!
+  const sphere = page.locator('.core-sphere')
+  const core = page.locator('.core-wrap')
+  const card = page.locator('.native-calibration')
+  await expect(sphere).toBeVisible()
+  await expect(card).toBeVisible()
+  await expect(card).toContainText('Calibration is ready. Confirm to apply.')
+  await expect(card).toContainText('VOICE CANNOT APPLY')
+  await expect(card).toContainText('grounded-isa')
+  await expect(card.locator('button')).toHaveCount(2)
+  await expect(card.getByRole('progressbar')).toBeVisible()
+  await expect(card.getByRole('button', { name: 'CONFIRM' })).toBeVisible()
+  await expect(card.getByRole('button', { name: 'DISCARD' })).toBeVisible()
+  await expect(page.locator('[data-jericho-active-calibration-decision="true"]')).toHaveCount(1)
+  await expect(page.locator('.startup-health')).toBeHidden()
+  await expect(page.locator('.fleet-lifecycle')).toBeHidden()
+
+  const cardBox = await boxOf(card)
+  const coreBox = await boxOf(core)
+  const expandedCore: Box = {
+    x: coreBox.x - CORE_EXPAND,
+    y: coreBox.y - CORE_EXPAND,
+    width: coreBox.width + CORE_EXPAND * 2,
+    height: coreBox.height + CORE_EXPAND * 2,
+  }
+  expect(cardBox.x, 'calibration left').toBeGreaterThanOrEqual(23)
+  expect(cardBox.y, 'calibration top').toBeGreaterThanOrEqual(23)
+  expect(cardBox.x + cardBox.width, 'calibration right').toBeLessThanOrEqual(viewport.width - 23)
+  expect(cardBox.y + cardBox.height, 'calibration bottom').toBeLessThanOrEqual(viewport.height - 23)
+  expect(intersects(cardBox, expandedCore), 'calibration vs expanded Sphere').toBe(false)
+  await assertFullCardInViewport(page, card.getByRole('progressbar'), 'calibration-hold-progress')
+  await assertFullCardInViewport(page, card.getByRole('button', { name: 'CONFIRM' }), 'calibration-confirm')
+  await assertFullCardInViewport(page, card.getByRole('button', { name: 'DISCARD' }), 'calibration-discard')
+}
+
+test.describe('native calibration geometry', () => {
+  test('review remains native, measurable, and hand-confirmable', async ({ page }) => {
+    await prepareCalibration(page)
+    await assertCalibrationGeometry(page)
+    await page.evaluate(() => {
+      document.dispatchEvent(new CustomEvent('jericho:calibration-hold-progress', {
+        detail: { outcome: 'apply', ratio: 0.75 },
+      }))
+    })
+    await expect(page.getByRole('progressbar', { name: /apply hold progress/i })).toHaveAttribute('aria-valuenow', '75')
+    const viewport = page.viewportSize()!
+    await page.screenshot({
+      path: `tests/browser/screenshots/native-calibration-${viewport.width}x${viewport.height}.png`,
+      fullPage: false,
+    })
+  })
+
+  test('owns the Sphere during live-result projection and restores knowledge after exit', async ({ page }) => {
+    await prepareCalibration(page, true)
+    await dispatchV2(page, V2_FIXTURE)
+    await page.waitForTimeout(400)
+    await assertCalibrationGeometry(page)
+    await expect(page.locator('.knowledge-projection')).toBeHidden()
+
+    const viewport = page.viewportSize()!
+    await page.screenshot({
+      path: `tests/browser/screenshots/native-calibration-reduced-motion-${viewport.width}x${viewport.height}.png`,
+      fullPage: false,
+    })
+
+    await dispatchCalibration(page, { ...CALIBRATION_REVIEW, phase: 'saved' })
+    await expect(page.locator('.native-calibration')).toHaveCount(0)
+    await expect(page.locator('.knowledge-projection')).toBeVisible()
+    await expect(page.locator('.core-sphere')).toBeVisible()
+  })
+})

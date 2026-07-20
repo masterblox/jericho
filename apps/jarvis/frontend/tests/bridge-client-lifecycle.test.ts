@@ -20,10 +20,13 @@ describe('BridgeClient lifecycle', () => {
     const mic = {
       live: false,
       start: vi.fn().mockResolvedValue(undefined), stop: vi.fn(), setMuted: vi.fn(), getRms: vi.fn().mockReturnValue(0),
+      openLocalSession: vi.fn().mockResolvedValue(null),
+      installTemporaryProfile: vi.fn(),
+      restoreProfile: vi.fn(),
     };
     const speaker = {
       resume: vi.fn().mockResolvedValue(undefined), enqueue: vi.fn(), interrupt: vi.fn(),
-      isPlaying: vi.fn().mockReturnValue(false), dispose: vi.fn(),
+      isPlaying: vi.fn().mockReturnValue(false), whenDrained: vi.fn().mockResolvedValue(undefined), dispose: vi.fn(),
     };
     const sockets: FakeSocket[] = [];
     const dependencies: BridgeClientDependencies = {
@@ -411,6 +414,27 @@ describe('BridgeClient lifecycle', () => {
 });
 
 describe('calibration phrase bridge', () => {
+  it('opens calibration over the existing microphone and forces remote standby', async () => {
+    const harness = createBridgeHarness();
+    const localSession = {
+      identity: { label: 'Studio microphone', deviceHash: 'a'.repeat(64), sampleRate: 48_000 },
+      measure: vi.fn(),
+      observeClaps: vi.fn(),
+      observeLevel: vi.fn(),
+      close: vi.fn(),
+    };
+    harness.mic.openLocalSession.mockResolvedValue(localSession);
+    await harness.client.start();
+    await harness.socket.open();
+
+    await expect(harness.client.openLocalSession()).resolves.toBe(localSession);
+
+    expect(harness.mic.start).toHaveBeenCalledTimes(1);
+    expect(harness.mic.openLocalSession).toHaveBeenCalledTimes(1);
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+    expect(sentMessages(harness.socket)).toContainEqual({ type: 'standby', reason: 'calibration' });
+  });
+
   it('sends only the phrase ID, never text, for speakCalibrationPhrase', async () => {
     const harness = createBridgeHarness();
     await harness.client.start();
@@ -429,25 +453,47 @@ describe('calibration phrase bridge', () => {
     );
   });
 
-  it('rejects arbitrary phrase IDs, only three fixed IDs are valid', () => {
+  it('rejects arbitrary phrase IDs, only three fixed IDs are valid', async () => {
     const harness = createBridgeHarness();
 
-    expect(() => harness.client.speakCalibrationPhrase('arbitrary_text' as any)).toThrow();
-    expect(() => harness.client.speakCalibrationPhrase('voice_range_1')).not.toThrow();
-    expect(() => harness.client.speakCalibrationPhrase('voice_range_2')).not.toThrow();
-    expect(() => harness.client.speakCalibrationPhrase('voice_range_3')).not.toThrow();
+    await expect(harness.client.speakCalibrationPhrase('arbitrary_text' as any))
+      .rejects.toThrow('Invalid calibration phrase');
   });
 
-  it('plays calibration audio while standby without arming the mic', async () => {
+  it('plays calibration audio while standby and resolves only after server completion and speaker drain', async () => {
     const harness = createBridgeHarness();
     await harness.client.start();
     await harness.socket.open();
 
-    await harness.socket.open();
-    harness.client.speakCalibrationPhrase('voice_range_1');
+    const phrase = harness.client.speakCalibrationPhrase('voice_range_1');
+    harness.socket.message({ type: 'calibration_phrase', status: 'started', phraseId: 'voice_range_1' });
+    harness.socket.message({
+      type: 'calibration_phrase_audio',
+      phraseId: 'voice_range_1',
+      mimeType: 'audio/pcm;rate=24000',
+      data: 'calibration-audio',
+    });
+    harness.socket.message({ type: 'calibration_phrase', status: 'complete', phraseId: 'voice_range_1' });
     await flushPromises();
 
-    // Mic must remain muted during calibration phrase
+    await expect(phrase).resolves.toBeUndefined();
+    expect(harness.speaker.enqueue).toHaveBeenCalledWith('calibration-audio');
+    expect(harness.speaker.whenDrained).toHaveBeenCalledTimes(1);
+    expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
+  });
+
+  it('times out one phrase without retrying or arming the microphone', async () => {
+    const harness = createBridgeHarness();
+    await harness.client.start();
+    await harness.socket.open();
+
+    const phrase = harness.client.speakCalibrationPhrase('voice_range_2');
+    const rejected = expect(phrase).rejects.toThrow('timed out');
+    await vi.advanceTimersByTimeAsync(8_000);
+
+    await rejected;
+    expect(sentMessages(harness.socket).filter((message) => message.type === 'calibration_phrase'))
+      .toEqual([{ type: 'calibration_phrase', phraseId: 'voice_range_2' }]);
     expect(harness.mic.setMuted).toHaveBeenLastCalledWith(true);
   });
 });
@@ -488,6 +534,13 @@ describe('calibration grounded-turn progress and narration', () => {
     harness.socket.message({ type: 'grounded_turn_progress' });
     harness.socket.message({ type: 'grounded_turn_progress', turnId: 't1' }); // missing milestone
     harness.socket.message({ type: 'grounded_turn_progress', turnId: 't1', milestone: 'unknown_stage' });
+    harness.socket.message({
+      type: 'grounded_turn_progress',
+      turnId: 't1',
+      milestone: 'capture_committed',
+      captureId: 'capture-1',
+      transcript: 'private',
+    });
 
     expect(progressEvents).toHaveLength(0);
   });
@@ -500,6 +553,9 @@ describe('calibration grounded-turn progress and narration', () => {
 
     await harness.client.start();
     await harness.socket.open();
+    harness.client.beginLiveCanary();
+    harness.emitClap();
+    harness.socket.message({ type: 'greeting_complete' });
 
     // Simulate terminal_result_sent progress (sets up narration tracking)
     harness.socket.message({
@@ -509,23 +565,15 @@ describe('calibration grounded-turn progress and narration', () => {
       resultId: 'result-narration-1',
     });
 
-    // Initially not playing - no narration events
-    harness.speaker.isPlaying.mockReturnValue(false);
-    await vi.advanceTimersByTimeAsync(100);
-    expect(narrationEvents).toHaveLength(0);
-
-    // Speaker starts playing - narration started should fire
-    harness.speaker.isPlaying.mockReturnValue(true);
-    await vi.advanceTimersByTimeAsync(100);
+    harness.socket.message({ type: 'audio', data: 'grounded-narration' });
     expect(narrationEvents).toHaveLength(1);
     expect(narrationEvents[0]).toMatchObject({
       resultId: 'result-narration-1',
       phase: 'started',
     });
 
-    // Speaker stops - narration complete should fire
-    harness.speaker.isPlaying.mockReturnValue(false);
-    await vi.advanceTimersByTimeAsync(100);
+    harness.socket.message({ type: 'turn_complete' });
+    await flushPromises();
     expect(narrationEvents).toHaveLength(2);
     expect(narrationEvents[1]).toMatchObject({
       resultId: 'result-narration-1',
@@ -553,20 +601,22 @@ describe('calibration grounded-turn progress and narration', () => {
 });
 
 describe('calibration live canary bridge', () => {
-  it('beginLiveCanary suppresses ordinary clap wake temporarily', async () => {
+  it('beginLiveCanary restores ordinary clap wake and reports the real local clap', async () => {
     const onWake = vi.fn();
     const harness = createBridgeHarness({}, { onWake });
     await harness.client.start();
     await harness.socket.open();
 
     harness.client.beginLiveCanary();
+    const wakeEvents: string[] = [];
+    harness.client.addCalibrationWakeListener((source) => wakeEvents.push(source));
 
     harness.emitClap();
     await flushPromises();
 
-    // During live canary, ordinary clap should not trigger remote wake
-    expect(sentMessages(harness.socket)).not.toContainEqual({ type: 'wake' });
-    expect(onWake).not.toHaveBeenCalled();
+    expect(sentMessages(harness.socket)).toContainEqual({ type: 'wake' });
+    expect(onWake).toHaveBeenCalledWith('clap');
+    expect(wakeEvents).toEqual(['clap']);
   });
 
   it('endLiveCanary restores ordinary clap wake', async () => {
@@ -654,12 +704,16 @@ function createBridgeHarness(options: BridgeHarnessOptions = {}, events: BridgeE
     stop: vi.fn(() => { mic.live = false; }),
     setMuted: vi.fn(),
     getRms: vi.fn().mockReturnValue(0),
+    openLocalSession: vi.fn().mockResolvedValue(null),
+    installTemporaryProfile: vi.fn(),
+    restoreProfile: vi.fn(),
   };
   const speaker = {
     resume: vi.fn().mockResolvedValue(undefined),
     enqueue: vi.fn(),
     interrupt: vi.fn(),
     isPlaying: vi.fn().mockReturnValue(false),
+    whenDrained: vi.fn().mockResolvedValue(undefined),
     dispose: vi.fn(),
   };
   const sockets: FakeSocket[] = [];

@@ -1,4 +1,18 @@
 import { BridgeClient, type BridgeEvents } from './bridge-client';
+import { AudioCalibrationProfileStore } from './audio-calibration-profile';
+import {
+  CalibrationController,
+  type CalibrationAudioPort,
+  type CalibrationControllerOptions,
+  type CalibrationVoicePort,
+} from './calibration-controller';
+import { CalibrationProposalClient } from './calibration-proposal-client';
+import {
+  JERICHO_AUDIO_CALIBRATION_COMMAND_EVENT,
+  parseCalibrationCommandDetail,
+  type CalibrationCommand,
+  type CalibrationPhase,
+} from './calibration-events';
 import {
   CALIBRATION_ORDER,
   TARGET_POINTS,
@@ -20,6 +34,8 @@ import { mapHandToScreen } from './coords';
 import { DiagnosticRecorder, type DiagnosticActionInput, type SanitizedDiagnosticSnapshot } from './diagnostics';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CALIBRATION_DECISION_EVENT,
+  JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT,
   JERICHO_CANCEL_PENDING_EVENT,
   JERICHO_NUCLEUS_CAMERA_EVENT,
   JERICHO_NUCLEUS_DEPTH_EVENT,
@@ -52,6 +68,8 @@ import type { Handedness, Point } from './tracking';
 
 export type { GestureSurfacePort } from './gesture-surface-renderer';
 
+export const CAMERA_PERMISSION_TIMEOUT_MS = 10_000;
+
 export interface RuntimeVideoPort {
   srcObject: MediaProvider | null;
   muted: boolean;
@@ -83,11 +101,25 @@ export interface BridgeRuntimePort {
 
 export interface RuntimeMediaDevices {
   getUserMedia(constraints: MediaStreamConstraints): Promise<MediaStream>;
+  addEventListener?(type: 'devicechange', listener: EventListener): void;
+  removeEventListener?(type: 'devicechange', listener: EventListener): void;
 }
 
 export interface RuntimeEventTarget {
   addEventListener(type: string, listener: EventListener): void;
   removeEventListener(type: string, listener: EventListener): void;
+  dispatchEvent(event: Event): boolean;
+}
+
+export interface AudioCalibrationControllerPort {
+  snapshot(): { phase: CalibrationPhase };
+  handleCommand(command: CalibrationCommand): void;
+  applyProfile(): Promise<void>;
+  discardProfile(): void;
+  exit(): void;
+  reportDecisionScopeConflict(): void;
+  dispose(): void;
+  loadApprovedProfile?(): Promise<void>;
 }
 
 export interface RuntimeStorage {
@@ -110,6 +142,10 @@ export interface JarvisRuntimeOptions {
   storage?: RuntimeStorage;
   diagnosticsExporter?: (contents: string) => void;
   onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
+  createAudioCalibrationController?: (
+    bridge: BridgeRuntimePort,
+    options: Omit<CalibrationControllerOptions, 'audio' | 'voice'>,
+  ) => AudioCalibrationControllerPort | null;
 }
 
 export interface GestureLabSnapshot extends SanitizedDiagnosticSnapshot {
@@ -143,6 +179,7 @@ export class JarvisRuntime {
   private readonly storage: RuntimeStorage;
   private readonly diagnosticsExporter: (contents: string) => void;
   private readonly onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
+  private readonly createAudioCalibrationController?: JarvisRuntimeOptions['createAudioCalibrationController'];
   private readonly coordinator = new GestureCoordinator();
   private readonly context = new ContextHoldController();
   private readonly heldGestures = new HeldGestureInterpreter();
@@ -155,6 +192,7 @@ export class JarvisRuntime {
   private video: RuntimeVideoPort | null = null;
   private engine: GestureEngineRuntimePort | null = null;
   private bridge: BridgeRuntimePort | null = null;
+  private audioCalibration: AudioCalibrationControllerPort | null = null;
   private stopObserving: (() => void) | null = null;
   private engaged = false;
   private paused = false;
@@ -186,6 +224,9 @@ export class JarvisRuntime {
   private calibrationStability = 0;
   private retryTargets: CalibrationTarget[] = [];
   private retryIndex = 0;
+  private unbindAudioCalibration: (() => void) | null = null;
+  private calibrationProgress: { outcome: 'apply' | 'discard'; ratio: number } | null = null;
+  private decisionScopeConflictReported = false;
 
   constructor(options: JarvisRuntimeOptions) {
     this.root = options.root;
@@ -203,6 +244,7 @@ export class JarvisRuntime {
     this.diagnosticsExporter = options.diagnosticsExporter ?? ((contents) =>
       downloadDiagnostics(options.root.ownerDocument, contents));
     this.onGestureLabSnapshot = options.onGestureLabSnapshot;
+    this.createAudioCalibrationController = options.createAudioCalibrationController;
     this.swapped = safeGet(this.storage, 'jericho.swap-hands') === 'true';
     this.renderer.configureControls({
       calibrate: (handedness) => this.startCalibration(handedness),
@@ -223,6 +265,7 @@ export class JarvisRuntime {
 
   pause(): void {
     if (!this.engaged || this.paused || this.disposed) return;
+    if (this.isAudioCalibrationActive()) this.audioCalibration?.exit();
     this.paused = true;
     this.engine?.stop();
     this.dispatchContextActions(this.context.cancel());
@@ -261,6 +304,11 @@ export class JarvisRuntime {
     }
     this.unbindVoiceCalibration?.();
     this.unbindVoiceCalibration = null;
+    this.unbindAudioCalibration?.();
+    this.unbindAudioCalibration = null;
+    this.mediaDevices.removeEventListener?.('devicechange', this.onAudioDeviceChange);
+    this.audioCalibration?.dispose();
+    this.audioCalibration = null;
     this.stopObserving?.();
     this.stopObserving = null;
     this.context.cancel();
@@ -287,10 +335,7 @@ export class JarvisRuntime {
     this.setStatus('requesting local camera');
     this.stopObserving = this.observeTargets(this.root.ownerDocument, this.registry);
     try {
-      this.stream = await this.mediaDevices.getUserMedia({
-        video: { width: 1280, height: 720, facingMode: 'user' },
-        audio: false,
-      });
+      this.stream = await this.requestCameraStream();
       this.assertNotDisposed();
       this.video = this.createVideo();
       this.video.muted = true;
@@ -298,7 +343,7 @@ export class JarvisRuntime {
       this.video.srcObject = this.stream;
       await this.video.play();
       this.assertNotDisposed();
-      this.configureCamera();
+      await this.configureCamera();
       this.engine = await this.createGestureEngine(this.video);
       this.assertNotDisposed();
       this.engine.setSwapHands?.(this.swapped);
@@ -328,9 +373,7 @@ export class JarvisRuntime {
         onToolStart: (name) => this.setStatus(`agent action · ${name}`),
         onToolResult: (name, result) => {
           this.setStatus(`agent action complete · ${name}`);
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-result', {
-            detail: { name, result },
-          }));
+          void result;
         },
         onGuidedTestStart: (test, phase) => {
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-start', {
@@ -375,10 +418,15 @@ export class JarvisRuntime {
       this.engine.start(this.onFrame);
       await this.bridge.start();
       this.assertNotDisposed();
+      this.engaged = true;
+      this.audioCalibration = this.createCalibrationController(this.bridge);
+      await this.audioCalibration?.loadApprovedProfile?.();
+      this.assertNotDisposed();
+      this.bindAudioCalibrationEvents();
+      this.mediaDevices.addEventListener?.('devicechange', this.onAudioDeviceChange);
       this.bindVoiceCalibrationEvents();
       this.eventTarget.addEventListener('keydown', this.onKeyDown);
       this.keyListenerAttached = true;
-      this.engaged = true;
       this.setStatus('gestures online');
     } catch (error) {
       this.stopObserving?.();
@@ -392,11 +440,61 @@ export class JarvisRuntime {
         await this.bridge.dispose();
         this.bridge = null;
       }
+      this.unbindAudioCalibration?.();
+      this.unbindAudioCalibration = null;
+      this.mediaDevices.removeEventListener?.('devicechange', this.onAudioDeviceChange);
+      this.audioCalibration?.dispose();
+      this.audioCalibration = null;
+      this.engaged = false;
       this.releaseVideoAndStream();
       this.registry.releaseSticky();
       if (!this.disposed) this.setStatus('camera unavailable · keyboard mode remains active');
       throw error;
     }
+  }
+
+  private requestCameraStream(): Promise<MediaStream> {
+    return new Promise((resolve, reject) => {
+      let accepting = true;
+      const timeout = setTimeout(() => {
+        if (!accepting) return;
+        accepting = false;
+        reject(new Error(
+          'Camera permission request timed out. Allow Camera access for Electron or Jericho in System Settings, then retry hardware access.',
+        ));
+      }, CAMERA_PERMISSION_TIMEOUT_MS);
+      let request: Promise<MediaStream>;
+      try {
+        request = this.mediaDevices.getUserMedia({
+          video: { width: 1280, height: 720, facingMode: 'user' },
+          audio: false,
+        });
+      } catch (error) {
+        accepting = false;
+        clearTimeout(timeout);
+        reject(error);
+        return;
+      }
+      void request.then((stream) => {
+        if (!accepting || this.disposed) {
+          for (const track of stream.getTracks()) track.stop();
+          if (accepting) {
+            accepting = false;
+            clearTimeout(timeout);
+            reject(new Error('Jarvis runtime was disposed during camera permission request'));
+          }
+          return;
+        }
+        accepting = false;
+        clearTimeout(timeout);
+        resolve(stream);
+      }, (error) => {
+        if (!accepting) return;
+        accepting = false;
+        clearTimeout(timeout);
+        reject(error);
+      });
+    });
   }
 
   private readonly onFrame = (frame: GestureFrame) => {
@@ -474,13 +572,35 @@ export class JarvisRuntime {
     const nucleusConsumesBoth = this.nucleusGestures.isDepthActive();
     if (nucleusConsumesRight || nucleusConsumesBoth) this.registry.releaseSticky();
 
-    const heldActions = this.heldGestures.update({
+    const activeApproval = readActiveApprovalScope(this.root.ownerDocument);
+    const activeCalibrationDecision = readActiveCalibrationDecision(this.root.ownerDocument);
+    const decisionScopeConflict = Boolean(activeApproval && activeCalibrationDecision);
+    if (decisionScopeConflict && !this.decisionScopeConflictReported) {
+      this.audioCalibration?.reportDecisionScopeConflict();
+      this.decisionScopeConflictReported = true;
+    } else if (!decisionScopeConflict) {
+      this.decisionScopeConflictReported = false;
+    }
+    const heldInput = {
       left: leftSuppressed ? undefined : frame.left,
       right: rightSuppressed ? undefined : frame.right,
       now: frame.timestamp,
-      activeApproval: readActiveApprovalScope(this.root.ownerDocument),
+      activeApproval,
+      activeCalibrationDecision,
       cancelEnabled: !bothOpenPalmsInsideNucleus,
-    });
+    };
+    const heldActions = this.heldGestures.update(heldInput);
+    const holdProgress = this.heldGestures.getProgress(heldInput);
+    if (holdProgress?.target === 'calibration') {
+      const detail = { outcome: holdProgress.outcome as 'apply' | 'discard', ratio: holdProgress.ratio };
+      this.calibrationProgress = detail;
+      this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT, { detail }));
+    } else if (this.calibrationProgress) {
+      this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT, {
+        detail: { outcome: this.calibrationProgress.outcome, ratio: 0 },
+      }));
+      this.calibrationProgress = null;
+    }
     if (heldActions.length) {
       this.dispatchContextActions(this.context.cancel());
       this.coordinator.cancelAll();
@@ -491,6 +611,12 @@ export class JarvisRuntime {
           this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_APPROVAL_GESTURE_EVENT, {
             detail: { outcome: action.outcome, ...action.approval },
           }));
+        } else if (action.type === 'calibration-decision') {
+          this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CALIBRATION_DECISION_EVENT, {
+            detail: { outcome: action.outcome },
+          }));
+        } else if (this.isAudioCalibrationActive()) {
+          this.audioCalibration?.exit();
         } else {
           this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CANCEL_PENDING_EVENT, {
             detail: { source: 'both-open-palms' },
@@ -616,14 +742,23 @@ export class JarvisRuntime {
 
   private resetSemanticGestures(): void {
     this.heldGestures.reset();
+    if (this.calibrationProgress) {
+      this.root.ownerDocument.dispatchEvent(new CustomEvent(JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT, {
+        detail: { outcome: this.calibrationProgress.outcome, ratio: 0 },
+      }));
+      this.calibrationProgress = null;
+    }
     this.dispatchNucleusActions(this.nucleusGestures.reset());
   }
 
   private readonly onKeyDown: EventListener = (event) => {
     if (!(event instanceof KeyboardEvent)) return;
     if (event.key === 'Escape') {
-      if (this.paused) this.resume();
-      else this.pause();
+      if (this.isAudioCalibrationActive()) {
+        event.preventDefault();
+        event.stopPropagation();
+        this.audioCalibration?.exit();
+      }
       return;
     }
     if (event.key === 'v' || event.key === 'V') {
@@ -636,6 +771,64 @@ export class JarvisRuntime {
       this.wake();
     }
   };
+
+  private createCalibrationController(bridge: BridgeRuntimePort): AudioCalibrationControllerPort | null {
+    const baseOptions: Omit<CalibrationControllerOptions, 'audio' | 'voice'> = {
+      profiles: new AudioCalibrationProfileStore(this.storage),
+      proposals: new CalibrationProposalClient(),
+      eventTarget: this.eventTarget as EventTarget,
+      clock: () => performance.now(),
+      timers: {
+        setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+        clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+      },
+    };
+    if (this.createAudioCalibrationController) {
+      return this.createAudioCalibrationController(bridge, baseOptions);
+    }
+    if (!isCalibrationBridge(bridge)) return null;
+    return new CalibrationController({
+      ...baseOptions,
+      audio: bridge,
+      voice: bridge,
+    });
+  }
+
+  private bindAudioCalibrationEvents(): void {
+    this.unbindAudioCalibration?.();
+    const target = this.eventTarget;
+    const onCommand: EventListener = (event) => {
+      const command = parseCalibrationCommandDetail((event as CustomEvent).detail);
+      if (!command || !this.audioCalibration || !this.engaged || this.disposed) return;
+      if (command === 'start') {
+        if (!isManualVoiceView(this.root.ownerDocument) || readActiveApprovalScope(this.root.ownerDocument)) return;
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:close-command-overlay'));
+      }
+      this.audioCalibration.handleCommand(command);
+    };
+    const onDecision: EventListener = (event) => {
+      const outcome = (event as CustomEvent<{ outcome?: unknown }>).detail?.outcome;
+      if (!this.audioCalibration || this.audioCalibration.snapshot()?.phase !== 'review') return;
+      if (outcome === 'apply') void this.audioCalibration.applyProfile();
+      else if (outcome === 'discard') this.audioCalibration.discardProfile();
+    };
+    target.addEventListener(JERICHO_AUDIO_CALIBRATION_COMMAND_EVENT, onCommand);
+    target.addEventListener(JERICHO_CALIBRATION_DECISION_EVENT, onDecision);
+    this.unbindAudioCalibration = () => {
+      target.removeEventListener(JERICHO_AUDIO_CALIBRATION_COMMAND_EVENT, onCommand);
+      target.removeEventListener(JERICHO_CALIBRATION_DECISION_EVENT, onDecision);
+    };
+  }
+
+  private readonly onAudioDeviceChange: EventListener = () => {
+    if (this.isAudioCalibrationActive()) this.audioCalibration?.exit();
+    void this.audioCalibration?.loadApprovedProfile?.();
+  };
+
+  private isAudioCalibrationActive(): boolean {
+    const phase = this.audioCalibration?.snapshot()?.phase;
+    return Boolean(phase && phase !== 'idle' && phase !== 'saved');
+  }
 
   private setStatus(status: string) {
     this.status = status;
@@ -694,7 +887,7 @@ export class JarvisRuntime {
     if (this.disposed) throw new Error('Jarvis runtime was disposed during engage');
   }
 
-  private configureCamera(): void {
+  private async configureCamera(): Promise<void> {
     const videoTrack = typeof this.stream?.getVideoTracks === 'function'
       ? this.stream.getVideoTracks()[0]
       : undefined;
@@ -704,8 +897,8 @@ export class JarvisRuntime {
     } catch {
       settings = {};
     }
-    this.cameraId = settings.deviceId?.trim() || 'default';
-    void hashCameraIdentifier(this.cameraId).then((hash) => { this.cameraIdentifierHash = hash; });
+    this.cameraId = await hashCameraIdentifier(settings.deviceId?.trim() || 'default');
+    this.cameraIdentifierHash = this.cameraId;
     const width = positive(settings.width) ?? positive(this.video?.videoWidth) ?? 1280;
     const height = positive(settings.height) ?? positive(this.video?.videoHeight) ?? 720;
     this.cameraAspectRatio = width / height;
@@ -1089,13 +1282,42 @@ function pointInRect(point: Point, rect: DOMRect): boolean {
 }
 
 function readActiveApprovalScope(ownerDocument: Document): ActiveApprovalScope | undefined {
-  const element = ownerDocument.querySelector<HTMLElement>('[data-jericho-active-approval="true"]');
-  if (!element) return undefined;
+  const elements = ownerDocument.querySelectorAll<HTMLElement>('[data-jericho-active-approval="true"]');
+  if (elements.length !== 1) return undefined;
+  const element = elements[0];
   const missionId = element.dataset.jerichoApprovalMissionId;
   const planHash = element.dataset.jerichoApprovalPlanHash;
   const version = Number(element.dataset.jerichoApprovalVersion);
   if (!missionId || !planHash || !Number.isSafeInteger(version) || version < 1) return undefined;
   return { missionId, planHash, version };
+}
+
+function readActiveCalibrationDecision(ownerDocument: Document): boolean {
+  return ownerDocument.querySelectorAll('[data-jericho-active-calibration-decision="true"]').length === 1;
+}
+
+function isManualVoiceView(ownerDocument: Document): boolean {
+  return Boolean(ownerDocument.querySelector('.stage[data-active-view="VOICE"]'));
+}
+
+type CalibrationBridgeRuntimePort = BridgeRuntimePort & CalibrationAudioPort & CalibrationVoicePort;
+
+function isCalibrationBridge(bridge: BridgeRuntimePort): bridge is CalibrationBridgeRuntimePort {
+  const value = bridge as unknown as Record<string, unknown>;
+  return [
+    'openLocalSession',
+    'installTemporaryProfile',
+    'restoreProfile',
+    'speakCalibrationPhrase',
+    'cancelCalibrationPhrase',
+    'addCalibrationTurnProgressListener',
+    'addCalibrationNarrationListener',
+    'addCalibrationGreetingListener',
+    'addCalibrationWakeListener',
+    'addCalibrationGroundedResultListener',
+    'beginLiveCanary',
+    'endLiveCanary',
+  ].every((method) => typeof value[method] === 'function');
 }
 
 function cursorView(hand?: TrackedHandFrame, point?: Point, targetId?: string, clutch = false) {

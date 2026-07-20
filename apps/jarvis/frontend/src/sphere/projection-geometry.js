@@ -1,79 +1,104 @@
-const SPHERE_PADDING = 28;
-const STAGE_PADDING = 24;
-const CARD_SEPARATION = 20;
-const CARD_WIDTH_MIN = 300;
-const CARD_WIDTH_MAX = 380;
+export const SPHERE_PADDING = 28
+export const STAGE_PADDING = 24
+export const CARD_SEPARATION = 20
+export const CARD_WIDTH_MIN = 300
+export const CARD_WIDTH_MAX = 380
 
-export function computeSphereExclusion(container) {
-  if (!container) return null;
-  const sphereEl = container.querySelector('[data-jericho-nucleus-space]');
-  if (!sphereEl) return null;
-  const rect = sphereEl.getBoundingClientRect();
+export function computeSphereExclusion(coreElement, stageElement) {
+  if (!coreElement || !stageElement) return null
+  const core = coreElement.getBoundingClientRect()
+  const stage = stageElement.getBoundingClientRect()
   return {
-    left: rect.left,
-    top: rect.top,
-    width: rect.width,
-    height: rect.height,
-    right: rect.right,
-    bottom: rect.bottom,
-  };
+    left: core.left - stage.left - SPHERE_PADDING,
+    top: core.top - stage.top - SPHERE_PADDING,
+    right: core.right - stage.left + SPHERE_PADDING,
+    bottom: core.bottom - stage.top + SPHERE_PADDING,
+    width: core.width + SPHERE_PADDING * 2,
+    height: core.height + SPHERE_PADDING * 2,
+  }
 }
 
-export function computeCardPlacement(sphereRect, viewport) {
-  const exclusion = {
-    left: sphereRect.left - SPHERE_PADDING,
-    top: sphereRect.top - SPHERE_PADDING,
-    right: sphereRect.right + SPHERE_PADDING,
-    bottom: sphereRect.bottom + SPHERE_PADDING,
-    width: sphereRect.width + SPHERE_PADDING * 2,
-    height: sphereRect.height + SPHERE_PADDING * 2,
-  };
+export function computeCardPlacement(exclusion, stage, card, occupied = []) {
+  if (!exclusion || !positiveRect(stage)) return null
+  const preferredWidth = Math.min(
+    CARD_WIDTH_MAX,
+    Math.max(Math.min(CARD_WIDTH_MIN, stage.width - STAGE_PADDING * 2), Math.min(card?.width || CARD_WIDTH_MIN, stage.width - STAGE_PADDING * 2)),
+  )
+  const minimumWidth = Math.min(CARD_WIDTH_MIN, stage.width - STAGE_PADDING * 2)
+  const height = Math.max(120, Math.min(card?.height || 260, stage.height - STAGE_PADDING * 2))
+  const centeredY = clamp((exclusion.top + exclusion.bottom - height) / 2, STAGE_PADDING, stage.height - STAGE_PADDING - height)
+  const widths = [...new Set([preferredWidth, minimumWidth])]
+  const sideCandidates = widths.flatMap(width => [
+    { side: 'right', x: exclusion.right + CARD_SEPARATION, y: centeredY, width, height },
+    { side: 'left', x: exclusion.left - CARD_SEPARATION - width, y: centeredY, width, height },
+  ])
+  const centeredX = clamp((stage.width - preferredWidth) / 2, STAGE_PADDING, stage.width - STAGE_PADDING - preferredWidth)
+  const candidates = [
+    ...sideCandidates,
+    { side: 'above', x: centeredX, y: exclusion.top - CARD_SEPARATION - height, width: preferredWidth, height },
+    { side: 'below', x: centeredX, y: exclusion.bottom + CARD_SEPARATION, width: preferredWidth, height },
+  ]
+  const fit = candidates.find(candidate => insideStage(candidate, stage) && occupied.every(rect => separated(candidate, rect, CARD_SEPARATION)))
+  if (fit) return { ...fit, flow: false, maxHeight: height }
 
-  const cardWidth = Math.max(CARD_WIDTH_MIN, Math.min(CARD_WIDTH_MAX, viewport.width * 0.3));
-
-  // Check if cards fit to the right of the sphere
-  const rightSpace = viewport.width - exclusion.right - STAGE_PADDING;
-  const leftSpace = exclusion.left - STAGE_PADDING;
-
-  if (rightSpace >= cardWidth + CARD_SEPARATION) {
+  const y = Math.max(STAGE_PADDING, exclusion.bottom + CARD_SEPARATION)
+  const availableHeight = stage.height - STAGE_PADDING - y
+  if (availableHeight >= 120) {
     return {
-      side: 'right',
-      x: exclusion.right + CARD_SEPARATION,
-      y: exclusion.top,
-      width: Math.min(cardWidth, rightSpace - CARD_SEPARATION),
-    };
+      side: 'below',
+      x: centeredX,
+      y,
+      width: preferredWidth,
+      height: Math.min(height, availableHeight),
+      maxHeight: availableHeight,
+      flow: true,
+    }
   }
 
-  if (leftSpace >= cardWidth + CARD_SEPARATION) {
-    return {
-      side: 'left',
-      x: STAGE_PADDING,
-      y: exclusion.top,
-      width: Math.min(cardWidth, leftSpace),
-    };
-  }
-
-  // Narrow mode: cards go below the sphere
-  const narrowWidth = Math.min(viewport.width - STAGE_PADDING * 2, 420);
+  const aboveHeight = Math.max(120, exclusion.top - CARD_SEPARATION - STAGE_PADDING)
   return {
-    side: 'below',
-    x: STAGE_PADDING,
-    y: exclusion.bottom + CARD_SEPARATION,
-    width: narrowWidth,
-  };
+    side: 'above',
+    x: centeredX,
+    y: STAGE_PADDING,
+    width: preferredWidth,
+    height: Math.min(height, aboveHeight),
+    maxHeight: aboveHeight,
+    flow: true,
+  }
 }
 
-export function isNarrowViewport(viewport) {
-  return viewport.width < 768;
+export function relativeRects(elements, stageElement) {
+  if (!stageElement) return []
+  const stage = stageElement.getBoundingClientRect()
+  return [...elements].map(element => {
+    const rect = element.getBoundingClientRect()
+    return {
+      x: rect.left - stage.left,
+      y: rect.top - stage.top,
+      width: rect.width,
+      height: rect.height,
+    }
+  }).filter(positiveRect)
 }
 
-export const PHASE_LABELS = {
-  idle: 'IDLE',
-  room: 'ROOM',
-  speech: 'SPEECH',
-  clap: 'CLAP',
-  live_canary: 'LIVE CANARY',
-  review: 'REVIEW',
-  saved: 'SAVED',
-  failed: 'FAILED',
-};
+function insideStage(rect, stage) {
+  return rect.x >= STAGE_PADDING
+    && rect.y >= STAGE_PADDING
+    && rect.x + rect.width <= stage.width - STAGE_PADDING
+    && rect.y + rect.height <= stage.height - STAGE_PADDING
+}
+
+function separated(a, b, gap) {
+  return a.x + a.width + gap <= b.x
+    || b.x + b.width + gap <= a.x
+    || a.y + a.height + gap <= b.y
+    || b.y + b.height + gap <= a.y
+}
+
+function positiveRect(rect) {
+  return rect && Number.isFinite(rect.width) && Number.isFinite(rect.height) && rect.width > 0 && rect.height > 0
+}
+
+function clamp(value, minimum, maximum) {
+  return Math.max(minimum, Math.min(maximum, value))
+}

@@ -89,6 +89,51 @@ describe('HeldGestureInterpreter', () => {
     expect(interpreter.update({ right, now: GESTURE_HOLD_MS * 2, activeApproval: revised, cancelEnabled: false }))
       .toEqual([{ type: 'approval-decision', outcome: 'approved', approval: revised }]);
   });
+
+  it('keeps calibration inert for 699ms and emits one semantic apply/discard at 700ms', () => {
+    const interpreter = new HeldGestureInterpreter();
+    const up = hand('Right', 'Thumb_Up');
+    const input = (now: number) => ({ right: up, now, activeCalibrationDecision: true, cancelEnabled: false });
+    expect(interpreter.update(input(0))).toEqual([]);
+    expect(interpreter.getProgress(input(350))).toMatchObject({ target: 'calibration', outcome: 'apply', ratio: 0.5 });
+    expect(interpreter.update(input(GESTURE_HOLD_MS - 1))).toEqual([]);
+    expect(interpreter.update(input(GESTURE_HOLD_MS))).toEqual([
+      { type: 'calibration-decision', outcome: 'apply' },
+    ]);
+    expect(interpreter.update(input(GESTURE_HOLD_MS + 100))).toEqual([]);
+
+    interpreter.update({ right: hand('Right', 'None'), now: GESTURE_HOLD_MS + 200, activeCalibrationDecision: true, cancelEnabled: false });
+    const down = hand('Left', 'Thumb_Down');
+    interpreter.update({ left: down, now: 1_700, activeCalibrationDecision: true, cancelEnabled: false });
+    expect(interpreter.update({ left: down, now: 2_400, activeCalibrationDecision: true, cancelEnabled: false })).toEqual([
+      { type: 'calibration-decision', outcome: 'discard' },
+    ]);
+  });
+
+  it('fails closed when mission and calibration decision scopes coexist', () => {
+    const interpreter = new HeldGestureInterpreter();
+    const right = hand('Right', 'Thumb_Up');
+    const input = {
+      right,
+      activeApproval,
+      activeCalibrationDecision: true,
+      cancelEnabled: false,
+    };
+    expect(interpreter.update({ ...input, now: 0 })).toEqual([]);
+    expect(interpreter.update({ ...input, now: GESTURE_HOLD_MS + 1 })).toEqual([]);
+    expect(interpreter.getProgress({ ...input, now: GESTURE_HOLD_MS + 1 })).toBeNull();
+  });
+
+  it('clears calibration hold progress immediately for stale or conflicting hands', () => {
+    const interpreter = new HeldGestureInterpreter();
+    const right = hand('Right', 'Thumb_Up');
+    interpreter.update({ right, now: 0, activeCalibrationDecision: true, cancelEnabled: false });
+    interpreter.update({ right, now: 300, activeCalibrationDecision: true, cancelEnabled: false });
+    expect(interpreter.getProgress({ right, now: 300, activeCalibrationDecision: true, cancelEnabled: false })?.ratio).toBeGreaterThan(0);
+    const stale = { ...right, fresh: false };
+    interpreter.update({ right: stale, now: 301, activeCalibrationDecision: true, cancelEnabled: false });
+    expect(interpreter.getProgress({ right: stale, now: 301, activeCalibrationDecision: true, cancelEnabled: false })).toBeNull();
+  });
 });
 
 describe('NucleusGestureInterpreter', () => {

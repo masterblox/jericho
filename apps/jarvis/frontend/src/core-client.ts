@@ -180,7 +180,10 @@ export class CoreClient {
     );
     if (!response.ok) throw new Error(await responseError(response, 'Mission decision failed'));
     const decision = await response.json() as MissionDecisionResponse;
-    if (decision.snapshot) this.store.replace(decision.snapshot);
+    if (decision.snapshot) {
+      if (!validSnapshot(decision.snapshot)) throw new Error('Jericho Core returned an invalid snapshot');
+      this.store.replace(decision.snapshot);
+    }
     else await this.#refresh(this.#generation);
     return decision;
   }
@@ -380,8 +383,11 @@ export class CoreClient {
       body: JSON.stringify(body),
     });
     if (!response.ok) throw new Error(await responseError(response, fallback));
-    const result = await response.json() as { snapshot?: CommandCenterSnapshot };
-    if (result.snapshot) this.store.replace(result.snapshot);
+    const result = await response.json() as { snapshot?: unknown };
+    if (result.snapshot) {
+      if (!validSnapshot(result.snapshot)) throw new Error('Jericho Core returned an invalid snapshot');
+      this.store.replace(result.snapshot);
+    }
     else await this.#refresh(this.#generation);
     return result;
   }
@@ -397,7 +403,7 @@ export class CoreClient {
         signal: controller.signal,
       });
       if (!response.ok) throw new Error(await responseError(response, 'Jericho Core unavailable'));
-      const snapshot = await response.json() as CommandCenterSnapshot;
+      const snapshot = await response.json() as unknown;
       if (!validSnapshot(snapshot)) throw new Error('Jericho Core returned an invalid snapshot');
       if (forceReplace || (this.#started && generation === this.#generation)) this.store.replace(snapshot);
     } catch (error) {
@@ -422,14 +428,117 @@ function parseRecord(value: string): Record<string, unknown> | undefined {
   }
 }
 
-function validSnapshot(value: CommandCenterSnapshot): boolean {
-  return Boolean(
-    value && typeof value === 'object' &&
-    typeof value.revision === 'string' &&
-    Number.isInteger(value.lastChangeSequence) &&
-    typeof value.generatedAt === 'string' &&
-    value.nucleus && Array.isArray(value.nucleus.nodes),
+function validSnapshot(value: unknown): value is CommandCenterSnapshot {
+  if (!record(value)) return false;
+  if (!nonEmptyString(value.revision) || !isoTimestamp(value.generatedAt)) return false;
+  if (!Number.isSafeInteger(value.lastChangeSequence) || Number(value.lastChangeSequence) < 0) return false;
+  if (!record(value.today) || !isoDate(value.today.date)) return false;
+  for (const key of ['taskIds', 'commitmentIds', 'activeMissionIds', 'pendingApprovalIds']) {
+    if (!stringArray(value.today[key])) return false;
+  }
+
+  const entityCollections = ['tasks', 'communications', 'people', 'commitments'];
+  if (!entityCollections.every((key) => recordArray(value[key], entityCard))) return false;
+  if (!recordArray(value.missions, missionCard)) return false;
+  if (!recordArray(value.approvals, approvalCard)) return false;
+  if (!recordArray(value.proposals, identifiedRecord)) return false;
+  if (!recordArray(value.activeAssignments, identifiedRecord)) return false;
+  if (!recordArray(value.outcomes, identifiedRecord)) return false;
+  if (!recordArray(value.receipts, identifiedRecord)) return false;
+  if (!recordArray(value.history, identifiedRecord)) return false;
+  if (!recordArray(value.connectors, (item) => nonEmptyString(item.connectorId) && nonEmptyString(item.status))) return false;
+  if (!recordArray(value.captureFailures, identifiedRecord)) return false;
+  if (value.reviewIntents !== undefined && !recordArray(value.reviewIntents, identifiedRecord)) return false;
+  if (value.identityReviews !== undefined && !recordArray(value.identityReviews, identifiedRecord)) return false;
+
+  if (!record(value.nucleus)) return false;
+  if (!recordArray(value.nucleus.nodes, nucleusNode)) return false;
+  if (!recordArray(value.nucleus.edges, nucleusEdge)) return false;
+  if (!recordArray(value.nucleus.activityPulses, nucleusPulse)) return false;
+  if (value.knowledge !== undefined) {
+    if (!record(value.knowledge)) return false;
+    for (const key of ['packages', 'projections', 'projectionReceipts', 'indexes', 'evaluations', 'paperclip']) {
+      if (!recordArray(value.knowledge[key], identifiedRecord)) return false;
+    }
+  }
+  return true;
+}
+
+const MAX_SNAPSHOT_COLLECTION = 50_000;
+
+function record(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function nonEmptyString(value: unknown, maximum = 4_096): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum && value.trim().length > 0;
+}
+
+function isoTimestamp(value: unknown): value is string {
+  return nonEmptyString(value, 64) && Number.isFinite(Date.parse(value));
+}
+
+function isoDate(value: unknown): value is string {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function stringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.length <= MAX_SNAPSHOT_COLLECTION &&
+    value.every((item) => nonEmptyString(item, 1_024));
+}
+
+function recordArray(
+  value: unknown,
+  predicate: (item: Record<string, unknown>) => boolean,
+): value is Array<Record<string, unknown>> {
+  return Array.isArray(value) && value.length <= MAX_SNAPSHOT_COLLECTION &&
+    value.every((item) => record(item) && predicate(item));
+}
+
+function identifiedRecord(item: Record<string, unknown>): boolean {
+  return nonEmptyString(item.id, 1_024);
+}
+
+function entityCard(item: Record<string, unknown>): boolean {
+  return identifiedRecord(item) && nonEmptyString(item.label) &&
+    Number.isFinite(item.rank) && isoTimestamp(item.updatedAt) && stringArray(item.evidenceEventIds) &&
+    record(item.attributes) && record(item.freshness);
+}
+
+function missionCard(item: Record<string, unknown>): boolean {
+  return identifiedRecord(item) && nonEmptyString(item.seriesId, 1_024) &&
+    Number.isSafeInteger(item.version) && Number(item.version) > 0 &&
+    nonEmptyString(item.planHash, 128) && nonEmptyString(item.title) && nonEmptyString(item.objective) &&
+    Array.isArray(item.taskGraph) && Array.isArray(item.agents) && Array.isArray(item.timeline) &&
+    isoTimestamp(item.createdAt) && isoTimestamp(item.updatedAt);
+}
+
+function approvalCard(item: Record<string, unknown>): boolean {
+  if (!identifiedRecord(item) || !nonEmptyString(item.missionId, 1_024) ||
+    !nonEmptyString(item.planHash, 128) || !Number.isSafeInteger(item.version) || Number(item.version) <= 0 ||
+    !nonEmptyString(item.title) || !nonEmptyString(item.objective) || !record(item.permissions)) return false;
+  return recordArray(item.actions, (action) =>
+    identifiedRecord(action) && action.targetType === 'mission' && action.targetId === item.missionId &&
+    action.method === 'POST' && nonEmptyString(action.endpoint, 2_048) &&
+    typeof action.enabled === 'boolean' && typeof action.requiresConfirmation === 'boolean' &&
+    record(action.payload) && action.payload.planHash === item.planHash && action.payload.version === item.version,
   );
+}
+
+function nucleusNode(item: Record<string, unknown>): boolean {
+  return identifiedRecord(item) && nonEmptyString(item.recordType) && nonEmptyString(item.recordId) &&
+    nonEmptyString(item.label) && isoTimestamp(item.updatedAt) && stringArray(item.evidenceEventIds) &&
+    item.verified === true;
+}
+
+function nucleusEdge(item: Record<string, unknown>): boolean {
+  return identifiedRecord(item) && nonEmptyString(item.fromNodeId) && nonEmptyString(item.toNodeId) &&
+    nonEmptyString(item.relation) && stringArray(item.evidenceEventIds) && item.verified === true;
+}
+
+function nucleusPulse(item: Record<string, unknown>): boolean {
+  return identifiedRecord(item) && nonEmptyString(item.nodeId) && nonEmptyString(item.label) &&
+    isoTimestamp(item.occurredAt) && stringArray(item.evidenceEventIds) && item.verified === true;
 }
 
 async function responseError(response: Response, fallback: string): Promise<string> {

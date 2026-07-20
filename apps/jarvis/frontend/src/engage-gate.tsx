@@ -50,6 +50,14 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
     if (current) await current.dispose();
   };
 
+  const retry = async () => {
+    if (engaging.current || state !== 'failed') return;
+    const failed = runtime.current;
+    runtime.current = null;
+    if (failed) await failed.dispose();
+    await engage();
+  };
+
   if (state === 'engaged' || state === 'dismissed') return null;
   return (
     <section className="jericho-engage-overlay" role="dialog" aria-modal="true" aria-labelledby="jericho-engage-title">
@@ -67,6 +75,15 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
               onClick={() => void engage()}
             >
               {state === 'engaging' ? 'Engaging…' : 'Engage local runtime'}
+            </button>
+          )}
+          {state === 'failed' && (
+            <button
+              className="jericho-engage-button"
+              type="button"
+              onClick={() => void retry()}
+            >
+              Retry hardware access
             </button>
           )}
           <button

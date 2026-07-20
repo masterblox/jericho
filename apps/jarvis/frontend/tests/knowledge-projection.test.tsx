@@ -99,6 +99,16 @@ describe('KnowledgeProjection', () => {
     expect(s.cues).toEqual([{ resultId: 'grounded-1', cue: 'dismiss' }]); s.stop()
   })
 
+  it('yields Escape to an active native calibration session', () => {
+    vi.useFakeTimers(); renderP(); dispatch(V2); advance(360)
+    const calibration = document.createElement('article')
+    calibration.className = 'native-calibration'
+    document.body.append(calibration)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(document.querySelectorAll('.k-card').length).toBeGreaterThan(0)
+    calibration.remove()
+  })
+
   it('mutes', () => {
     vi.useFakeTimers(); renderP()
     fireEvent.click(screen.getByRole('button', { name: 'Interface sound' }))

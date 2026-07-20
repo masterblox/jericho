@@ -42,6 +42,28 @@ describe('EngageGate', () => {
     expect(runtime.dispose).toHaveBeenCalledTimes(1);
   });
 
+  it('disposes a failed runtime and permits one explicit hardware retry', async () => {
+    const failed = {
+      engage: vi.fn().mockRejectedValue(new Error('Camera permission denied')),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    const recovered = {
+      engage: vi.fn().mockResolvedValue(undefined),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    const createRuntime = vi.fn()
+      .mockReturnValueOnce(failed)
+      .mockReturnValueOnce(recovered);
+    render(<EngageGate createRuntime={createRuntime} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Engage local runtime' }));
+    expect(await screen.findByText('Camera permission denied')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry hardware access' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(failed.dispose).toHaveBeenCalledTimes(1);
+    expect(recovered.engage).toHaveBeenCalledTimes(1);
+    expect(createRuntime).toHaveBeenCalledTimes(2);
+  });
+
   it('enters keyboard mode without constructing hardware and can cancel a pending permission request', async () => {
     const directCreateRuntime = vi.fn();
     const direct = render(<EngageGate createRuntime={directCreateRuntime} />);

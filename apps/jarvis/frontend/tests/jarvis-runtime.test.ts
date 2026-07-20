@@ -6,6 +6,8 @@ import { GestureTargetRegistry } from '../src/gesture-target-registry';
 import { mapHandToScreen } from '../src/coords';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
+  JERICHO_CALIBRATION_DECISION_EVENT,
+  JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT,
   JERICHO_CANCEL_PENDING_EVENT,
   JERICHO_NUCLEUS_CAMERA_EVENT,
   JERICHO_NUCLEUS_DEPTH_EVENT,
@@ -21,7 +23,9 @@ import {
   type CalibrationSample,
 } from '../src/calibration';
 import {
+  CAMERA_PERMISSION_TIMEOUT_MS,
   JarvisRuntime,
+  type AudioCalibrationControllerPort,
   type BridgeRuntimePort,
   type GestureEngineRuntimePort,
   type GestureSurfacePort,
@@ -30,13 +34,128 @@ import {
 import type { GestureFrame } from '../src/gestures';
 import type { TrackedHandFrame } from '../src/hand-tracks';
 
+const CAMERA_ID_HASH = '0a05a8181e5c35bd8831';
+
 afterEach(() => {
   document.body.replaceChildren();
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.useRealTimers();
 });
 
 describe('JarvisRuntime lifecycle', () => {
+  it('owns one audio controller after engagement and accepts exact commands only from manual Voice view', async () => {
+    const controller = fakeAudioCalibrationController('idle');
+    const createAudioCalibrationController = vi.fn().mockReturnValue(controller);
+    const harness = createHarness({ createAudioCalibrationController });
+    const stage = document.createElement('section');
+    stage.className = 'stage';
+    stage.dataset.activeView = 'VOICE';
+    harness.root.append(stage);
+
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }));
+    expect(controller.handleCommand).not.toHaveBeenCalled();
+    await harness.runtime.engage();
+    expect(createAudioCalibrationController).toHaveBeenCalledTimes(1);
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }));
+    expect(controller.handleCommand).toHaveBeenCalledWith('start');
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start', extra: true } }));
+    expect(controller.handleCommand).toHaveBeenCalledTimes(1);
+
+    await harness.runtime.dispose();
+    expect(controller.dispose).toHaveBeenCalledTimes(1);
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }));
+    expect(controller.handleCommand).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects calibration start outside manual Voice view or while one mission approval is active', async () => {
+    const controller = fakeAudioCalibrationController('idle');
+    const harness = createHarness({ createAudioCalibrationController: vi.fn().mockReturnValue(controller) });
+    await harness.runtime.engage();
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }));
+    expect(controller.handleCommand).not.toHaveBeenCalled();
+
+    const stage = document.createElement('section');
+    stage.className = 'stage';
+    stage.dataset.activeView = 'VOICE';
+    harness.root.append(stage);
+    const approval = activeApprovalElement('mission-1');
+    harness.root.append(approval);
+    document.dispatchEvent(new CustomEvent('jericho:audio-calibration-command', { detail: { action: 'start' } }));
+    expect(controller.handleCommand).not.toHaveBeenCalled();
+  });
+
+  it('routes held calibration decisions and progress without fabricating mission approval', async () => {
+    const controller = fakeAudioCalibrationController('review');
+    const harness = createHarness({ createAudioCalibrationController: vi.fn().mockReturnValue(controller) });
+    const target = document.createElement('article');
+    target.dataset.jerichoActiveCalibrationDecision = 'true';
+    harness.root.append(target);
+    const approvals = vi.fn();
+    const decisions = vi.fn();
+    const progress = vi.fn();
+    document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, approvals);
+    document.addEventListener(JERICHO_CALIBRATION_DECISION_EVENT, decisions);
+    document.addEventListener(JERICHO_CALIBRATION_HOLD_PROGRESS_EVENT, progress);
+    await harness.runtime.engage();
+
+    const thumbUp = tracked('Right', 'idle', 0.5, 0.5, 'Thumb_Up');
+    harness.emit(frame(0, undefined, thumbUp));
+    harness.emit(frame(GESTURE_HOLD_MS - 1, undefined, thumbUp));
+    expect(controller.applyProfile).not.toHaveBeenCalled();
+    harness.emit(frame(GESTURE_HOLD_MS, undefined, thumbUp));
+    expect(controller.applyProfile).toHaveBeenCalledTimes(1);
+    expect(decisions).toHaveBeenCalledWith(expect.objectContaining({ detail: { outcome: 'apply' } }));
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ detail: { outcome: 'apply', ratio: 1 } }));
+    expect(approvals).not.toHaveBeenCalled();
+  });
+
+  it('fails closed for multiple mission scopes or simultaneous mission/calibration scopes', async () => {
+    const controller = fakeAudioCalibrationController('review');
+    const harness = createHarness({ createAudioCalibrationController: vi.fn().mockReturnValue(controller) });
+    harness.root.append(activeApprovalElement('mission-1'), activeApprovalElement('mission-2'));
+    const decisions = vi.fn();
+    document.addEventListener(JERICHO_APPROVAL_GESTURE_EVENT, decisions);
+    await harness.runtime.engage();
+    const thumb = tracked('Right', 'idle', 0.5, 0.5, 'Thumb_Up');
+    harness.emit(frame(0, undefined, thumb));
+    harness.emit(frame(GESTURE_HOLD_MS, undefined, thumb));
+    expect(decisions).not.toHaveBeenCalled();
+
+    harness.root.querySelectorAll('[data-jericho-active-approval="true"]')[1].remove();
+    const calibration = document.createElement('article');
+    calibration.dataset.jerichoActiveCalibrationDecision = 'true';
+    harness.root.append(calibration);
+    harness.emit(frame(GESTURE_HOLD_MS + 1, undefined, thumb));
+    harness.emit(frame(GESTURE_HOLD_MS * 2 + 1, undefined, thumb));
+    expect(controller.reportDecisionScopeConflict).toHaveBeenCalledTimes(1);
+    expect(controller.applyProfile).not.toHaveBeenCalled();
+    expect(decisions).not.toHaveBeenCalled();
+  });
+
+  it('consumes Escape, both-open-palms, pause, and device change by restoring active audio calibration first', async () => {
+    const controller = fakeAudioCalibrationController('room');
+    const harness = createHarness({ createAudioCalibrationController: vi.fn().mockReturnValue(controller) });
+    await harness.runtime.engage();
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(controller.exit).toHaveBeenCalledTimes(1);
+    expect(harness.engine.stop).not.toHaveBeenCalled();
+
+    controller.snapshot.mockReturnValue({ phase: 'clap' });
+    const left = tracked('Left', 'palm', 0.35, 0.5, 'Open_Palm');
+    const right = tracked('Right', 'palm', 0.65, 0.5, 'Open_Palm');
+    harness.emit(frame(0, left, right));
+    harness.emit(frame(GESTURE_HOLD_MS, left, right));
+    expect(controller.exit).toHaveBeenCalledTimes(2);
+
+    controller.snapshot.mockReturnValue({ phase: 'speech' });
+    harness.runtime.pause();
+    expect(controller.exit).toHaveBeenCalledTimes(3);
+    controller.snapshot.mockReturnValue({ phase: 'live_canary' });
+    harness.mediaDevices.dispatchEvent(new Event('devicechange'));
+    expect(controller.exit).toHaveBeenCalledTimes(4);
+  });
+
   it('emits only sanitized Gesture Lab snapshots from the production frame path', async () => {
     const onGestureLabSnapshot = vi.fn();
     const harness = createHarness({ onGestureLabSnapshot });
@@ -52,7 +171,7 @@ describe('JarvisRuntime lifecycle', () => {
     expect(JSON.stringify(snapshot)).not.toMatch(/landmarks|audio|transcript|srcObject/);
   });
 
-  it('engages hardware once, toggles pause safely, and tears every resource down idempotently', async () => {
+  it('engages hardware once, pauses explicitly without stealing Escape, and tears every resource down idempotently', async () => {
     const harness = createHarness();
     await Promise.all([harness.runtime.engage(), harness.runtime.engage()]);
 
@@ -64,9 +183,11 @@ describe('JarvisRuntime lifecycle', () => {
     expect(harness.bridge.start).toHaveBeenCalledTimes(1);
 
     document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    expect(harness.engine.stop).not.toHaveBeenCalled();
+    harness.runtime.pause();
     expect(harness.engine.stop).toHaveBeenCalledTimes(1);
     expect(harness.root.classList.contains('gestures-frozen')).toBe(true);
-    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }));
+    harness.runtime.resume();
     expect(harness.engine.start).toHaveBeenCalledTimes(2);
     expect(harness.root.classList.contains('gestures-frozen')).toBe(false);
 
@@ -166,6 +287,28 @@ describe('JarvisRuntime lifecycle', () => {
     await runtime.dispose();
   });
 
+  it('fails a stalled camera request on a bounded deadline and stops a late stream', async () => {
+    vi.useFakeTimers();
+    let resolveCamera!: (stream: MediaStream) => void;
+    const camera = new Promise<MediaStream>((resolve) => { resolveCamera = resolve; });
+    const getUserMedia = vi.fn(() => camera);
+    const harness = createHarness({ getUserMedia });
+    const engagement = harness.runtime.engage();
+    const timedOut = expect(engagement).rejects.toThrow('Camera permission request timed out');
+
+    await vi.advanceTimersByTimeAsync(CAMERA_PERMISSION_TIMEOUT_MS);
+    await timedOut;
+    expect(harness.renderer.setSystemStatus).toHaveBeenLastCalledWith(
+      'camera unavailable · keyboard mode remains active',
+    );
+
+    const lateTrack = { stop: vi.fn() };
+    resolveCamera({ getTracks: () => [lateTrack] } as unknown as MediaStream);
+    await Promise.resolve();
+    expect(lateTrack.stop).toHaveBeenCalledTimes(1);
+    await harness.runtime.dispose();
+  });
+
   it('normalizes only left-navigation Y while retaining pixel hit and render coordinates', async () => {
     const harness = createHarness({ viewport: () => ({ width: 1_000, height: 1_000 }) });
     const leftBay = document.createElement('aside');
@@ -262,7 +405,7 @@ describe('JarvisRuntime lifecycle', () => {
     const storage = new MemoryStorage();
     saveCalibration(storage, createCalibrationProfile(
       calibrationSamples,
-      'camera-a',
+      CAMERA_ID_HASH,
       16 / 9,
       'Right',
       '2026-07-10T00:00:00.000Z',
@@ -287,7 +430,7 @@ describe('JarvisRuntime lifecycle', () => {
   it('ignores a saved calibration when current camera aspect settings are incompatible', async () => {
     const storage = new MemoryStorage();
     saveCalibration(storage, createCalibrationProfile(
-      calibrationSamples, 'camera-a', 16 / 9, 'Right',
+      calibrationSamples, CAMERA_ID_HASH, 16 / 9, 'Right',
     ));
     const harness = createHarness({
       storage,
@@ -328,14 +471,15 @@ describe('JarvisRuntime lifecycle', () => {
       }
       harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.camera.x, sample.camera.y)));
     }
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).not.toBeNull();
+    expect(loadCalibration(storage, CAMERA_ID_HASH, 16 / 9, 'Right')).not.toBeNull();
+    expect(storage.getItem('jericho.calibration.v2.camera-a.Right')).toBeNull();
     expect(harness.renderer.showCalibration).toHaveBeenLastCalledWith(null);
 
     controls.swap();
     expect(storage.getItem('jericho.swap-hands')).toBe('true');
     expect(harness.engine.setSwapHands).toHaveBeenCalledWith(true);
     controls.reset();
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
+    expect(loadCalibration(storage, CAMERA_ID_HASH, 16 / 9, 'Right')).toBeNull();
     expect(harness.renderer.updateControlState).toHaveBeenLastCalledWith({
       calibratedHands: [], swapped: true, diagnosticsEnabled: false,
     });
@@ -360,7 +504,7 @@ describe('JarvisRuntime lifecycle', () => {
       harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.camera.x, sample.camera.y)));
     }
 
-    const profile = loadCalibration(storage, 'camera-a', 16 / 9, 'Right');
+    const profile = loadCalibration(storage, CAMERA_ID_HASH, 16 / 9, 'Right');
     expect(profile).not.toBeNull();
     expect(profile!.residualError).toBeLessThan(0.01);
     expect(profile!.verificationTimestamp).toBeTruthy();
@@ -400,7 +544,7 @@ describe('JarvisRuntime lifecycle', () => {
         && (call[0] as { message: string }).message.includes('Repeat from center'),
     );
     expect(resetCalls.length).toBeGreaterThan(0);
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
+    expect(loadCalibration(storage, CAMERA_ID_HASH, 16 / 9, 'Right')).toBeNull();
   });
 
   it('detects lost hand during calibration and requires steady visibility', async () => {
@@ -441,7 +585,7 @@ describe('JarvisRuntime lifecycle', () => {
       harness.emit(frame(timestamp++, undefined, tracked('Right', 'pinch', sample.camera.x, sample.camera.y, 'None', sample.camera.x, sample.camera.y, 0.5)));
     }
 
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
+    expect(loadCalibration(storage, CAMERA_ID_HASH, 16 / 9, 'Right')).toBeNull();
   });
 
   it('shows active cursor during calibration along with target reticle', async () => {
@@ -635,6 +779,7 @@ function createHarness(options: {
   trackSettings?: MediaTrackSettings;
   diagnosticsExporter?: ReturnType<typeof vi.fn>;
   onGestureLabSnapshot?: ReturnType<typeof vi.fn>;
+  createAudioCalibrationController?: ReturnType<typeof vi.fn>;
 } = {}) {
   const root = appRoot();
   const track = { stop: vi.fn(), getSettings: vi.fn(() => options.trackSettings ?? {}) };
@@ -643,12 +788,15 @@ function createHarness(options: {
     getVideoTracks: () => [track],
   } as unknown as MediaStream;
   const getUserMedia = options.getUserMedia ?? vi.fn().mockResolvedValue(stream);
+  const mediaDevices = new EventTarget() as EventTarget & { getUserMedia: typeof getUserMedia };
+  mediaDevices.getUserMedia = getUserMedia;
   const video = fakeVideo();
   let frameListener: ((frame: GestureFrame) => void) | undefined;
   const engine: GestureEngineRuntimePort = {
     start: vi.fn((listener) => { frameListener = listener; }),
     stop: vi.fn(),
     dispose: vi.fn(),
+    loadApprovedProfile: vi.fn().mockResolvedValue(undefined),
     setSwapHands: vi.fn(),
   };
   const bridge: BridgeRuntimePort = {
@@ -664,7 +812,7 @@ function createHarness(options: {
     root,
     registry,
     renderer,
-    mediaDevices: { getUserMedia },
+    mediaDevices,
     createGestureEngine,
     createBridge,
     createVideo: () => video,
@@ -674,9 +822,12 @@ function createHarness(options: {
     ...(options.storage ? { storage: options.storage } : {}),
     ...(options.diagnosticsExporter ? { diagnosticsExporter: options.diagnosticsExporter } : {}),
     ...(options.onGestureLabSnapshot ? { onGestureLabSnapshot: options.onGestureLabSnapshot } : {}),
+    ...(options.createAudioCalibrationController
+      ? { createAudioCalibrationController: options.createAudioCalibrationController }
+      : {}),
   });
   return {
-    root, track, getUserMedia, video, engine, bridge, renderer, registry,
+    root, track, getUserMedia, mediaDevices, video, engine, bridge, renderer, registry,
     createGestureEngine, createBridge, runtime,
     controls: () => renderer.configureControls.mock.calls.at(-1)?.[0],
     emit: (value: GestureFrame) => {
@@ -734,6 +885,29 @@ class MemoryStorage {
   getItem(key: string) { return this.values.get(key) ?? null; }
   setItem(key: string, value: string) { this.values.set(key, value); }
   removeItem(key: string) { this.values.delete(key); }
+}
+
+function fakeAudioCalibrationController(
+  phase: 'idle' | 'room' | 'speech' | 'clap' | 'live_canary' | 'review' | 'saved' | 'failed',
+): AudioCalibrationControllerPort & Record<string, ReturnType<typeof vi.fn>> {
+  return {
+    snapshot: vi.fn().mockReturnValue({ phase }),
+    handleCommand: vi.fn(),
+    applyProfile: vi.fn().mockResolvedValue(undefined),
+    discardProfile: vi.fn(),
+    exit: vi.fn(),
+    reportDecisionScopeConflict: vi.fn(),
+    dispose: vi.fn(),
+  };
+}
+
+function activeApprovalElement(missionId: string): HTMLElement {
+  const approval = document.createElement('article');
+  approval.dataset.jerichoActiveApproval = 'true';
+  approval.dataset.jerichoApprovalMissionId = missionId;
+  approval.dataset.jerichoApprovalPlanHash = 'a'.repeat(64);
+  approval.dataset.jerichoApprovalVersion = '3';
+  return approval;
 }
 
 const calibrationSamples: CalibrationSample[] = [

@@ -48,7 +48,7 @@ describe('CalibrationProposalClient', () => {
     await expect(client.submitCalibrationFixProposal(
       { schemaVersion: 2 as any, sessionId: 'x', buildSha: 'a1b2c3d', failedPhase: 'room', failureReason: 'mic_denied', aggregateMetrics: {} },
       'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
-    )).rejects.toThrow('Invalid schema version');
+    )).rejects.toThrow('schemaVersion must be 1');
   });
 
   it('rejects invalid idempotency key', async () => {

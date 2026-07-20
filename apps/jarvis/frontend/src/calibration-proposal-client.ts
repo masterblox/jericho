@@ -1,34 +1,10 @@
-import type { CalibrationFailureReason, ActiveCalibrationPhase } from './calibration-events';
+import {
+  assertCalibrationFixProposalRequest,
+  type CalibrationFixProposalRequest,
+  type CalibrationFixProposalResponse,
+} from '@jericho/shared';
 
-export interface CalibrationFixProposalRequest {
-  schemaVersion: 1;
-  sessionId: string;
-  buildSha: string;
-  micDeviceHash?: string;
-  failedPhase: ActiveCalibrationPhase | 'review';
-  failureReason: CalibrationFailureReason;
-  aggregateMetrics: Partial<{
-    durationMs: number;
-    sampleCount: number;
-    blockCount: number;
-    rmsMin: number;
-    rmsMax: number;
-    rmsMean: number;
-    rmsP95: number;
-    peakMax: number;
-    clipCount: number;
-    clippedSampleFraction: number;
-    sustainedEnergyFraction: number;
-  }>;
-  correlatedResultId?: string;
-}
-
-export interface CalibrationFixProposalResponse {
-  proposalId: string;
-  status: 'pending_review';
-  createdAt: string;
-  replayed: boolean;
-}
+export type { CalibrationFixProposalRequest, CalibrationFixProposalResponse } from '@jericho/shared';
 
 /**
  * Single-endpoint proposal port with no CoreClient dependency.
@@ -83,33 +59,21 @@ export class CalibrationProposalClient {
 }
 
 function validateRequest(request: CalibrationFixProposalRequest, idempotencyKey: string): void {
-  if (request.schemaVersion !== 1) throw new Error('Invalid schema version');
-  if (typeof request.sessionId !== 'string' || request.sessionId.length === 0 || request.sessionId.length > 128) {
-    throw new Error('Invalid session ID');
-  }
-  if (typeof request.buildSha !== 'string' || request.buildSha.length < 7 || request.buildSha.length > 40) {
-    throw new Error('Invalid build SHA');
-  }
-  if (typeof request.failedPhase !== 'string') throw new Error('Invalid failed phase');
-  if (typeof request.failureReason !== 'string') throw new Error('Invalid failure reason');
-  if (request.micDeviceHash !== undefined && (typeof request.micDeviceHash !== 'string' || request.micDeviceHash.length !== 64)) {
-    throw new Error('Invalid microphone device hash');
-  }
-  if (request.correlatedResultId !== undefined && (typeof request.correlatedResultId !== 'string' || request.correlatedResultId.length > 1024)) {
-    throw new Error('Invalid correlated result ID');
-  }
+  assertCalibrationFixProposalRequest(request);
   if (idempotencyKey.length !== 64 || !/^[a-f0-9]{64}$/.test(idempotencyKey)) {
     throw new Error('Invalid idempotency key');
   }
 }
 
 function validResponse(body: unknown): body is CalibrationFixProposalResponse {
-  if (!body || typeof body !== 'object') return false;
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return false;
   const b = body as Record<string, unknown>;
+  const keys = Object.keys(b).sort();
+  if (keys.join(',') !== ['createdAt', 'proposalId', 'replayed', 'status'].sort().join(',')) return false;
   return (
-    typeof b.proposalId === 'string' &&
+    typeof b.proposalId === 'string' && Boolean(b.proposalId.trim()) && b.proposalId.length <= 1024 &&
     b.status === 'pending_review' &&
-    typeof b.createdAt === 'string' &&
+    typeof b.createdAt === 'string' && Number.isFinite(Date.parse(b.createdAt)) &&
     typeof b.replayed === 'boolean'
   );
 }

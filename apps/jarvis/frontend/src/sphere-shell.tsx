@@ -81,7 +81,9 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
       });
     };
     const cancel = () => {
-      const active = document.querySelector<HTMLElement>('[data-jericho-active-approval="true"]');
+      const activeApprovals = document.querySelectorAll<HTMLElement>('[data-jericho-active-approval="true"]');
+      if (activeApprovals.length !== 1) return;
+      const active = activeApprovals[0];
       const missionId = active?.dataset.jerichoApprovalMissionId;
       const planHash = active?.dataset.jerichoApprovalPlanHash;
       const version = Number(active?.dataset.jerichoApprovalVersion);

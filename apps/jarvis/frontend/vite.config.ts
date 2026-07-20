@@ -12,7 +12,7 @@ export default defineConfig(({ mode }) => {
   const authenticatedProxy = token
     ? { headers: { authorization: `Bearer ${token}` } }
     : {};
-  const commit = environment.GITHUB_SHA ?? execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  const commit = environment.GITHUB_SHA ?? readGitCommit();
   return {
     define: { __JERICHO_COMMIT__: JSON.stringify(commit) },
     plugins: [react()],
@@ -27,3 +27,11 @@ export default defineConfig(({ mode }) => {
     build: { target: 'es2022', outDir: 'dist' },
   };
 });
+
+function readGitCommit(): string {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+  } catch {
+    return '0000000';
+  }
+}

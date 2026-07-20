@@ -1,16 +1,6 @@
-export interface AudioWindowMetrics {
-  durationMs: number;
-  sampleCount: number;
-  blockCount: number;
-  rmsMin: number;
-  rmsMax: number;
-  rmsMean: number;
-  rmsP95: number;
-  peakMax: number;
-  clipCount: number;
-  clippedSampleFraction: number;
-  sustainedEnergyFraction: number;
-}
+import type { AudioWindowMetrics } from '@jericho/shared';
+
+export type { AudioWindowMetrics } from '@jericho/shared';
 
 export interface AudioMeasurementRequest {
   mode: 'room' | 'speech';
@@ -123,16 +113,25 @@ export class ClapWakeDetector {
   }
 
   installTemporaryProfile(profile: Partial<ClapWakeCalibratedThresholds>): void {
+    const next = { ...this.thresholds, ...profile };
+    if (
+      !Number.isFinite(next.clapPeakMin)
+      || !Number.isFinite(next.clapRmsMin)
+      || !Number.isFinite(next.clapCrestMin)
+      || !Number.isFinite(next.clapSustainedEnergyLimit)
+    ) throw new TypeError('Clap detector thresholds must be finite');
+    this.thresholds = next;
+  }
+
+  restoreProfile(profile: Partial<ClapWakeCalibratedThresholds> | null): void {
     this.thresholds = {
-      clapPeakMin: profile.clapPeakMin ?? DEFAULT_CLAP_THRESHOLDS.clapPeakMin,
-      clapRmsMin: profile.clapRmsMin ?? DEFAULT_CLAP_THRESHOLDS.clapRmsMin,
-      clapCrestMin: profile.clapCrestMin ?? DEFAULT_CLAP_THRESHOLDS.clapCrestMin,
-      clapSustainedEnergyLimit: profile.clapSustainedEnergyLimit ?? DEFAULT_CLAP_THRESHOLDS.clapSustainedEnergyLimit,
+      ...DEFAULT_CLAP_THRESHOLDS,
+      ...(profile ?? {}),
     };
   }
 
-  restoreProfile(_profile: Partial<ClapWakeCalibratedThresholds> | null): void {
-    this.thresholds = { ...DEFAULT_CLAP_THRESHOLDS };
+  profile(): ClapWakeCalibratedThresholds {
+    return { ...this.thresholds };
   }
 }
 
@@ -148,20 +147,46 @@ export interface LocalCalibrationSession {
   };
   measure(request: AudioMeasurementRequest): Promise<AudioWindowMetrics>;
   observeClaps(listener: (measurement: ClapMeasurement) => void): () => void;
+  observeLevel(listener: (rms: number) => void): () => void;
   close(): void;
 }
 
-interface MeasurementBlock {
-  rms: number;
-  peak: number;
-  clipCount: number;
-  sustainedCount: number;
-  totalSamples: number;
+interface CalibrationSessionState {
+  token: symbol;
+  listeners: Set<(m: ClapMeasurement) => void>;
+  levelListeners: Set<(rms: number) => void>;
+  closed: boolean;
 }
 
-interface CalibrationSessionState {
-  listeners: Set<(m: ClapMeasurement) => void>;
+interface MeasurementAccumulator {
+  sessionToken: symbol;
+  mode: AudioMeasurementRequest['mode'];
+  durationMs: number;
+  targetSamples: number;
+  processedSamples: number;
+  sampleCount: number;
+  blockCount: number;
+  rmsMin: number;
+  rmsMax: number;
+  rmsSum: number;
+  peakMax: number;
+  clipCount: number;
+  sustainedCount: number;
+  rmsHistogram: Uint32Array;
+  signal: AbortSignal;
+  abortListener: () => void;
+  resolve: (metrics: AudioWindowMetrics) => void;
+  reject: (error: Error) => void;
 }
+
+export interface MicCaptureOptions {
+  subtle?: Pick<SubtleCrypto, 'digest'>;
+  now?: () => number;
+}
+
+const RMS_HISTOGRAM_BINS = 256;
+const CLIP_THRESHOLD = 0.99;
+const SUSTAINED_THRESHOLD = 0.02;
 
 /**
  * Mic capture keeps standby samples local for transient analysis and only
@@ -178,24 +203,22 @@ export class MicCapture {
   private muted = true;
   private rms = 0; // smoothed input energy (0..~0.5) for voice-activity detection
   private wakeDetector = new ClapWakeDetector();
-
-  // Aggregate measurement state (never retains sample arrays)
-  private measurementBlocks: MeasurementBlock[] = [];
-  private measurementPending: {
-    promise: Promise<AudioWindowMetrics>;
-    resolve: (m: AudioWindowMetrics) => void;
-    reject: (e: Error) => void;
-    durationMs: number;
-  } | null = null;
-  private measurementBlockCount = 0;
-
-  // Local calibration session
+  private measurement: MeasurementAccumulator | null = null;
   private localSession: CalibrationSessionState | null = null;
+  private trackEndedListener: (() => void) | null = null;
+  private readonly subtle: Pick<SubtleCrypto, 'digest'>;
+  private readonly now: () => number;
 
   constructor(
     private onChunk: (b64: string) => void,
     private onClap: () => void = () => undefined,
-  ) {}
+    options: MicCaptureOptions = {},
+  ) {
+    const subtle = options.subtle ?? globalThis.crypto?.subtle;
+    if (!subtle) throw new Error('Web Crypto is required for microphone identity protection');
+    this.subtle = subtle;
+    this.now = options.now ?? (() => performance.now());
+  }
 
   /** True while the mic stream is live (armed). */
   get live(): boolean {
@@ -213,6 +236,11 @@ export class MicCapture {
       },
     });
     this.ctx = new AudioContext();
+    const track = this.audioTrack();
+    if (track?.addEventListener) {
+      this.trackEndedListener = () => this.handleDeviceLost();
+      track.addEventListener('ended', this.trackEndedListener, { once: true });
+    }
     const src = this.ctx.createMediaStreamSource(this.stream);
     this.proc = this.ctx.createScriptProcessor(4096, 1, 1);
 
@@ -237,7 +265,9 @@ export class MicCapture {
       if (this.muted) {
         // Local calibration session: evaluate clap metrics and notify observers
         if (this.localSession) {
-          const now = performance.now();
+          const boundedRms = Math.max(0, Math.min(1, r));
+          for (const listener of this.localSession.levelListeners) listener(boundedRms);
+          const now = this.now();
           const result = this.wakeDetector.evaluate(input, now);
           if (result.detected) {
             for (const listener of this.localSession.listeners) {
@@ -247,7 +277,7 @@ export class MicCapture {
           return;
         }
         // Ordinary clap wake
-        if (this.wakeDetector.process(input, performance.now())) this.onClap();
+        if (this.wakeDetector.process(input, this.now())) this.onClap();
         return;
       }
       const b64 = this.downsampleAndEncode(input, inRate, outRate);
@@ -260,6 +290,13 @@ export class MicCapture {
 
   /** Tear down the stream + context and release the mic hardware. */
   stop() {
+    this.rejectMeasurement(new Error('Microphone stopped'));
+    this.closeLocalSession();
+    const track = this.audioTrack();
+    if (track && this.trackEndedListener) {
+      track.removeEventListener?.('ended', this.trackEndedListener);
+    }
+    this.trackEndedListener = null;
     try {
       this.stream?.getTracks().forEach((t) => t.stop());
     } catch {
@@ -281,9 +318,6 @@ export class MicCapture {
     this.rms = 0;
     this.muted = true;
     this.wakeDetector = new ClapWakeDetector();
-    this.measurementBlocks = [];
-    this.measurementPending = null;
-    this.localSession = null;
   }
 
   /** Pause transport while retaining local transient analysis. */
@@ -305,93 +339,115 @@ export class MicCapture {
    * Raw samples are never stored — only running count/sum/min/max aggregates.
    */
   measure(request: AudioMeasurementRequest): Promise<AudioWindowMetrics> {
-    if (this.measurementPending) {
+    const session = this.localSession;
+    if (!session || session.closed || !this.stream || !this.ctx) {
+      return Promise.reject(new Error('Local calibration session is unavailable'));
+    }
+    if (this.measurement) {
       return Promise.reject(new Error('Measurement already in progress'));
     }
+    if (!Number.isFinite(request.durationMs) || request.durationMs <= 0) {
+      return Promise.reject(new TypeError('Measurement duration must be positive'));
+    }
+    if (request.signal.aborted) {
+      return Promise.reject(new DOMException('Aborted', 'AbortError'));
+    }
 
-    let resolveFn!: (m: AudioWindowMetrics) => void;
-    let rejectFn!: (e: Error) => void;
-
-    const promise = new Promise<AudioWindowMetrics>((resolve, reject) => {
-      if (request.signal.aborted) {
-        reject(new DOMException('Aborted', 'AbortError'));
-        return;
-      }
-      const onAbort = () => {
-        this.measurementPending = null;
-        this.measurementBlocks = [];
-        reject(new DOMException('Aborted', 'AbortError'));
+    return new Promise<AudioWindowMetrics>((resolve, reject) => {
+      const abortListener = () => this.rejectMeasurement(new DOMException('Aborted', 'AbortError'));
+      request.signal.addEventListener('abort', abortListener, { once: true });
+      this.measurement = {
+        sessionToken: session.token,
+        mode: request.mode,
+        durationMs: request.durationMs,
+        targetSamples: Math.ceil(this.ctx!.sampleRate * request.durationMs / 1_000),
+        processedSamples: 0,
+        sampleCount: 0,
+        blockCount: 0,
+        rmsMin: Number.POSITIVE_INFINITY,
+        rmsMax: 0,
+        rmsSum: 0,
+        peakMax: 0,
+        clipCount: 0,
+        sustainedCount: 0,
+        rmsHistogram: new Uint32Array(RMS_HISTOGRAM_BINS),
+        signal: request.signal,
+        abortListener,
+        resolve,
+        reject,
       };
-      request.signal.addEventListener('abort', onAbort, { once: true });
-      resolveFn = (m) => {
-        this.measurementPending = null;
-        resolve(m);
-      };
-      rejectFn = reject;
     });
-
-    this.measurementBlocks = [];
-    this.measurementBlockCount = 0;
-    this.measurementPending = {
-      promise,
-      resolve: resolveFn,
-      reject: rejectFn,
-      durationMs: request.durationMs,
-    };
-
-    return promise;
   }
 
-  /** Resolve the active measurement window with current aggregates. */
+  /** Test-only compatibility hook; production windows complete by sample count. */
   completeMeasurement(): void {
-    if (!this.measurementPending) return;
-    const metrics = this.computeMetrics(this.measurementPending.durationMs);
-    this.measurementPending.resolve(metrics);
-    this.measurementPending = null;
+    this.resolveMeasurement();
   }
 
   /** Read-only summary for inspection (test/debug only). */
   getMeasurementSummary(): { blockCount: number; rmsMean: number } {
-    const rmsValues = this.measurementBlocks.map((b) => b.rms).filter((v) => Number.isFinite(v));
-    const rmsMean = rmsValues.length > 0
-      ? rmsValues.reduce((sum, v) => sum + v, 0) / rmsValues.length
-      : 0;
-    return { blockCount: this.measurementBlockCount, rmsMean };
+    const measurement = this.measurement;
+    return {
+      blockCount: measurement?.blockCount ?? 0,
+      rmsMean: measurement?.blockCount ? measurement.rmsSum / measurement.blockCount : 0,
+    };
   }
 
   /**
    * Open a local calibration session. Only one session can be active.
    * Returns null if a session is already open.
    */
-  openLocalSession(): LocalCalibrationSession | null {
-    if (this.localSession) return null;
-    this.localSession = { listeners: new Set() };
+  async openLocalSession(): Promise<LocalCalibrationSession | null> {
+    if (this.localSession || !this.stream || !this.ctx) return null;
+    const stream = this.stream;
+    const context = this.ctx;
+    const track = this.audioTrack();
+    if (!track || track.readyState === 'ended') return null;
+    const rawDeviceId = track.getSettings?.().deviceId ?? '';
+    const deviceHash = await hashDeviceId(rawDeviceId || `default:${track.label || 'microphone'}`, this.subtle);
+    if (this.stream !== stream || this.ctx !== context || String(track.readyState) === 'ended') return null;
+    const state: CalibrationSessionState = {
+      token: Symbol('local-calibration-session'),
+      listeners: new Set(),
+      levelListeners: new Set(),
+      closed: false,
+    };
+    this.localSession = state;
     const self = this;
     return {
-      get identity() {
-        return {
-          label: 'Microphone',
-          deviceHash: 'local-device-hash',
-          sampleRate: self.ctx?.sampleRate ?? 48_000,
-        };
+      identity: {
+        label: track.label?.trim() || 'Default microphone',
+        deviceHash,
+        sampleRate: context.sampleRate,
       },
       measure(request: AudioMeasurementRequest): Promise<AudioWindowMetrics> {
+        if (state.closed || self.localSession?.token !== state.token) {
+          return Promise.reject(new Error('Session closed'));
+        }
         return self.measure(request);
       },
       observeClaps(listener: (measurement: ClapMeasurement) => void): () => void {
-        self.localSession?.listeners.add(listener);
+        if (state.closed || self.localSession?.token !== state.token) {
+          throw new Error('Session closed');
+        }
+        state.listeners.add(listener);
         return () => {
-          self.localSession?.listeners.delete(listener);
+          state.listeners.delete(listener);
         };
       },
-      close(): void {
-        self.localSession = null;
-        // Reject pending measurement on session close
-        if (self.measurementPending) {
-          self.measurementPending.reject(new Error('Session closed'));
-          self.measurementPending = null;
-          self.measurementBlocks = [];
+      observeLevel(listener: (rms: number) => void): () => void {
+        if (state.closed || self.localSession?.token !== state.token) {
+          throw new Error('Session closed');
         }
+        state.levelListeners.add(listener);
+        return () => state.levelListeners.delete(listener);
+      },
+      close(): void {
+        if (state.closed) return;
+        state.closed = true;
+        state.listeners.clear();
+        state.levelListeners.clear();
+        if (self.localSession?.token === state.token) self.closeLocalSession();
       },
     };
   }
@@ -402,15 +458,27 @@ export class MicCapture {
   }
 
   /** Restore default detector thresholds. */
+  restoreProfile(profile: Partial<ClapWakeCalibratedThresholds> | null = null): void {
+    this.wakeDetector.restoreProfile(profile);
+  }
+
+  /** @deprecated Use restoreProfile so callers may restore an approved profile. */
   restoreDefaultProfile(): void {
-    this.wakeDetector.restoreProfile(null);
+    this.restoreProfile(null);
   }
 
   // --- private helpers ---
 
   private feedMeasurementBlock(input: Float32Array): void {
-    if (!this.measurementPending) return;
-    this.measurementBlockCount++;
+    const measurement = this.measurement;
+    if (!measurement || measurement.sessionToken !== this.localSession?.token) return;
+    const remaining = measurement.targetSamples - measurement.processedSamples;
+    if (remaining <= 0) {
+      this.resolveMeasurement();
+      return;
+    }
+    const limit = Math.min(input.length, remaining);
+    if (limit <= 0) return;
 
     let sumSquares = 0;
     let peak = 0;
@@ -418,48 +486,71 @@ export class MicCapture {
     let sustainedCount = 0;
     let validSamples = 0;
 
-    for (let i = 0; i < input.length; i++) {
+    for (let i = 0; i < limit; i++) {
       const s = input[i];
       if (!Number.isFinite(s)) continue;
       validSamples++;
       const abs = Math.abs(s);
       peak = Math.max(peak, abs);
       sumSquares += s * s;
-      if (abs >= 0.99) clipCount++;
-      if (abs > 0.02) sustainedCount++;
+      if (abs >= CLIP_THRESHOLD) clipCount++;
+      if (abs > SUSTAINED_THRESHOLD) sustainedCount++;
     }
 
+    measurement.processedSamples += limit;
+    if (validSamples === 0) {
+      if (measurement.processedSamples >= measurement.targetSamples) this.resolveMeasurement();
+      return;
+    }
     const rms = validSamples > 0 ? Math.sqrt(sumSquares / validSamples) : 0;
-    this.measurementBlocks.push({ rms, peak, clipCount, sustainedCount, totalSamples: input.length });
+    measurement.sampleCount += validSamples;
+    measurement.blockCount += 1;
+    measurement.rmsMin = Math.min(measurement.rmsMin, rms);
+    measurement.rmsMax = Math.max(measurement.rmsMax, rms);
+    measurement.rmsSum += rms;
+    measurement.peakMax = Math.max(measurement.peakMax, peak);
+    measurement.clipCount += clipCount;
+    measurement.sustainedCount += sustainedCount;
+    const bin = Math.min(RMS_HISTOGRAM_BINS - 1, Math.floor(Math.max(0, Math.min(1, rms)) * RMS_HISTOGRAM_BINS));
+    measurement.rmsHistogram[bin] += 1;
+    if (measurement.processedSamples >= measurement.targetSamples) this.resolveMeasurement();
   }
 
-  private computeMetrics(durationMs: number): AudioWindowMetrics {
-    const rmsValues = this.measurementBlocks.map((b) => b.rms).filter((v) => Number.isFinite(v));
-    const peaks = this.measurementBlocks.map((b) => b.peak).filter((v) => Number.isFinite(v));
-    const totalSamples = this.measurementBlocks.reduce((sum, b) => sum + b.totalSamples, 0);
-    const totalClips = this.measurementBlocks.reduce((sum, b) => sum + b.clipCount, 0);
-    const totalSustained = this.measurementBlocks.reduce((sum, b) => sum + b.sustainedCount, 0);
+  private resolveMeasurement(): void {
+    const measurement = this.measurement;
+    if (!measurement) return;
+    this.measurement = null;
+    measurement.signal.removeEventListener('abort', measurement.abortListener);
+    measurement.resolve(measurementMetrics(measurement));
+  }
 
-    let rmsP95 = 0;
-    if (rmsValues.length > 0) {
-      const sorted = [...rmsValues].sort((a, b) => a - b);
-      const idx = Math.ceil(sorted.length * 0.95) - 1;
-      rmsP95 = sorted[Math.max(0, idx)];
-    }
+  private rejectMeasurement(error: Error): void {
+    const measurement = this.measurement;
+    if (!measurement) return;
+    this.measurement = null;
+    measurement.signal.removeEventListener('abort', measurement.abortListener);
+    measurement.reject(error);
+  }
 
-    return {
-      durationMs,
-      sampleCount: totalSamples,
-      blockCount: this.measurementBlocks.length,
-      rmsMin: rmsValues.length > 0 ? Math.min(...rmsValues) : 0,
-      rmsMax: rmsValues.length > 0 ? Math.max(...rmsValues) : 0,
-      rmsMean: rmsValues.length > 0 ? rmsValues.reduce((s, v) => s + v, 0) / rmsValues.length : 0,
-      rmsP95,
-      peakMax: peaks.length > 0 ? Math.max(...peaks) : 0,
-      clipCount: totalClips,
-      clippedSampleFraction: totalSamples > 0 ? totalClips / totalSamples : 0,
-      sustainedEnergyFraction: totalSamples > 0 ? totalSustained / totalSamples : 0,
-    };
+  private closeLocalSession(): void {
+    const session = this.localSession;
+    if (!session) return;
+    session.closed = true;
+    session.listeners.clear();
+    session.levelListeners.clear();
+    this.localSession = null;
+    this.rejectMeasurement(new Error('Session closed'));
+  }
+
+  private handleDeviceLost(): void {
+    this.rejectMeasurement(new Error('Microphone device lost'));
+    this.closeLocalSession();
+  }
+
+  private audioTrack(): MediaStreamTrack | undefined {
+    const stream = this.stream;
+    if (!stream) return undefined;
+    return stream.getAudioTracks?.()[0] ?? stream.getTracks()[0];
   }
 
   private downsampleAndEncode(input: Float32Array, inRate: number, outRate: number): string {
@@ -480,11 +571,66 @@ export class MicCapture {
   }
 }
 
+async function hashDeviceId(
+  deviceId: string,
+  subtle: Pick<SubtleCrypto, 'digest'>,
+): Promise<string> {
+  const bytes = new TextEncoder().encode(`jericho-mic-device:${deviceId}`);
+  const digest = await subtle.digest('SHA-256', bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+function measurementMetrics(measurement: MeasurementAccumulator): AudioWindowMetrics {
+  const blockCount = measurement.blockCount;
+  const sampleCount = measurement.sampleCount;
+  return {
+    durationMs: measurement.durationMs,
+    sampleCount,
+    blockCount,
+    rmsMin: blockCount > 0 ? measurement.rmsMin : 0,
+    rmsMax: blockCount > 0 ? measurement.rmsMax : 0,
+    rmsMean: blockCount > 0 ? measurement.rmsSum / blockCount : 0,
+    rmsP95: blockCount > 0 ? histogramPercentile(
+      measurement.rmsHistogram,
+      0.95,
+      measurement.rmsMin,
+      measurement.rmsMax,
+    ) : 0,
+    peakMax: measurement.peakMax,
+    clipCount: measurement.clipCount,
+    clippedSampleFraction: sampleCount > 0 ? measurement.clipCount / sampleCount : 0,
+    sustainedEnergyFraction: sampleCount > 0 ? measurement.sustainedCount / sampleCount : 0,
+  };
+}
+
+function histogramPercentile(
+  histogram: Uint32Array,
+  percentile: number,
+  minimum: number,
+  maximum: number,
+): number {
+  const total = histogram.reduce((sum, count) => sum + count, 0);
+  if (total === 0) return 0;
+  const target = Math.max(1, Math.ceil(total * percentile));
+  let cumulative = 0;
+  for (let index = 0; index < histogram.length; index += 1) {
+    cumulative += histogram[index];
+    if (cumulative >= target) {
+      const estimate = (index + 0.5) / histogram.length;
+      return Math.max(minimum, Math.min(maximum, estimate));
+    }
+  }
+  return maximum;
+}
+
 /** Speaker playback: plays 24kHz 16-bit PCM base64 chunks, gapless, with interrupt. */
 export class SpeakerPlayback {
   private ctx: AudioContext | null;
   private nextStart = 0;
   private sources: AudioBufferSourceNode[] = [];
+  private drainWaiters = new Set<() => void>();
   private disposed = false;
 
   constructor() {
@@ -508,6 +654,7 @@ export class SpeakerPlayback {
     this.sources.push(src);
     src.onended = () => {
       this.sources = this.sources.filter((s) => s !== src);
+      this.resolveDrainIfIdle();
     };
   }
 
@@ -522,11 +669,17 @@ export class SpeakerPlayback {
     }
     this.sources = [];
     this.nextStart = 0;
+    this.resolveDrainIfIdle();
   }
 
   /** True while any playback is scheduled/active (used by the barge-in VAD). */
   isPlaying() {
     return this.sources.length > 0;
+  }
+
+  whenDrained(): Promise<void> {
+    if (!this.isPlaying()) return Promise.resolve();
+    return new Promise((resolve) => this.drainWaiters.add(resolve));
   }
 
   resume() {
@@ -541,6 +694,12 @@ export class SpeakerPlayback {
     const context = this.ctx;
     this.ctx = null;
     if (context && context.state !== 'closed') await context.close();
+  }
+
+  private resolveDrainIfIdle(): void {
+    if (this.isPlaying()) return;
+    for (const resolve of this.drainWaiters) resolve();
+    this.drainWaiters.clear();
   }
 }
 

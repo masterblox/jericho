@@ -30,8 +30,35 @@ export interface AudioCalibrationProfileSummary {
   clapPeak: number;
   clapRms: number;
   clapCrest: number;
+  clapSustainedEnergyLimit: number;
+  inputSampleRate: number;
   liveResultId: string;
 }
+
+export interface AudioCalibrationThresholds {
+  ambientNoiseFloor: number;
+  speechActivationFloor: number;
+  clapPeak: number;
+  clapRms: number;
+  clapCrest: number;
+  clapSustainedEnergyLimit: number;
+}
+
+const PROFILE_KEYS = [
+  'schemaVersion',
+  'micDeviceHash',
+  'createdAt',
+  'ambientNoiseFloor',
+  'speechActivationFloor',
+  'clapPeak',
+  'clapRms',
+  'clapCrest',
+  'clapSustainedEnergyLimit',
+  'inputSampleRate',
+  'phaseSampleCounts',
+  'liveResultId',
+] as const;
+const COUNT_KEYS = ['room', 'speech', 'clap'] as const;
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
@@ -55,17 +82,58 @@ export function deriveAudioCalibrationProfile(
   clapMeasurements: ClapMeasurement[],
   micDeviceHash: string,
   inputSampleRate: number,
-  liveResultId = '',
+  liveResultId: string,
+  createdAt = new Date().toISOString(),
 ): AudioCalibrationProfile {
-  if (speechWindows.length < 3) {
+  if (speechWindows.length !== 3) {
     throw new Error('Speech calibration requires exactly three measurements');
   }
-  if (clapMeasurements.length < 3) {
+  if (clapMeasurements.length !== 3) {
     throw new Error('Clap calibration requires exactly three measurements');
   }
   if (micDeviceHash.length !== 64 || !/^[a-f0-9]{64}$/.test(micDeviceHash)) {
     throw new Error('Invalid microphone device hash');
   }
+
+  if (!Number.isInteger(inputSampleRate) || inputSampleRate < 8_000 || inputSampleRate > 384_000) {
+    throw new Error('Invalid microphone sample rate');
+  }
+  if (!liveResultId.trim() || liveResultId.length > 1_024) {
+    throw new Error('A correlated grounded result ID is required');
+  }
+  if (!Number.isFinite(Date.parse(createdAt))) throw new Error('Invalid profile timestamp');
+
+  const thresholds = deriveAudioCalibrationThresholds(room, speechWindows, clapMeasurements);
+
+  return {
+    schemaVersion: 1,
+    micDeviceHash,
+    createdAt,
+    ...thresholds,
+    inputSampleRate,
+    phaseSampleCounts: {
+      room: room.sampleCount,
+      speech: speechWindows.reduce((sum, metrics) => sum + metrics.sampleCount, 0),
+      clap: clapMeasurements.length,
+    },
+    liveResultId,
+  };
+}
+
+export function deriveAudioCalibrationThresholds(
+  room: AudioWindowMetrics,
+  speechWindows: AudioWindowMetrics[],
+  clapMeasurements: ClapMeasurement[],
+): AudioCalibrationThresholds {
+  if (speechWindows.length !== 3) {
+    throw new Error('Speech calibration requires exactly three measurements');
+  }
+  if (clapMeasurements.length !== 3) {
+    throw new Error('Clap calibration requires exactly three measurements');
+  }
+  assertWindowMetrics(room, 'room');
+  speechWindows.forEach((metrics, index) => assertWindowMetrics(metrics, `speech[${index}]`));
+  clapMeasurements.forEach((measurement, index) => assertClapMeasurement(measurement, index));
 
   const ambientNoiseFloor = clamp(room.rmsP95, 0.001, 0.25);
 
@@ -92,46 +160,37 @@ export function deriveAudioCalibrationProfile(
   const clapSustainedEnergyLimit = clamp(medianSustained + 0.03, 0.05, 0.18);
 
   return {
-    schemaVersion: 1,
-    micDeviceHash,
-    createdAt: new Date().toISOString(),
     ambientNoiseFloor,
     speechActivationFloor,
     clapPeak,
     clapRms,
     clapCrest,
     clapSustainedEnergyLimit,
-    inputSampleRate,
-    phaseSampleCounts: {
-      room: room.blockCount,
-      speech: speechWindows.reduce((sum, m) => sum + m.blockCount, 0),
-      clap: clapMeasurements.length,
-    },
-    liveResultId,
   };
 }
 
 export function validateAudioCalibrationProfile(profile: unknown): profile is AudioCalibrationProfile {
-  if (!profile || typeof profile !== 'object') return false;
+  if (!profile || typeof profile !== 'object' || Array.isArray(profile)) return false;
   const p = profile as Record<string, unknown>;
+  if (!hasExactKeys(p, PROFILE_KEYS)) return false;
   if (p.schemaVersion !== 1) return false;
   if (typeof p.micDeviceHash !== 'string' || p.micDeviceHash.length !== 64 || !/^[a-f0-9]{64}$/.test(p.micDeviceHash)) return false;
   if (typeof p.createdAt !== 'string' || Number.isNaN(Date.parse(p.createdAt as string))) return false;
 
-  const metrics = ['ambientNoiseFloor', 'speechActivationFloor', 'clapPeak', 'clapRms', 'clapCrest', 'clapSustainedEnergyLimit'] as const;
-  for (const key of metrics) {
-    const v = p[key];
-    if (typeof v !== 'number' || !Number.isFinite(v)) return false;
-  }
-
-  if (typeof p.inputSampleRate !== 'number' || !Number.isFinite(p.inputSampleRate) || p.inputSampleRate <= 0) return false;
-  if (typeof p.liveResultId !== 'string') return false;
+  if (!boundedNumber(p.ambientNoiseFloor, 0.001, 0.25)) return false;
+  if (!boundedNumber(p.speechActivationFloor, 0.01, 0.30)) return false;
+  if (!boundedNumber(p.clapPeak, 0.18, 0.98)) return false;
+  if (!boundedNumber(p.clapRms, 0.02, 0.50)) return false;
+  if (!boundedNumber(p.clapCrest, 2.5, 10)) return false;
+  if (!boundedNumber(p.clapSustainedEnergyLimit, 0.05, 0.18)) return false;
+  if (!Number.isInteger(p.inputSampleRate) || Number(p.inputSampleRate) < 8_000 || Number(p.inputSampleRate) > 384_000) return false;
+  if (typeof p.liveResultId !== 'string' || !p.liveResultId.trim() || p.liveResultId.length > 1_024) return false;
 
   const counts = p.phaseSampleCounts as Record<string, unknown> | undefined;
-  if (!counts || typeof counts !== 'object') return false;
-  if (typeof counts.room !== 'number' || !Number.isFinite(counts.room)) return false;
-  if (typeof counts.speech !== 'number' || !Number.isFinite(counts.speech)) return false;
-  if (typeof counts.clap !== 'number' || !Number.isFinite(counts.clap)) return false;
+  if (!counts || typeof counts !== 'object' || Array.isArray(counts) || !hasExactKeys(counts, COUNT_KEYS)) return false;
+  if (!Number.isInteger(counts.room) || Number(counts.room) <= 0) return false;
+  if (!Number.isInteger(counts.speech) || Number(counts.speech) <= 0) return false;
+  if (!Number.isInteger(counts.clap) || Number(counts.clap) !== 3) return false;
 
   return true;
 }
@@ -181,7 +240,58 @@ export class AudioCalibrationProfileStore {
       clapPeak: profile.clapPeak,
       clapRms: profile.clapRms,
       clapCrest: profile.clapCrest,
+      clapSustainedEnergyLimit: profile.clapSustainedEnergyLimit,
+      inputSampleRate: profile.inputSampleRate,
       liveResultId: profile.liveResultId,
     };
+  }
+}
+
+function hasExactKeys(
+  value: Record<string, unknown>,
+  expected: readonly string[],
+): boolean {
+  const keys = Object.keys(value).sort();
+  const wanted = [...expected].sort();
+  return keys.length === wanted.length && keys.every((key, index) => key === wanted[index]);
+}
+
+function boundedNumber(value: unknown, minimum: number, maximum: number): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= minimum && value <= maximum;
+}
+
+function assertWindowMetrics(metrics: AudioWindowMetrics, label: string): void {
+  const values = Object.values(metrics);
+  if (values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+    throw new Error(`${label} metrics must be finite non-negative numbers`);
+  }
+  if (!Number.isInteger(metrics.sampleCount) || metrics.sampleCount <= 0) {
+    throw new Error(`${label} sample count must be positive`);
+  }
+  if (!Number.isInteger(metrics.blockCount) || metrics.blockCount <= 0) {
+    throw new Error(`${label} block count must be positive`);
+  }
+  if (
+    metrics.rmsMin > metrics.rmsMax
+    || metrics.rmsMean < metrics.rmsMin
+    || metrics.rmsMean > metrics.rmsMax
+    || metrics.rmsP95 < metrics.rmsMin
+    || metrics.rmsP95 > metrics.rmsMax
+    || metrics.peakMax < metrics.rmsMax
+  ) {
+    throw new Error(`${label} RMS metrics are inconsistent`);
+  }
+  if (metrics.clippedSampleFraction > 1 || metrics.sustainedEnergyFraction > 1) {
+    throw new Error(`${label} fractions must be bounded`);
+  }
+}
+
+function assertClapMeasurement(measurement: ClapMeasurement, index: number): void {
+  const values = Object.values(measurement);
+  if (values.some((value) => typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+    throw new Error(`clap[${index}] metrics must be finite non-negative numbers`);
+  }
+  if (measurement.sustainedEnergyFraction > 1) {
+    throw new Error(`clap[${index}] sustained energy must be bounded`);
   }
 }

@@ -200,7 +200,7 @@ export function KnowledgeProjection({ actions = {} }) {
     document.addEventListener(CANCEL_PENDING_EVENT, c); return () => document.removeEventListener(CANCEL_PENDING_EVENT, c)
   }, [dismissAll])
   React.useEffect(() => {
-    const k = (e) => { if (e.key !== 'Escape' || !resultRef.current || document.querySelector('.sphere-command:not([hidden])') || document.querySelector('.modal-backdrop')) return; e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); dismissAll() }
+    const k = (e) => { if (e.key !== 'Escape' || !resultRef.current || document.querySelector('.native-calibration') || document.querySelector('.sphere-command:not([hidden])') || document.querySelector('.modal-backdrop')) return; e.preventDefault(); e.stopPropagation(); e.stopImmediatePropagation(); dismissAll() }
     window.addEventListener('keydown', k, true); return () => window.removeEventListener('keydown', k, true)
   }, [dismissAll])
   React.useEffect(() => {
