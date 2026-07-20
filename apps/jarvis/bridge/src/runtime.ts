@@ -792,6 +792,10 @@ function isRuntimeRecord(value: unknown): value is Record<string, unknown> {
 
 function gatewayUrl(base: string, pathname: string): URL {
   const url = new URL(base);
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === '::1' || url.hostname === 'localhost';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('Authenticated gateway URLs require HTTPS outside loopback');
+  }
   url.pathname = `${url.pathname.replace(/\/$/, '')}${pathname}`;
   url.search = '';
   url.hash = '';

@@ -151,6 +151,21 @@ describe('connector runtime composition', () => {
 });
 
 describe('production WhatsApp gateway transport', () => {
+  it('requires TLS for bearer credentials outside loopback', async () => {
+    const fetchImplementation = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const transport = new HttpWhatsAppGatewayTransport(fetchImplementation as typeof fetch);
+    const signal = new AbortController().signal;
+
+    await expect(transport.probe({
+      gatewayUrl: 'http://hermes.internal', gatewayToken: 'wa-secret', signal,
+    })).rejects.toThrow(/HTTPS|loopback/i);
+    expect(fetchImplementation).not.toHaveBeenCalled();
+
+    await expect(transport.probe({
+      gatewayUrl: 'http://127.0.0.1:8787', gatewayToken: 'wa-secret', signal,
+    })).resolves.toEqual({ status: 204 });
+  });
+
   it('uses only the authenticated Hermes health, update, and message endpoints', async () => {
     const requests: Array<{ url: URL; init: RequestInit }> = [];
     const fetchImplementation = vi.fn(async (value: string | URL | Request, init: RequestInit = {}) => {

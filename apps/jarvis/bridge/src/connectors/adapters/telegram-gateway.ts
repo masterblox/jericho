@@ -105,6 +105,10 @@ export class TelegramGatewayAdapter implements CaptureConnector {
     if (response.status < 200 || response.status >= 300) {
       throw new ConnectorUnavailableError(`Telegram gateway returned ${response.status}`);
     }
+    if (response.hasMore && !response.nextPageToken?.trim()) {
+      throw new Error('Telegram gateway continuation page is missing its opaque token');
+    }
+    assertNonRegressivePage(response.updates, request);
     const captures = response.updates.map(normalizeTelegramUpdate);
     const last = response.updates.at(-1);
     return {
@@ -208,6 +212,27 @@ const TELEGRAM_BINDING = {
 
 function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
+}
+
+function assertNonRegressivePage(
+  updates: readonly TelegramGatewayUpdate[],
+  request: ConnectorCaptureRequest,
+): void {
+  let epoch = request.cursor?.epoch ?? 0;
+  let sequence = request.cursor?.sequence ?? 0;
+  for (const update of updates) {
+    if (
+      !Number.isSafeInteger(update.epoch) || update.epoch < 0 ||
+      !Number.isSafeInteger(update.sequence) || update.sequence < 0
+    ) {
+      throw new Error('Telegram gateway returned an invalid cursor position');
+    }
+    if (update.epoch < epoch || (update.epoch === epoch && update.sequence < sequence)) {
+      throw new Error('Telegram gateway page would regress the durable cursor');
+    }
+    epoch = update.epoch;
+    sequence = update.sequence;
+  }
 }
 
 function normalizeTelegramUpdate(update: TelegramGatewayUpdate): NormalizedCapture {

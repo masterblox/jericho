@@ -5,6 +5,8 @@ import {
   type MissionPlan,
 } from '@jericho/shared';
 
+import { repositoryPathIsWithin } from './scope.js';
+
 export interface MissionUsage {
   actualCostMicroUsd: number;
   elapsedRuntimeMs: number;
@@ -88,9 +90,7 @@ export function evaluateMissionAction(
       if (
         action.repositoryPath &&
         !grant.writablePaths.some(
-          (path) =>
-            action.repositoryPath === path ||
-            action.repositoryPath?.startsWith(`${path.replace(/\/$/, '')}/`),
+          (path) => repositoryPathIsWithin(action.repositoryPath!, path),
         )
       ) {
         reasons.push(EscalationReason.RepositoryExpansion);

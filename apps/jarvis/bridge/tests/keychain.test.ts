@@ -34,8 +34,16 @@ describe('Electron packaging contract', () => {
     const build = readFileSync(resolve(root, 'electron/build.mjs'), 'utf8');
     const packaging = readFileSync(resolve(root, 'electron/electron-builder.yml'), 'utf8');
     const helper = readFileSync(resolve(root, 'electron/keychain-helper.m'), 'utf8');
+    const main = readFileSync(resolve(root, 'electron/main.ts'), 'utf8');
     expect(build).toContain("'-framework', 'Security'");
     expect(packaging).toContain('electron/dist/jericho-keychain-helper');
+    expect(packaging).toContain('bridge/dist/**/*');
+    expect(packaging).not.toContain('bridge/src/**/*');
+    expect(packaging).not.toContain('node_modules/**/*');
+    expect(main).toContain("bridgeResourcePath('bridge', 'dist', 'server.cjs')");
+    expect(main).not.toContain('tsxLoader');
+    expect(main).toContain('setPermissionCheckHandler');
+    expect(main).toContain('setPermissionRequestHandler');
     expect(helper).toContain('SecItemAdd');
     expect(helper).toContain('readDataToEndOfFile');
     expect(helper).not.toContain('kSecValueData: service');

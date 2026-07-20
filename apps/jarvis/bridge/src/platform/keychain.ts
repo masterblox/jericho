@@ -34,5 +34,5 @@ export function writeKeychainSecret(
 
 export function keychainHelperPath(): string {
   const here = dirname(fileURLToPath(import.meta.url));
-  return resolve(here, '../../../electron/dist/jericho-keychain-helper');
+  return resolve(here, '../../electron/dist/jericho-keychain-helper');
 }

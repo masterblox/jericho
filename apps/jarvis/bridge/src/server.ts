@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
-import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
+import { createReadStream, existsSync, realpathSync, statSync, writeSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { isIP } from 'node:net';
 import { extname, join, resolve, sep } from 'node:path';
@@ -73,6 +73,7 @@ import {
   type CorrectionConfirmInput,
   type CorrectionRetryInput,
 } from './core/store.js';
+import { acquireCoreProcessLock } from './core/process-lock.js';
 import {
   IntakeProcessor,
   type IntakeProcessingResult,
@@ -2915,6 +2916,9 @@ async function main(): Promise<void> {
       ),
     });
   }
+  const coreProcessLock = acquireCoreProcessLock();
+  let lockHandedOffToShutdown = false;
+  try {
   const store = new JerichoStore();
   const intake = new IntakeProcessor({
     store,
@@ -3006,9 +3010,13 @@ async function main(): Promise<void> {
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    await server.close();
-    await runtime.stop();
-    store.close();
+    try {
+      await server.close();
+      await runtime.stop();
+    } finally {
+      store.close();
+      coreProcessLock.release();
+    }
   };
   const shutdownAndExit = () => {
     void shutdown()
@@ -3026,13 +3034,35 @@ async function main(): Promise<void> {
   process.once('SIGTERM', shutdownAndExit);
   try {
     await runtime.start();
+    if (shuttingDown) return;
+    console.log(`[jericho] listening on http://${config.host}:${address.port}`);
+    publishBrowserBootstrap(address.bootstrapUrl);
+    lockHandedOffToShutdown = true;
   } catch (error) {
     await shutdown();
     throw error;
   }
-  if (shuttingDown) return;
-  console.log(`[jericho] listening on http://${config.host}:${address.port}`);
-  console.log(`[jericho] one-time browser bootstrap ${address.bootstrapUrl}`);
+  } finally {
+    if (!lockHandedOffToShutdown) coreProcessLock.release();
+  }
+}
+
+function publishBrowserBootstrap(bootstrapUrl: string): void {
+  const descriptorText = process.env.JERICHO_BOOTSTRAP_FD?.trim();
+  if (descriptorText) {
+    const descriptor = Number(descriptorText);
+    if (!Number.isSafeInteger(descriptor) || descriptor < 3) {
+      throw new Error('JERICHO_BOOTSTRAP_FD must be a dedicated file descriptor');
+    }
+    writeSync(descriptor, `${bootstrapUrl}\n`);
+    console.log('[jericho] one-time browser bootstrap delivered over private pipe');
+    return;
+  }
+  if (process.env.JERICHO_PRINT_BOOTSTRAP_URL === '1') {
+    console.log(`[jericho] one-time browser bootstrap ${bootstrapUrl}`);
+    return;
+  }
+  console.log('[jericho] one-time browser bootstrap ready; URL suppressed from stdout');
 }
 
 function rejectClientControlledCorrectionFields(input: Record<string, unknown>): void {

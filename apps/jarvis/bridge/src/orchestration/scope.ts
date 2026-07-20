@@ -46,7 +46,7 @@ export function permissionScopeViolations(
       }
     }
     for (const path of requestedGrant.writablePaths) {
-      if (![...allowedGrant.writablePaths].some((root) => pathIsWithin(path, root))) {
+      if (![...allowedGrant.writablePaths].some((root) => repositoryPathIsWithin(path, root))) {
         violations.push(`repositoryPath:${requestedGrant.repository}:${path}`);
       }
     }
@@ -145,7 +145,7 @@ function mergeRepositoryGrants(grants: readonly Readonly<RepositoryGrant>[]) {
   return merged;
 }
 
-function pathIsWithin(candidate: string, root: string): boolean {
+export function repositoryPathIsWithin(candidate: string, root: string): boolean {
   const normalizedCandidate = normalizeRepositoryPath(candidate);
   const normalizedRoot = normalizeRepositoryPath(root);
   if (!normalizedCandidate || !normalizedRoot) return false;

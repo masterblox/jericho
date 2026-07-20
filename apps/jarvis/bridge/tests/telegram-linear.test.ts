@@ -112,6 +112,44 @@ describe('TelegramGatewayAdapter', () => {
     await expect(adapter.capture(request())).rejects.toBeInstanceOf(ConnectorUnauthorizedError);
   });
 
+  it('rejects a gateway page that would regress the durable cursor', async () => {
+    const transport = telegramTransport();
+    transport.fetchUpdates.mockResolvedValue({
+      status: 200,
+      updates: [{
+        epoch: 4, sequence: 26, updateId: 'stale-update', occurredAt: T0,
+        chat: { id: 'chat-1' }, message: { id: 'message-stale', text: 'Stale' },
+      }],
+      hasMore: false,
+    });
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+    const cursor = {
+      connectorId: 'telegram', capability: 'capture' as never, partition: 'primary',
+      epoch: 4, sequence: 27, version: 7, updatedAt: T0,
+    };
+
+    await expect(adapter.capture(request({ cursor }))).rejects.toThrow(/cursor|regress|sequence/i);
+  });
+
+  it('refuses an ambiguous non-final page without an opaque continuation token', async () => {
+    const transport = telegramTransport();
+    transport.fetchUpdates.mockResolvedValue({
+      status: 200,
+      updates: [{
+        epoch: 4, sequence: 31, updateId: 'update-31', occurredAt: T0,
+        chat: { id: 'chat-1' }, message: { id: 'message-31', text: 'More follows' },
+      }],
+      hasMore: true,
+    });
+    const adapter = new TelegramGatewayAdapter({
+      gatewayUrl: 'https://hermes.internal', gatewayToken: 'gateway-token', transport,
+    });
+
+    await expect(adapter.capture(request())).rejects.toThrow(/page|continuation|token/i);
+  });
+
   it('sends only a mission-bound reserved outbox receipt and never resends uncertain work', async () => {
     const store = approvedTelegramStore();
     const transport = telegramTransport();
