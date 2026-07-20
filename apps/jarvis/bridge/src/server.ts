@@ -1610,7 +1610,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     } else if (/^(?:stop|end|cancel)(?: the)? isabella test[.!?]?$/iu.test(transcript)
       || /^(?:stop|end|cancel) test[.!?]?$/iu.test(transcript)) {
       endGuidedTest();
-    } else if (/^who is isabella[.!?]?$/iu.test(transcript)) {
+    } else if (/^who(?:\s+is|['’]s)\s+isabella(?:\s+handel)?[.!?]?$/iu.test(transcript)) {
       const guided = activeGuidedTest();
       if (guided?.phase === 'ready' && guided.retrievalCount === 0) {
         void runIsabellaRetrieval();

@@ -3,7 +3,6 @@ import { CoreAssembly } from './components/CoreAssembly'
 import { ParticleField } from './components/ParticleField'
 import { AgentsProjection, BrainProjection, FleetLifecycle, IdCluster, TasksProjection } from './components/peripherals'
 import { StartupHealthCard } from './StartupHealthCard'
-import { VoiceCalibrationCard } from './VoiceCalibrationCard'
 
 export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand }) {
   const stage = React.useRef(null)
@@ -67,7 +66,6 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
       </div>
       <div className="layer layer-near">
         <StartupHealthCard health={health} />
-        {!summoned && <VoiceCalibrationCard />}
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}
         {activeView === 'TASKS' && <TasksProjection tasks={liveData?.tasks ?? []} fleet={liveData?.fleet} />}
         {activeView === 'BRAIN' && <BrainProjection nucleus={liveData?.nucleus} onSearch={onVaultSearch} />}
