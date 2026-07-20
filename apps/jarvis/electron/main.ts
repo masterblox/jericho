@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, dialog, safeStorage } from 'electron';
 import { autoUpdater } from 'electron-updater';
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
@@ -111,9 +111,8 @@ function bridgeSecrets(): BridgeSecrets {
 function startBridge(): Promise<string> {
   return new Promise((resolve, reject) => {
     const secrets = bridgeSecrets();
-    const bridgeScript = bridgeResourcePath('bridge', 'src', 'server.ts');
-    const tsxLoader = bridgeResourcePath('node_modules', 'tsx', 'dist', 'loader.mjs');
-    const child = spawn(process.execPath, ['--import', tsxLoader, bridgeScript, '--port', '0'], {
+    const bridgeScript = bridgeResourcePath('bridge', 'dist', 'server.cjs');
+    const child = spawn(process.execPath, [bridgeScript, '--port', '0'], {
       cwd: path.dirname(bridgeScript),
       env: {
         ...process.env,
@@ -122,13 +121,15 @@ function startBridge(): Promise<string> {
         JERICHO_HOST: HOST,
         JERICHO_API_TOKEN: secrets.apiToken,
         JERICHO_MASTER_KEY: secrets.masterKey,
+        JERICHO_BOOTSTRAP_FD: '3',
       },
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'pipe', 'pipe', 'pipe'],
     });
     bridgeProcess = child;
 
     let settled = false;
     let stdout = '';
+    let bootstrapOutput = '';
     let stderr = '';
     const finish = (error?: Error, url?: string) => {
       if (settled) return;
@@ -143,12 +144,24 @@ function startBridge(): Promise<string> {
       stdout = lines.pop() ?? '';
       for (const line of lines) {
         console.log(`[bridge] ${line}`);
-        const match = line.match(/one-time browser bootstrap (http:\/\/127\.0\.0\.1:\d+\/\S+)/);
-        if (match?.[1]) finish(undefined, match[1]);
+      }
+    };
+
+    const consumeBootstrap = (chunk: Buffer) => {
+      bootstrapOutput += chunk.toString('utf8');
+      const lines = bootstrapOutput.split(/\r?\n/);
+      bootstrapOutput = lines.pop() ?? '';
+      for (const line of lines) {
+        if (/^http:\/\/127\.0\.0\.1:\d+\/\.jericho\/bootstrap\/[A-Za-z0-9_-]+$/.test(line)) {
+          finish(undefined, line);
+        } else if (line.trim()) {
+          finish(new Error('Jericho bridge returned an invalid bootstrap address'));
+        }
       }
     };
 
     child.stdout?.on('data', consumeLines);
+    child.stdio[3]?.on('data', consumeBootstrap);
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString('utf8');
       stderr = (stderr + text).slice(-4_000);
@@ -186,12 +199,53 @@ function createWindow(url: string): void {
     },
   });
   mainWindow = window;
+  const trustedOrigin = new URL(url).origin;
+  const sameTrustedOrigin = (value: string | undefined): boolean => {
+    if (!value) return false;
+    try {
+      return new URL(value).origin === trustedOrigin;
+    } catch {
+      return false;
+    }
+  };
+  const mediaSession = window.webContents.session;
+  mediaSession.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => (
+    contents === window.webContents
+    && permission === 'media'
+    && details.isMainFrame
+    && sameTrustedOrigin(details.securityOrigin ?? details.requestingUrl ?? requestingOrigin)
+    && (details.mediaType === undefined || details.mediaType === 'audio' || details.mediaType === 'video')
+  ));
+  mediaSession.setPermissionRequestHandler((contents, permission, callback, details) => {
+    const media = details as Electron.MediaAccessPermissionRequest;
+    callback(
+      contents === window.webContents
+      && permission === 'media'
+      && media.isMainFrame
+      && sameTrustedOrigin(media.securityOrigin ?? media.requestingUrl)
+      && (media.mediaTypes === undefined || media.mediaTypes.every((type) => type === 'audio' || type === 'video')),
+    );
+  });
   window.once('ready-to-show', () => window.show());
   window.on('closed', () => {
-    if (mainWindow === window) mainWindow = undefined;
+    if (mainWindow === window) {
+      mainWindow = undefined;
+      mediaSession.setPermissionCheckHandler(null);
+      mediaSession.setPermissionRequestHandler(null);
+    }
   });
-  window.webContents.setWindowOpenHandler(({ url: target }) => {
-    void shell.openExternal(target);
+  const keepInsideJericho = (event: Electron.Event, target: string) => {
+    try {
+      const parsed = new URL(target);
+      if (parsed.origin === trustedOrigin && parsed.hostname === HOST) return;
+    } catch {
+      // Invalid and non-HTTP navigation is always blocked.
+    }
+    event.preventDefault();
+  };
+  window.webContents.on('will-navigate', keepInsideJericho);
+  window.webContents.on('will-redirect', keepInsideJericho);
+  window.webContents.setWindowOpenHandler(() => {
     return { action: 'deny' };
   });
   void window.loadURL(url).catch((error) => showFatalError(`Jericho could not load its interface.\n\n${String(error)}`));

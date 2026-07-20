@@ -11,7 +11,7 @@
   },
   "scripts": {
     "dev": "concurrently -n bridge,web -c cyan,magenta \"pnpm --filter bridge dev\" \"pnpm --filter frontend dev\"",
-    "build": "pnpm --filter @jericho/shared typecheck && pnpm --filter frontend build",
+    "build": "pnpm --filter @jericho/shared typecheck && pnpm --filter bridge typecheck && pnpm --filter frontend build",
     "start": "pnpm build && pnpm --filter bridge start",
     "test": "pnpm --filter bridge test && pnpm --filter frontend test",
     "typecheck": "pnpm --filter @jericho/shared typecheck && pnpm --filter frontend typecheck && pnpm --filter bridge typecheck",
@@ -19,7 +19,7 @@
     "electron:compile": "node electron/build.mjs",
     "electron:dev": "pnpm build && pnpm electron:compile && electron .",
     "electron:build": "pnpm build && pnpm electron:compile && electron-builder --config electron/electron-builder.yml --publish always",
-    "electron:build:local": "pnpm build && pnpm electron:compile && electron-builder --config electron/electron-builder.yml --publish never",
+    "electron:build:local": "pnpm build && pnpm electron:compile && JERICHO_ALLOW_UNSIGNED_LOCAL_BUILD=1 electron-builder --config electron/electron-builder.yml --publish never",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

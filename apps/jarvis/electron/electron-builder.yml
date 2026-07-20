@@ -10,21 +10,15 @@ afterSign: electron/notarize.mjs
 
 files:
   - electron/dist/**/*
-  - bridge/src/**/*
-  - bridge/package.json
-  - bridge/tsconfig.json
-  - shared/src/**/*
-  - shared/package.json
+  - bridge/dist/**/*
   - frontend/dist/**/*
   - package.json
 
 asar: true
 asarUnpack:
   - electron/dist/jericho-keychain-helper
-  - bridge/**/*
-  - shared/**/*
+  - bridge/dist/**/*
   - frontend/dist/**/*
-  - node_modules/**/*
 
 mac:
   category: public.app-category.productivity
@@ -33,6 +27,9 @@ mac:
   entitlements: electron/entitlements.mac.plist
   entitlementsInherit: electron/entitlements.mac.plist
   icon: electron/icon.icns
+  extendInfo:
+    NSCameraUsageDescription: Jericho uses the camera locally for hand gesture control and calibration.
+    NSMicrophoneUsageDescription: Jericho uses the microphone for clap wake, voice turns, and local audio calibration.
   target:
     - dmg
     - zip
