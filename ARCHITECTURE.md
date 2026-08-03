@@ -35,7 +35,7 @@ The laptop owns personal context and authority. Remote Hermes services may colle
 
 ## Runtime topology
 
-`apps/jarvis` is the canonical implementation:
+`apps/jericho` is the canonical implementation:
 
 - `bridge/` is one loopback TypeScript service. It serves the built React UI, authenticated HTTP/SSE, the optional voice WebSocket, connector polling, and mission execution from one origin.
 - `shared/` contains versioned contracts used by Core and the command center.

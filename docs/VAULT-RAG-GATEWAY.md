@@ -42,7 +42,7 @@ but the gateway uses only `index --json` and structured `search … --json`.
 
 ## Verification
 
-Run `pnpm test && pnpm typecheck && pnpm build` from `apps/jarvis`. On the
+Run `pnpm test && pnpm typecheck && pnpm build` from `apps/jericho`. On the
 droplet, verify the gateway through the private proxy and confirm that its
 health response contains timestamps and counts only—never note bodies or
 absolute private paths.

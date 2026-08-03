@@ -15,7 +15,7 @@ frontend       up             http://localhost:5173
 bridge (Core)  up             127.0.0.1:55160   (auth ok: 200 w/ token, 401 without)
 vault gateway  up             127.0.0.1:8790    (hermes Obsidian vault, 9,923 docs indexed)
 store          isolated       .context/jericho-home/.jericho/jericho.db  (fresh, seeded)
-voice key      set + verified GEMINI_API_KEY in apps/jarvis/.env (Google AI Studio, prepaid)
+voice key      set + verified GEMINI_API_KEY in apps/jericho/.env (Google AI Studio, prepaid)
 fleet board    live           Paperclip via bridge /api/v1/fleet (9 agents · 50 issues)
 seeded data    1 mission · 1 approval · Nucleus 13 nodes/7 edges
 ```
@@ -76,13 +76,13 @@ ignored while you're typing in a field. The Gemini path was verified end-to-end 
 pass: an authenticated wake over the bridge WebSocket returned `ready` (Algieba) and
 `greeting_started` with your key.
 
-Persona swap (jarvis ↔ megatron) changes the voice (Algieba → Fenrir) and sphere hue
+Persona swap (jericho ↔ megatron) changes the voice (Algieba → Fenrir) and sphere hue
 (cyan → amber) — presentation only, no new authority.
 
 **No spoken greeting?** Check the bridge terminal — connect failures now log as
-`[jericho] voice connect failed: <reason>`. The key lives in `apps/jarvis/.env` as
+`[jericho] voice connect failed: <reason>`. The key lives in `apps/jericho/.env` as
 `GEMINI_API_KEY=` (a prepaid Google AI Studio key; the machine's canonical copy is in
-the main repo checkout `conductor/repos/jericho/apps/jarvis/.env`). After changing
+the main repo checkout `conductor/repos/jericho/apps/jericho/.env`). After changing
 `.env`, **restart the bridge** — tsx watches source files, not `.env`.
 
 The mic stays muted and the server rejects audio until the greeting finishes; that's
@@ -146,7 +146,7 @@ The sphere reads live truth only (nothing faked). Right now you should see:
 ### Want more to look at?
 Seed another capture (safe, local, no external effect):
 ```bash
-cd apps/jarvis
+cd apps/jericho
 tok=$(grep '^JERICHO_API_TOKEN=' .env | cut -d= -f2)
 curl -s -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
   -d '{"kind":"manual","sourceEventId":"note-'$(date +%s)'","occurredAt":"'$(date -u +%FT%TZ)'","payload":{"text":"Another synthetic signal for the demo"}}' \
@@ -157,7 +157,7 @@ curl -s -H "Authorization: Bearer $tok" -H 'Content-Type: application/json' \
 
 ## 5. Start / stop / restart
 
-Three processes run in the background from `apps/jarvis`.
+Three processes run in the background from `apps/jericho`.
 
 ```bash
 # stop
@@ -166,7 +166,7 @@ lsof -ti tcp:55160 -sTCP:LISTEN | xargs kill       # bridge
 lsof -ti tcp:8790 -sTCP:LISTEN | xargs kill        # vault gateway (BRAIN search)
 
 # start again
-cd apps/jarvis
+cd apps/jericho
 ISO="$PWD/../../.context"
 pnpm --filter frontend dev &
 # bridge: isolated store (paperclip creds come from .env as JERICHO_PAPERCLIP_*)
@@ -183,7 +183,7 @@ env PATH="$ISO/bin:$PATH" \
 ```
 
 The isolated `HOME` keeps the demo store separate from your real `~/.jericho`. Keys and
-tokens live in `apps/jarvis/.env` (gitignored), so restarts reopen the same seeded store.
+tokens live in `apps/jericho/.env` (gitignored), so restarts reopen the same seeded store.
 BRAIN works without the gateway too — it just shows the honest OFFLINE state.
 
 ---
@@ -193,13 +193,13 @@ BRAIN works without the gateway too — it just shows the honest OFFLINE state.
 | Symptom | Cause | Fix |
 |---|---|---|
 | Bridge crash: *"master key … 32 bytes"* | Corrupt `jericho-core` Keychain item on this machine | Already handled: `JERICHO_MASTER_KEY` is set in `.env`, bypassing Keychain |
-| No spoken greeting | Gemini connect failed — check bridge terminal for `[jericho] voice connect failed` | Fix `GEMINI_API_KEY=` in `apps/jarvis/.env` (canonical copy: `conductor/repos/jericho/apps/jarvis/.env`), then **restart the bridge** |
+| No spoken greeting | Gemini connect failed — check bridge terminal for `[jericho] voice connect failed` | Fix `GEMINI_API_KEY=` in `apps/jericho/.env` (canonical copy: `conductor/repos/jericho/apps/jericho/.env`), then **restart the bridge** |
 | Left/right hands mirrored | Handedness reversed for this camera | **SWAP** in the lab |
 | Cursor drifts / offset | Uncalibrated camera | **CAL LEFT** / **CAL RIGHT** |
 | Camera never appears | Permission denied, or another app holds the camera | Re-allow in Chrome site settings; close other camera apps |
 | API returns 401 | Missing/mismatched token | Vite proxy attaches `JERICHO_API_TOKEN` from `.env`; keep bridge + frontend on the same value |
 | `python3 …` errors in tests | Machine policy forces `uv run python3` | Unrelated to voice/gestures; the one red vault-RAG CLI test is this, not a product bug. The running vault gateway avoids it via the `.context/bin/python3` wrapper |
-| AGENTS / TASKS say OFFLINE | Paperclip board unreachable or bad key | Check `JERICHO_PAPERCLIP_URL/API_KEY/COMPANY_ID` in `apps/jarvis/.env` and `[jericho] fleet snapshot failed` in the bridge terminal (the stale shell export `PAPERCLIP_API_KEY` is unused now) |
+| AGENTS / TASKS say OFFLINE | Paperclip board unreachable or bad key | Check `JERICHO_PAPERCLIP_URL/API_KEY/COMPANY_ID` in `apps/jericho/.env` and `[jericho] fleet snapshot failed` in the bridge terminal (the stale shell export `PAPERCLIP_API_KEY` is unused now) |
 | BRAIN says VAULT SEARCH OFFLINE | Vault gateway not running | Start it per section 5; search works once `127.0.0.1:8790` is up |
 
 ---
