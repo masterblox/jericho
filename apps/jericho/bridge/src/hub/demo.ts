@@ -1,15 +1,13 @@
 import { createHash } from 'node:crypto';
 
-import {
-  HubWalkthroughStream,
-  type HubSealedDemoSnapshot,
-  type HubWalkthroughEvent,
+import type {
+  HubBootAnnouncementPlan,
+  HubDemoStream,
+  HubSealedDemoSnapshot,
+  HubWalkthroughEvent,
 } from '@jericho/shared';
 
-/**
- * Seal a demo snapshot with a content-addressed SHA-256 hash.
- * Sealing is pure and side-effect free.
- */
+/** Seal a demo snapshot. DEMO must never construct live providers. */
 export function sealHubDemoSnapshot(input: {
   demoId: string;
   sealedAt: string;
@@ -21,61 +19,81 @@ export function sealHubDemoSnapshot(input: {
     label: input.label,
     payload: sortKeys(input.payload),
   });
-  const contentHash = createHash('sha256').update(canonical).digest('hex');
   return {
     demoId: input.demoId,
     sealedAt: input.sealedAt,
-    contentHash,
+    contentHash: createHash('sha256').update(canonical).digest('hex'),
     label: input.label,
     payload: { ...input.payload },
   };
 }
 
-/**
- * Build the three sealed walkthrough event streams: command, fleet, and brief.
- */
+/** Three sealed walkthrough streams: competitor, deploy-fix, morning-brief. */
 export function buildWalkthroughStreams(
   startedAt: string,
-): Record<HubWalkthroughStream, HubWalkthroughEvent[]> {
+): Record<HubDemoStream, HubWalkthroughEvent[]> {
   return {
-    [HubWalkthroughStream.Command]: [
-      event(HubWalkthroughStream.Command, 0, startedAt, 'ingress', 'Command walkthrough armed', {
-        port: 'telegram_text',
+    competitor: [
+      event('competitor', 0, startedAt, 'open', 'Competitor scan narration armed', {
+        sanitized: true,
       }),
-      event(HubWalkthroughStream.Command, 1, offset(startedAt, 1_000), 'classify', 'Command classified as TASK', {
-        kind: 'TASK',
+      event('competitor', 1, offset(startedAt, 1_000), 'signal', 'Placeholder competitive signal', {
+        rank: 1,
       }),
-      event(HubWalkthroughStream.Command, 2, offset(startedAt, 2_000), 'confirm', 'Awaiting confirmation gate', {
+      event('competitor', 2, offset(startedAt, 2_000), 'close', 'Competitor walkthrough complete', {
+        ready: true,
+      }),
+    ],
+    deploy_fix: [
+      event('deploy_fix', 0, startedAt, 'detect', 'Deploy regression placeholder', {
+        sanitized: true,
+      }),
+      event('deploy_fix', 1, offset(startedAt, 1_500), 'route', 'Routed to DEV capability', {
+        agent: 'DEV',
+      }),
+      event('deploy_fix', 2, offset(startedAt, 3_000), 'confirm', 'Confirmation gate shown', {
         gated: true,
       }),
     ],
-    [HubWalkthroughStream.Fleet]: [
-      event(HubWalkthroughStream.Fleet, 0, startedAt, 'heartbeat', 'Fleet heartbeats projected', {
-        agents: 5,
-      }),
-      event(HubWalkthroughStream.Fleet, 1, offset(startedAt, 1_500), 'route', 'Capability route selected', {
-        capability: 'DEV',
-      }),
-      event(HubWalkthroughStream.Fleet, 2, offset(startedAt, 3_000), 'dispatch', 'Confirmation-gated dispatch ready', {
-        status: 'awaiting_confirmation',
-      }),
-    ],
-    [HubWalkthroughStream.Brief]: [
-      event(HubWalkthroughStream.Brief, 0, startedAt, 'window', '72-hour aggregation window opened', {
+    morning_brief: [
+      event('morning_brief', 0, startedAt, 'window', '72-hour brief window opened', {
         windowHours: 72,
       }),
-      event(HubWalkthroughStream.Brief, 1, offset(startedAt, 2_000), 'aggregate', 'Signals collected for brief', {
-        categories: 6,
+      event('morning_brief', 1, offset(startedAt, 2_000), 'totals', 'Sanitized totals prepared', {
+        agents: 5,
       }),
-      event(HubWalkthroughStream.Brief, 2, offset(startedAt, 4_000), 'ready', 'Brief walkthrough complete', {
+      event('morning_brief', 2, offset(startedAt, 4_000), 'ready', 'Morning brief complete', {
         ready: true,
       }),
     ],
   };
 }
 
+/** Idempotent Telegram boot-announcement plan — never a live send. */
+export function buildBootAnnouncementPlan(input: {
+  bootId: string;
+  createdAt: string;
+  totals: { activeAgents: number; queuedTasks: number; opportunities: number };
+}): HubBootAnnouncementPlan {
+  const idempotencyKey = `boot-announce:${input.bootId}`;
+  const text = [
+    'Jericho Hub online.',
+    `Agents ${input.totals.activeAgents}.`,
+    `Queued ${input.totals.queuedTasks}.`,
+    `Opportunities ${input.totals.opportunities}.`,
+  ].join(' ');
+  return {
+    bootId: input.bootId,
+    idempotencyKey,
+    channel: 'telegram',
+    text,
+    totals: { ...input.totals },
+    createdAt: input.createdAt,
+  };
+}
+
 function event(
-  stream: HubWalkthroughStream,
+  stream: HubDemoStream,
   sequence: number,
   at: string,
   kind: string,
@@ -93,8 +111,6 @@ function sortKeys(
   payload: Record<string, string | number | boolean | null>,
 ): Record<string, string | number | boolean | null> {
   const sorted: Record<string, string | number | boolean | null> = {};
-  for (const key of Object.keys(payload).sort()) {
-    sorted[key] = payload[key]!;
-  }
+  for (const key of Object.keys(payload).sort()) sorted[key] = payload[key]!;
   return sorted;
 }

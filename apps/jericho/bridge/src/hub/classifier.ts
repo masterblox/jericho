@@ -1,51 +1,66 @@
-import {
-  HubCommandKind,
-  type HubCommandClassification,
-} from '@jericho/shared';
+import type { HubIntentClassification, HubIntentKind } from '@jericho/shared';
+
+/** Optional model-backed classifier port. Never required for deterministic rules. */
+export interface HubModelClassifierPort {
+  classify?(text: string): Promise<Partial<HubIntentClassification> | undefined>;
+}
 
 /**
- * Deterministic Hub command classifier. Never authorizes or dispatches work.
+ * Pure deterministic Hub intent classifier.
+ * Ambiguous/low-signal text falls through as TASK with reduced confidence.
  */
-export function classifyHubCommand(text: string): HubCommandClassification {
+export function classifyHubIntent(
+  text: string,
+  hints: Partial<HubIntentClassification> = {},
+): HubIntentClassification {
+  if (hints.intent && hints.summary && typeof hints.confidence === 'number') {
+    return {
+      intent: hints.intent,
+      summary: hints.summary,
+      confidence: clamp(hints.confidence),
+      signals: [...(hints.signals ?? ['hint'])],
+    };
+  }
+
   const normalized = text.trim().toLowerCase();
   const signals: string[] = [];
 
-  if (/\b(demo|walkthrough|party trick|show(case)?)\b/.test(normalized)) {
+  if (/\b(demo mode|walkthrough|party trick|showcase)\b/.test(normalized)) {
     signals.push('demo-keyword');
-    return classification(HubCommandKind.Demo, text, 0.92, signals);
+    return result('DEMO', text, 0.93, signals);
   }
-  if (/\b(brief|summar(y|ize)|status report|sitrep)\b/.test(normalized)) {
+  if (/\b(brief|summar(y|ize)|sitrep|last 72 hours|status report)\b/.test(normalized)) {
     signals.push('brief-keyword');
-    return classification(HubCommandKind.Brief, text, 0.9, signals);
+    return result('BRIEF', text, 0.91, signals);
   }
-  if (/\b(create|draft|compose|open ticket|new (issue|pr|task))\b/.test(normalized)) {
+  if (/\b(create workspace|spin up|new conductor|open workspace)\b/.test(normalized)) {
     signals.push('create-keyword');
-    return classification(HubCommandKind.Create, text, 0.88, signals);
+    return result('CREATE', text, 0.9, signals);
   }
   if (
     /\?$/.test(normalized) ||
     /\b(what|which|who|when|where|how|why|status of|show me)\b/.test(normalized)
   ) {
     signals.push('query-form');
-    return classification(HubCommandKind.Query, text, 0.86, signals);
+    return result('QUERY', text, 0.88, signals);
   }
-  if (/\b(fix|build|implement|deploy|run|schedule|send|update|assign)\b/.test(normalized)) {
+  if (/\b(fix|build|implement|deploy|run|schedule|send|update|assign|debug|extract|research)\b/.test(normalized)) {
     signals.push('task-verb');
-    return classification(HubCommandKind.Task, text, 0.84, signals);
+    return result('TASK', text, 0.86, signals);
   }
 
-  signals.push('default-task');
-  return classification(HubCommandKind.Task, text, 0.55, signals);
+  signals.push('ambiguous-default-task');
+  return result('TASK', text, 0.45, signals);
 }
 
-function classification(
-  kind: HubCommandKind,
+function result(
+  intent: HubIntentKind,
   text: string,
   confidence: number,
   signals: string[],
-): HubCommandClassification {
+): HubIntentClassification {
   return {
-    kind,
+    intent,
     summary: text.trim(),
     confidence: clamp(confidence),
     signals: [...signals],

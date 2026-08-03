@@ -1,70 +1,65 @@
-import {
-  HubIngressPort,
-  type HubIngressMessage,
-} from '@jericho/shared';
+import type { HubCommand, HubCommandSource } from '@jericho/shared';
 
 export interface HubIngressTransport {
-  /** Decode Telegram voice into plaintext. Injected; never live. */
   transcribeVoice?(audioRef: string): Promise<string>;
-  /** Decode a QR payload into plaintext. Injected; never live. */
   decodeQr?(payload: string): Promise<string>;
 }
 
-export interface AcceptIngressInput {
+export interface AcceptHubCommandInput {
   id: string;
-  port: HubIngressPort;
+  idempotencyKey: string;
   receivedAt: string;
-  /** Pre-decoded text for telegram_text, or raw voice/QR reference. */
+  source: HubCommandSource;
   body: string;
-  metadata?: Record<string, string | number | boolean | null>;
+  transportId: string;
+  actorIdHash?: string;
 }
 
-/**
- * Normalize Telegram voice/text and QR ingress into a Hub message.
- * Transport adapters are injected fakes only.
- */
-export async function acceptHubIngress(
-  input: AcceptIngressInput,
+/** Normalize Telegram voice/text, QR text, and desktop text into HubCommand. */
+export async function acceptHubCommand(
+  input: AcceptHubCommandInput,
   transport: HubIngressTransport = {},
-): Promise<HubIngressMessage> {
+): Promise<HubCommand> {
   let text: string;
-  switch (input.port) {
-    case HubIngressPort.TelegramText:
+  switch (input.source) {
+    case 'telegram_text':
+    case 'desktop_text':
       text = input.body.trim();
       break;
-    case HubIngressPort.TelegramVoice: {
+    case 'telegram_voice':
       if (!transport.transcribeVoice) {
-        throw new Error('Telegram voice ingress requires an injected transcribeVoice transport');
+        throw new Error('telegram_voice requires an injected transcribeVoice transport');
       }
       text = (await transport.transcribeVoice(input.body)).trim();
       break;
-    }
-    case HubIngressPort.Qr: {
+    case 'qr_text':
       if (!transport.decodeQr) {
-        throw new Error('QR ingress requires an injected decodeQr transport');
+        throw new Error('qr_text requires an injected decodeQr transport');
       }
       text = (await transport.decodeQr(input.body)).trim();
       break;
-    }
     default:
-      throw new Error(`Unsupported Hub ingress port: ${String(input.port)}`);
+      throw new Error(`Unsupported Hub command source: ${String(input.source)}`);
   }
-
-  if (!text) {
-    throw new Error('Hub ingress produced empty text');
-  }
+  if (!text) throw new Error('Hub ingress produced empty text');
 
   return {
+    schemaVersion: 1,
     id: input.id,
-    port: input.port,
+    idempotencyKey: input.idempotencyKey,
     receivedAt: input.receivedAt,
+    source: input.source,
     text,
-    metadata: { ...(input.metadata ?? {}) },
+    provenance: {
+      transportId: input.transportId,
+      ...(input.actorIdHash ? { actorIdHash: input.actorIdHash } : {}),
+    },
   };
 }
 
-export const HUB_INGRESS_PORTS: readonly HubIngressPort[] = [
-  HubIngressPort.TelegramVoice,
-  HubIngressPort.TelegramText,
-  HubIngressPort.Qr,
+export const HUB_COMMAND_SOURCES: readonly HubCommandSource[] = [
+  'telegram_voice',
+  'telegram_text',
+  'qr_text',
+  'desktop_text',
 ];

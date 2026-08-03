@@ -1,17 +1,12 @@
-import {
-  HubDispatchStatus,
-  type HubDispatchReceipt,
-  type HubDispatchRequest,
-} from '@jericho/shared';
+import type { HubDispatchPlan, HubDispatchReceipt } from '@jericho/shared';
 
 export interface HubDispatchGate {
-  /** Returns true only when the confirmation token authorizes this request. */
-  isConfirmed(request: Readonly<HubDispatchRequest>): boolean;
+  isConfirmed(idempotencyKey: string, confirmationToken?: string): boolean;
 }
 
 /**
- * Confirmation-gated, idempotent Hub dispatch.
- * Identical idempotency keys replay the prior terminal receipt and never double-send.
+ * Confirmation-gated, idempotent mesh dispatch.
+ * Never performs agent domain work — emits bounded receipts only.
  */
 export class HubDispatcher {
   readonly #gate: HubDispatchGate;
@@ -23,101 +18,70 @@ export class HubDispatcher {
     this.#now = now;
   }
 
-  /** Queue work without confirmation — status stays awaiting_confirmation. */
-  enqueue(request: Readonly<HubDispatchRequest>): HubDispatchReceipt {
-    const existing = this.#receipts.get(request.idempotencyKey);
+  enqueue(plan: HubDispatchPlan, idempotencyKey: string): HubDispatchReceipt {
+    const existing = this.#receipts.get(idempotencyKey);
     if (existing) {
-      return { ...existing, replayed: true, status: HubDispatchStatus.Duplicate };
+      return { ...existing, plan: structuredClone(existing.plan), replayed: true };
     }
-    const pending: HubDispatchReceipt = {
-      idempotencyKey: request.idempotencyKey,
-      commandId: request.commandId,
-      status: HubDispatchStatus.AwaitingConfirmation,
-      capability: request.capability,
-      summary: request.summary,
-      updatedAt: this.#now(),
-      replayed: false,
+    const pendingPlan: HubDispatchPlan = {
+      ...plan,
+      status: plan.requiresConfirmation ? 'pending_approval' : 'planned',
     };
-    this.#receipts.set(request.idempotencyKey, pending);
-    return { ...pending };
+    const receipt: HubDispatchReceipt = {
+      idempotencyKey,
+      commandId: plan.commandId,
+      plan: pendingPlan,
+      replayed: false,
+      updatedAt: this.#now(),
+    };
+    this.#receipts.set(idempotencyKey, receipt);
+    return structuredClone(receipt);
   }
 
-  /**
-   * Confirm and dispatch a previously enqueued request.
-   * Replaying the same confirmed key returns Duplicate without re-dispatch.
-   */
-  confirm(request: Readonly<HubDispatchRequest>): HubDispatchReceipt {
-    const existing = this.#receipts.get(request.idempotencyKey);
-    if (!existing) {
-      throw new Error(`Unknown Hub dispatch key: ${request.idempotencyKey}`);
+  confirm(idempotencyKey: string, confirmationToken?: string): HubDispatchReceipt {
+    const existing = this.#receipts.get(idempotencyKey);
+    if (!existing) throw new Error(`Unknown Hub dispatch key: ${idempotencyKey}`);
+    if (existing.plan.status === 'dispatched') {
+      return { ...structuredClone(existing), replayed: true };
     }
-    if (
-      existing.status === HubDispatchStatus.Dispatched ||
-      existing.status === HubDispatchStatus.Duplicate
-    ) {
-      return { ...existing, replayed: true, status: HubDispatchStatus.Duplicate };
+    if (existing.plan.status === 'failed') {
+      return { ...structuredClone(existing), replayed: true };
     }
-    if (existing.status === HubDispatchStatus.Rejected) {
-      return { ...existing, replayed: true };
-    }
-    if (!request.confirmationToken || !this.#gate.isConfirmed(request)) {
-      const blocked: HubDispatchReceipt = {
+    if (existing.plan.requiresConfirmation && !this.#gate.isConfirmed(idempotencyKey, confirmationToken)) {
+      const pending: HubDispatchReceipt = {
         ...existing,
-        status: HubDispatchStatus.AwaitingConfirmation,
-        updatedAt: this.#now(),
+        plan: { ...existing.plan, status: 'pending_approval' },
         replayed: false,
+        updatedAt: this.#now(),
       };
-      this.#receipts.set(request.idempotencyKey, blocked);
-      return { ...blocked };
+      this.#receipts.set(idempotencyKey, pending);
+      return structuredClone(pending);
     }
     const dispatched: HubDispatchReceipt = {
-      idempotencyKey: request.idempotencyKey,
-      commandId: request.commandId,
-      status: HubDispatchStatus.Dispatched,
-      capability: request.capability,
-      summary: request.summary,
-      updatedAt: this.#now(),
+      idempotencyKey,
+      commandId: existing.commandId,
+      plan: {
+        ...existing.plan,
+        status: 'dispatched',
+        ...(existing.plan.requiresConfirmation ? { status: 'dispatched' as const } : {}),
+      },
       replayed: false,
-    };
-    this.#receipts.set(request.idempotencyKey, dispatched);
-    return { ...dispatched };
-  }
-
-  reject(idempotencyKey: string, reasonSummary?: string): HubDispatchReceipt | undefined {
-    const existing = this.#receipts.get(idempotencyKey);
-    if (!existing) return undefined;
-    if (
-      existing.status === HubDispatchStatus.Dispatched ||
-      existing.status === HubDispatchStatus.Duplicate
-    ) {
-      return { ...existing, replayed: true };
-    }
-    const rejected: HubDispatchReceipt = {
-      ...existing,
-      status: HubDispatchStatus.Rejected,
-      summary: reasonSummary ?? existing.summary,
       updatedAt: this.#now(),
-      replayed: false,
     };
-    this.#receipts.set(idempotencyKey, rejected);
-    return { ...rejected };
+    this.#receipts.set(idempotencyKey, dispatched);
+    return structuredClone(dispatched);
   }
 
   get(idempotencyKey: string): HubDispatchReceipt | undefined {
     const receipt = this.#receipts.get(idempotencyKey);
-    return receipt ? { ...receipt } : undefined;
-  }
-
-  list(): HubDispatchReceipt[] {
-    return [...this.#receipts.values()].map((receipt) => ({ ...receipt }));
+    return receipt ? structuredClone(receipt) : undefined;
   }
 }
 
-/** Simple token equality gate for injected confirmation flows. */
 export function createTokenDispatchGate(expectedToken: string): HubDispatchGate {
   return {
-    isConfirmed(request) {
-      return request.confirmationToken === expectedToken;
+    isConfirmed(_key, confirmationToken) {
+      return confirmationToken === expectedToken;
     },
   };
 }

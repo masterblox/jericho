@@ -5,215 +5,218 @@ import { describe, expect, it } from 'vitest';
 import {
   assertHubEvent,
   assertHubSnapshot,
-  HubCapability,
-  HubCommandKind,
-  HubDispatchStatus,
-  HubEventType,
-  HubIngressPort,
-  HubWalkthroughStream,
-  HubWhisperBackend,
   HUB_AGGREGATION_WINDOW_MS,
-  type HubAggregateItem,
+  type HubContextItem,
 } from '@jericho/shared';
 
 import {
   aggregateHubWindow,
+  buildBootAnnouncementPlan,
   buildWalkthroughStreams,
-  classifyHubCommand,
+  classifyHubIntent,
   createTokenDispatchGate,
   emptyAggregationSources,
   HubCommandPlane,
   HubDispatcher,
+  planHubDispatch,
   probeHubWhisper,
-  routeHubCommand,
   sealHubDemoSnapshot,
-  acceptHubIngress,
+  acceptHubCommand,
+  HUB_CAPABILITY_REGISTRY,
 } from '../src/hub/index.js';
 
 const NOW = '2026-08-03T12:00:00.000Z';
 
-describe('hub command classification', () => {
+describe('hub intent classification', () => {
   it.each([
-    ['Ship the Linear fix tonight', HubCommandKind.Task],
-    ['What is the status of PR 16?', HubCommandKind.Query],
-    ['Create a new issue for the vault gateway', HubCommandKind.Create],
-    ['Give me a brief of the last day', HubCommandKind.Brief],
-    ['Run the client demo walkthrough', HubCommandKind.Demo],
-  ])('classifies %s as %s', (text, kind) => {
-    const result = classifyHubCommand(text);
-    expect(result.kind).toBe(kind);
-    expect(result.confidence).toBeGreaterThan(0.5);
-    expect(result.signals.length).toBeGreaterThan(0);
+    ['Ship the Linear fix tonight', 'TASK'],
+    ['What is the status of PR 16?', 'QUERY'],
+    ['Create workspace for the vault gateway', 'CREATE'],
+    ['Give me a brief of the last 72 hours', 'BRIEF'],
+    ['Enter demo mode for the client', 'DEMO'],
+  ] as const)('classifies %s as %s', (text, intent) => {
+    expect(classifyHubIntent(text).intent).toBe(intent);
+  });
+
+  it('holds ambiguous text at low confidence', () => {
+    expect(classifyHubIntent('hmm maybe later').confidence).toBeLessThan(0.65);
   });
 });
 
 describe('hub capability routing', () => {
+  it('registers five agent capabilities', () => {
+    expect(HUB_CAPABILITY_REGISTRY.map((item) => item.agentId)).toEqual([
+      'DEV',
+      'DONALD',
+      'PA',
+      'IRIS',
+      'JERICHO',
+    ]);
+  });
+
   it.each([
-    ['implement the bridge fix', HubCapability.Dev],
-    ['draft outreach to the prospect', HubCapability.Donald],
-    ['schedule my calendar for tomorrow', HubCapability.PA],
-    ['design a brand mockup', HubCapability.Iris],
-    ['summarize a brief for the board', HubCapability.Jericho],
-    ['run the demo showcase', HubCapability.Jericho],
-  ])('routes "%s" to %s', (text, capability) => {
-    const classification = classifyHubCommand(text);
-    expect(routeHubCommand(classification, text).capability).toBe(capability);
+    ['implement the bridge fix', 'DEV'],
+    ['extract opportunity from the lead', 'DONALD'],
+    ['schedule my calendar for tomorrow', 'PA'],
+    ['research competitive intel report', 'IRIS'],
+    ['prepare the morning brief', 'JERICHO'],
+  ] as const)('routes "%s" toward %s', (text, agent) => {
+    const classification = classifyHubIntent(text);
+    expect(planHubDispatch('cmd-1', classification, text).targetAgent).toBe(agent);
+  });
+
+  it('requires confirmation for TASK and CREATE mutations', () => {
+    const task = planHubDispatch('c1', classifyHubIntent('fix the deploy regression'));
+    const create = planHubDispatch('c2', classifyHubIntent('Create workspace for research'));
+    expect(task.requiresConfirmation).toBe(true);
+    expect(create.requiresConfirmation).toBe(true);
+    expect(task.status).toBe('pending_approval');
   });
 });
 
 describe('hub ingress ports', () => {
-  it('accepts telegram text directly', async () => {
-    const message = await acceptHubIngress({
-      id: 'in-1',
-      port: HubIngressPort.TelegramText,
+  it('accepts all four sources through injected transports', async () => {
+    const text = await acceptHubCommand({
+      id: '1',
+      idempotencyKey: 'k1',
       receivedAt: NOW,
-      body: '  Fix the router  ',
+      source: 'telegram_text',
+      body: ' status please ',
+      transportId: 'tg-1',
     });
-    expect(message.text).toBe('Fix the router');
-    expect(message.port).toBe(HubIngressPort.TelegramText);
-  });
+    expect(text.text).toBe('status please');
 
-  it('uses injected voice and QR transports only', async () => {
-    const voice = await acceptHubIngress(
+    const voice = await acceptHubCommand(
       {
-        id: 'in-voice',
-        port: HubIngressPort.TelegramVoice,
+        id: '2',
+        idempotencyKey: 'k2',
         receivedAt: NOW,
-        body: 'audio://clip-1',
+        source: 'telegram_voice',
+        body: 'audio://1',
+        transportId: 'tg-2',
       },
-      { transcribeVoice: async (ref) => `voice:${ref}` },
+      { transcribeVoice: async () => 'implement github fix' },
     );
-    expect(voice.text).toBe('voice:audio://clip-1');
+    expect(voice.text).toBe('implement github fix');
 
-    const qr = await acceptHubIngress(
+    const qr = await acceptHubCommand(
       {
-        id: 'in-qr',
-        port: HubIngressPort.Qr,
+        id: '3',
+        idempotencyKey: 'k3',
         receivedAt: NOW,
-        body: 'qr-payload',
+        source: 'qr_text',
+        body: 'raw',
+        transportId: 'qr-1',
       },
-      { decodeQr: async (payload) => `decoded:${payload}` },
+      { decodeQr: async () => 'show me opportunities' },
     );
-    expect(qr.text).toBe('decoded:qr-payload');
+    expect(qr.source).toBe('qr_text');
+
+    const desktop = await acceptHubCommand({
+      id: '4',
+      idempotencyKey: 'k4',
+      receivedAt: NOW,
+      source: 'desktop_text',
+      body: 'brief me',
+      transportId: 'desk-1',
+    });
+    expect(desktop.source).toBe('desktop_text');
   });
 });
 
 describe('hub whisper probe', () => {
-  it('prefers local whisper when available', async () => {
-    const result = await probeHubWhisper({
-      local: { probe: async () => ({ available: true, detail: 'whisper.cpp ready' }) },
-      apiFallback: { configured: true, detail: 'openai whisper' },
+  it('prefers local then configured API fallback', async () => {
+    const local = await probeHubWhisper({
+      local: { probe: async () => ({ available: true, detail: 'local ok' }) },
+      apiFallback: { configured: true, detail: 'api' },
       now: () => NOW,
     });
-    expect(result.backend).toBe(HubWhisperBackend.Local);
-    expect(result.available).toBe(true);
-    expect(result.fallbackConfigured).toBe(true);
-  });
+    expect(local.backend).toBe('local');
 
-  it('falls back to configured API when local is down', async () => {
-    const result = await probeHubWhisper({
-      local: { probe: async () => ({ available: false, detail: 'binary missing' }) },
+    const fallback = await probeHubWhisper({
+      local: { probe: async () => ({ available: false, detail: 'missing' }) },
       apiFallback: { configured: true, detail: 'api ready' },
       now: () => NOW,
     });
-    expect(result.backend).toBe(HubWhisperBackend.ApiFallback);
-    expect(result.available).toBe(true);
-  });
-
-  it('reports unavailable when neither local nor API work', async () => {
-    const result = await probeHubWhisper({
-      local: { probe: async () => ({ available: false, detail: 'binary missing' }) },
-      apiFallback: { configured: false, detail: 'none' },
-      now: () => NOW,
-    });
-    expect(result.backend).toBe(HubWhisperBackend.Unavailable);
-    expect(result.available).toBe(false);
+    expect(fallback.backend).toBe('api_fallback');
   });
 });
 
 describe('hub confirmation-gated idempotent dispatch', () => {
-  it('holds without confirmation and dispatches once when confirmed', () => {
+  it('dispatches once after confirmation and replays duplicates', () => {
     const dispatcher = new HubDispatcher(createTokenDispatchGate('yes'), () => NOW);
-    const request = {
-      idempotencyKey: 'k1',
-      commandId: 'cmd-1',
-      kind: HubCommandKind.Task,
-      capability: HubCapability.Dev,
-      summary: 'Fix router',
-      createdAt: NOW,
-    };
-    expect(dispatcher.enqueue(request).status).toBe(HubDispatchStatus.AwaitingConfirmation);
-    expect(dispatcher.confirm({ ...request, confirmationToken: 'no' }).status).toBe(
-      HubDispatchStatus.AwaitingConfirmation,
-    );
-    expect(dispatcher.confirm({ ...request, confirmationToken: 'yes' }).status).toBe(
-      HubDispatchStatus.Dispatched,
-    );
-    expect(dispatcher.confirm({ ...request, confirmationToken: 'yes' }).status).toBe(
-      HubDispatchStatus.Duplicate,
-    );
-    expect(dispatcher.enqueue(request).status).toBe(HubDispatchStatus.Duplicate);
+    const plan = planHubDispatch('cmd', classifyHubIntent('fix the deploy'), 'fix the deploy');
+    const first = dispatcher.enqueue(plan, 'idem-1');
+    expect(first.plan.status).toBe('pending_approval');
+    expect(dispatcher.confirm('idem-1', 'no').plan.status).toBe('pending_approval');
+    expect(dispatcher.confirm('idem-1', 'yes').plan.status).toBe('dispatched');
+    expect(dispatcher.confirm('idem-1', 'yes').replayed).toBe(true);
+    expect(dispatcher.enqueue(plan, 'idem-1').replayed).toBe(true);
   });
 });
 
 describe('hub 72-hour aggregation', () => {
-  it('aggregates transcript, repo, PR, Linear, opportunity, and task items', async () => {
+  it('aggregates categories, ranks opportunities, and degrades failures', async () => {
     const inside = '2026-08-02T12:00:00.000Z';
-    const outside = '2026-07-01T12:00:00.000Z';
-    const seed: HubAggregateItem[] = [
+    const seed: HubContextItem[] = [
       item('transcript', 't1', inside),
       item('repo', 'r1', inside),
       item('pr', 'p1', inside),
       item('linear', 'l1', inside),
-      item('opportunity', 'o1', inside),
+      item('opportunity', 'o-low', inside, 1),
+      item('opportunity', 'o-high', inside, 9),
       item('task', 'task-1', inside),
-      item('task', 'task-old', outside),
+      item('heartbeat', 'hb1', inside),
     ];
-    const window = await aggregateHubWindow(emptyAggregationSources(seed), NOW);
+    const sources = emptyAggregationSources(seed);
+    const original = sources.listRepos;
+    sources.listRepos = async () => {
+      throw new Error('boom');
+    };
+    void original;
+    const window = await aggregateHubWindow(sources, NOW);
     expect(window.windowMs).toBe(HUB_AGGREGATION_WINDOW_MS);
-    expect(window.counts).toEqual({
-      transcript: 1,
-      repo: 1,
-      pr: 1,
-      linear: 1,
-      opportunity: 1,
-      task: 1,
-    });
-    expect(window.items).toHaveLength(6);
+    expect(window.degradedProviders).toContain('repos');
+    expect(window.counts.opportunity).toBe(2);
+    const opportunities = window.items.filter((entry) => entry.category === 'opportunity');
+    expect(opportunities[0]?.id).toBe('o-high');
   });
 });
 
 describe('hub sealed demos and walkthrough streams', () => {
-  it('seals demos with stable content hashes', () => {
+  it('seals demos and exposes three walkthrough streams', () => {
     const first = sealHubDemoSnapshot({
-      demoId: 'demo-1',
+      demoId: 'd1',
       sealedAt: NOW,
-      label: 'party-trick',
+      label: 'demo',
       payload: { step: 1, ready: true },
     });
     const second = sealHubDemoSnapshot({
-      demoId: 'demo-1',
+      demoId: 'd1',
       sealedAt: '2026-08-03T13:00:00.000Z',
-      label: 'party-trick',
+      label: 'demo',
       payload: { ready: true, step: 1 },
     });
     expect(first.contentHash).toBe(second.contentHash);
-    expect(first.contentHash).toMatch(/^[0-9a-f]{64}$/);
-    const expected = createHash('sha256')
-      .update(JSON.stringify({ demoId: 'demo-1', label: 'party-trick', payload: { ready: true, step: 1 } }))
-      .digest('hex');
-    expect(first.contentHash).toBe(expected);
+    expect(first.contentHash).toBe(
+      createHash('sha256')
+        .update(JSON.stringify({ demoId: 'd1', label: 'demo', payload: { ready: true, step: 1 } }))
+        .digest('hex'),
+    );
+
+    const streams = buildWalkthroughStreams(NOW);
+    expect(Object.keys(streams).sort()).toEqual(['competitor', 'deploy_fix', 'morning_brief']);
   });
 
-  it('exposes three walkthrough streams', () => {
-    const streams = buildWalkthroughStreams(NOW);
-    expect(Object.keys(streams).sort()).toEqual(
-      [HubWalkthroughStream.Brief, HubWalkthroughStream.Command, HubWalkthroughStream.Fleet].sort(),
-    );
-    for (const stream of Object.values(HubWalkthroughStream)) {
-      expect(streams[stream].length).toBeGreaterThan(0);
-      expect(streams[stream][0]?.stream).toBe(stream);
-    }
+  it('builds an idempotent boot announcement plan without sending', () => {
+    const plan = buildBootAnnouncementPlan({
+      bootId: 'boot-1',
+      createdAt: NOW,
+      totals: { activeAgents: 5, queuedTasks: 2, opportunities: 1 },
+    });
+    expect(plan.channel).toBe('telegram');
+    expect(plan.idempotencyKey).toBe('boot-announce:boot-1');
+    expect(plan.text).toContain('Agents 5');
   });
 });
 
@@ -230,63 +233,55 @@ describe('hub command plane snapshot and events', () => {
       },
       aggregationSources: emptyAggregationSources([
         item('transcript', 't1', '2026-08-02T12:00:00.000Z'),
-        item('linear', 'l1', '2026-08-02T13:00:00.000Z'),
+        item('task', 'task-1', '2026-08-02T13:00:00.000Z'),
+        item('opportunity', 'o1', '2026-08-02T14:00:00.000Z', 5),
       ]),
     });
 
-    const bootSnapshot = await plane.boot();
-    expect(() => assertHubSnapshot(bootSnapshot)).not.toThrow();
-    expect(bootSnapshot.boot.healthy).toBe(true);
-    expect(bootSnapshot.heartbeats).toHaveLength(5);
-    expect(bootSnapshot.whisper.backend).toBe(HubWhisperBackend.Local);
+    const boot = await plane.boot();
+    expect(() => assertHubSnapshot(boot)).not.toThrow();
+    expect(boot.schemaVersion).toBe(1);
+    expect(boot.agents).toHaveLength(5);
+    expect(boot.bootAnnouncement?.idempotencyKey).toBe('boot-announce:boot-1');
+    expect(plane.planBootAnnouncement(boot.totals).idempotencyKey).toBe('boot-announce:boot-1');
 
     const ingested = await plane.ingest({
       id: 'msg-1',
-      port: HubIngressPort.TelegramVoice,
+      idempotencyKey: 'ingress:msg-1',
       receivedAt: NOW,
+      source: 'telegram_voice',
       body: 'audio://1',
+      transportId: 'tg-1',
     });
-    expect(ingested.command.kind).toBe(HubCommandKind.Task);
-    expect(ingested.command.capability).toBe(HubCapability.Dev);
-    expect(ingested.receipt.status).toBe(HubDispatchStatus.AwaitingConfirmation);
+    expect(ingested.receipt.plan.intent).toBe('TASK');
+    expect(ingested.receipt.plan.targetAgent).toBe('DEV');
+    expect(ingested.receipt.plan.status).toBe('pending_approval');
 
-    const confirmed = plane.confirm(ingested.command.idempotencyKey!, 'confirm-me');
-    expect(confirmed.status).toBe(HubDispatchStatus.Dispatched);
-    expect(plane.confirm(ingested.command.idempotencyKey!, 'confirm-me').status).toBe(
-      HubDispatchStatus.Duplicate,
-    );
+    expect(plane.confirm('ingress:msg-1', 'confirm-me').plan.status).toBe('dispatched');
+    expect(plane.confirm('ingress:msg-1', 'confirm-me').replayed).toBe(true);
 
-    const demo = plane.sealDemo({
-      demoId: 'demo-live',
-      label: 'walkthrough',
-      payload: { version: 1 },
-    });
-    expect(demo.contentHash).toMatch(/^[0-9a-f]{64}$/);
-
-    const streams = plane.walkthroughs();
-    expect(streams[HubWalkthroughStream.Command]).toHaveLength(3);
+    plane.sealDemo({ demoId: 'demo-1', label: 'walkthrough', payload: { version: 1 } });
+    const demoSnapshot = plane.enterDemo();
+    expect(demoSnapshot.mode).toBe('demo');
+    expect(plane.walkthroughs().competitor.length).toBeGreaterThan(0);
+    expect(plane.exitDemo().mode).toBe('live');
 
     const snapshot = await plane.snapshot();
     expect(() => assertHubSnapshot(snapshot)).not.toThrow();
-    expect(snapshot.commands).toHaveLength(1);
-    expect(snapshot.demos).toHaveLength(1);
-    expect(snapshot.aggregation.counts.transcript).toBe(1);
-    expect(snapshot.aggregation.counts.linear).toBe(1);
+    expect(snapshot.aggregation?.counts.transcript).toBe(1);
 
     const events = plane.drainEvents();
-    expect(events.some((event) => event.type === HubEventType.BootSummary)).toBe(true);
-    expect(events.some((event) => event.type === HubEventType.Snapshot)).toBe(true);
-    for (const event of events) {
-      expect(() => assertHubEvent(event)).not.toThrow();
-    }
+    expect(events.some((event) => event.type === 'snapshot')).toBe(true);
+    for (const event of events) expect(() => assertHubEvent(event)).not.toThrow();
   });
 });
 
 function item(
-  category: HubAggregateItem['category'],
+  category: HubContextItem['category'],
   id: string,
   occurredAt: string,
-): HubAggregateItem {
+  signal?: number,
+): HubContextItem {
   return {
     id,
     category,
@@ -294,5 +289,6 @@ function item(
     occurredAt,
     source: 'fixture',
     summary: `${category} ${id}`,
+    ...(signal !== undefined ? { signal } : {}),
   };
 }

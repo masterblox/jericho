@@ -1,76 +1,154 @@
 import {
-  HubAlertSeverity,
-  HubAgentPresence,
-  HubCapability,
-  HubCommandKind,
-  HubDispatchStatus,
-  HubEventType,
-  HubIngressPort,
-  HubWalkthroughStream,
-  HubWhisperBackend,
-  type HubAggregateItem,
+  HUB_AGGREGATION_WINDOW_MS,
+  HUB_AGENT_IDS,
+  type HubAgentId,
+  type HubAgentStatus,
   type HubAggregationWindow,
-  type HubAgentHeartbeat,
   type HubAlert,
-  type HubBootSummary,
-  type HubCommandClassification,
-  type HubCommandRecord,
+  type HubBootAnnouncementPlan,
+  type HubCommand,
+  type HubCommandLogEntry,
+  type HubContextItem,
+  type HubDispatchPlan,
   type HubDispatchReceipt,
   type HubEvent,
-  type HubIngressMessage,
-  type HubRoutingDecision,
+  type HubIntentClassification,
   type HubSealedDemoSnapshot,
   type HubSnapshot,
   type HubWalkthroughEvent,
   type HubWhisperProbeResult,
-  HUB_AGGREGATION_WINDOW_MS,
 } from './types.js';
 
-const AGGREGATE_CATEGORIES = new Set<HubAggregateItem['category']>([
+const INTENT_KINDS = new Set(['TASK', 'QUERY', 'CREATE', 'BRIEF', 'DEMO']);
+const SOURCES = new Set(['telegram_voice', 'telegram_text', 'qr_text', 'desktop_text']);
+const DISPATCH_STATUSES = new Set([
+  'planned',
+  'pending_approval',
+  'approved',
+  'dispatched',
+  'failed',
+]);
+const PHASES = new Set([
+  'received',
+  'classified',
+  'planned',
+  'approved',
+  'dispatched',
+  'completed',
+  'failed',
+]);
+const PRIORITIES = new Set(['critical', 'high', 'normal', 'low']);
+const CATEGORIES = new Set(['money', 'failure', 'deadline', 'intelligence', 'system']);
+const HEALTH = new Set(['green', 'yellow', 'red', 'offline']);
+const MODES = new Set(['live', 'demo']);
+const CONNECTIONS = new Set(['connected', 'degraded', 'reconnecting', 'offline']);
+const WHISPER = new Set(['local', 'api_fallback', 'unavailable']);
+const DEMO_STREAMS = new Set(['competitor', 'deploy_fix', 'morning_brief']);
+const CONTEXT_CATEGORIES = new Set([
   'transcript',
   'repo',
   'pr',
   'linear',
   'opportunity',
   'task',
+  'heartbeat',
 ]);
+const AGENT_IDS = new Set<string>(HUB_AGENT_IDS);
 
-export function assertHubCommandClassification(
-  value: unknown,
-): asserts value is HubCommandClassification {
-  assertRecord(value, 'HubCommandClassification');
-  assertEnum(value.kind, HubCommandKind, 'HubCommandClassification.kind');
-  assertNonEmptyString(value.summary, 'HubCommandClassification.summary');
-  assertConfidence(value.confidence, 'HubCommandClassification.confidence');
-  assertDenseStringArray(value.signals, 'HubCommandClassification.signals');
+export function assertHubCommand(value: unknown): asserts value is HubCommand {
+  assertRecord(value, 'HubCommand');
+  if (value.schemaVersion !== 1) throw new TypeError('HubCommand.schemaVersion must be 1');
+  assertNonEmptyString(value.id, 'HubCommand.id');
+  assertNonEmptyString(value.idempotencyKey, 'HubCommand.idempotencyKey');
+  assertTimestamp(value.receivedAt, 'HubCommand.receivedAt');
+  assertOneOf(value.source, SOURCES, 'HubCommand.source');
+  assertNonEmptyString(value.text, 'HubCommand.text');
+  assertRecord(value.provenance, 'HubCommand.provenance');
+  assertNonEmptyString(value.provenance.transportId, 'HubCommand.provenance.transportId');
+  if ('actorIdHash' in value.provenance) {
+    assertNonEmptyString(value.provenance.actorIdHash, 'HubCommand.provenance.actorIdHash');
+  }
 }
 
-export function assertHubRoutingDecision(
+export function assertHubIntentClassification(
   value: unknown,
-): asserts value is HubRoutingDecision {
-  assertRecord(value, 'HubRoutingDecision');
-  assertEnum(value.capability, HubCapability, 'HubRoutingDecision.capability');
-  assertNonEmptyString(value.ruleId, 'HubRoutingDecision.ruleId');
-  assertConfidence(value.confidence, 'HubRoutingDecision.confidence');
-  assertNonEmptyString(value.rationale, 'HubRoutingDecision.rationale');
+): asserts value is HubIntentClassification {
+  assertRecord(value, 'HubIntentClassification');
+  assertOneOf(value.intent, INTENT_KINDS, 'HubIntentClassification.intent');
+  assertConfidence(value.confidence, 'HubIntentClassification.confidence');
+  assertNonEmptyString(value.summary, 'HubIntentClassification.summary');
+  assertDenseStringArray(value.signals, 'HubIntentClassification.signals');
 }
 
-export function assertHubIngressMessage(
-  value: unknown,
-): asserts value is HubIngressMessage {
-  assertRecord(value, 'HubIngressMessage');
-  assertNonEmptyString(value.id, 'HubIngressMessage.id');
-  assertEnum(value.port, HubIngressPort, 'HubIngressMessage.port');
-  assertTimestamp(value.receivedAt, 'HubIngressMessage.receivedAt');
-  assertNonEmptyString(value.text, 'HubIngressMessage.text');
-  assertStringScalarMap(value.metadata, 'HubIngressMessage.metadata');
+export function assertHubDispatchPlan(value: unknown): asserts value is HubDispatchPlan {
+  assertRecord(value, 'HubDispatchPlan');
+  if (value.schemaVersion !== 1) throw new TypeError('HubDispatchPlan.schemaVersion must be 1');
+  assertNonEmptyString(value.commandId, 'HubDispatchPlan.commandId');
+  assertOneOf(value.intent, INTENT_KINDS, 'HubDispatchPlan.intent');
+  if (value.targetAgent !== null) assertAgentId(value.targetAgent, 'HubDispatchPlan.targetAgent');
+  assertConfidence(value.confidence, 'HubDispatchPlan.confidence');
+  assertNonEmptyString(value.summary, 'HubDispatchPlan.summary');
+  if (typeof value.requiresConfirmation !== 'boolean') {
+    throw new TypeError('HubDispatchPlan.requiresConfirmation must be boolean');
+  }
+  assertOneOf(value.status, DISPATCH_STATUSES, 'HubDispatchPlan.status');
+  if ('reason' in value) assertNonEmptyString(value.reason, 'HubDispatchPlan.reason');
+}
+
+export function assertHubDispatchReceipt(value: unknown): asserts value is HubDispatchReceipt {
+  assertRecord(value, 'HubDispatchReceipt');
+  assertNonEmptyString(value.idempotencyKey, 'HubDispatchReceipt.idempotencyKey');
+  assertNonEmptyString(value.commandId, 'HubDispatchReceipt.commandId');
+  assertHubDispatchPlan(value.plan);
+  if (typeof value.replayed !== 'boolean') {
+    throw new TypeError('HubDispatchReceipt.replayed must be boolean');
+  }
+  assertTimestamp(value.updatedAt, 'HubDispatchReceipt.updatedAt');
+}
+
+export function assertHubAgentStatus(value: unknown): asserts value is HubAgentStatus {
+  assertRecord(value, 'HubAgentStatus');
+  assertAgentId(value.agentId, 'HubAgentStatus.agentId');
+  assertOneOf(value.health, HEALTH, 'HubAgentStatus.health');
+  if (value.currentTask !== null) assertNonEmptyString(value.currentTask, 'HubAgentStatus.currentTask');
+  if (value.lastOutputAt !== null) assertTimestamp(value.lastOutputAt, 'HubAgentStatus.lastOutputAt');
+  if (
+    typeof value.unreadAlerts !== 'number' ||
+    !Number.isInteger(value.unreadAlerts) ||
+    value.unreadAlerts < 0
+  ) {
+    throw new TypeError('HubAgentStatus.unreadAlerts must be a non-negative integer');
+  }
+}
+
+export function assertHubCommandLogEntry(value: unknown): asserts value is HubCommandLogEntry {
+  assertRecord(value, 'HubCommandLogEntry');
+  assertNonEmptyString(value.id, 'HubCommandLogEntry.id');
+  assertTimestamp(value.occurredAt, 'HubCommandLogEntry.occurredAt');
+  assertAgentId(value.agentId, 'HubCommandLogEntry.agentId');
+  assertOneOf(value.phase, PHASES, 'HubCommandLogEntry.phase');
+  assertNonEmptyString(value.summary, 'HubCommandLogEntry.summary');
+}
+
+export function assertHubAlert(value: unknown): asserts value is HubAlert {
+  assertRecord(value, 'HubAlert');
+  assertNonEmptyString(value.id, 'HubAlert.id');
+  assertTimestamp(value.occurredAt, 'HubAlert.occurredAt');
+  assertAgentId(value.agentId, 'HubAlert.agentId');
+  assertOneOf(value.priority, PRIORITIES, 'HubAlert.priority');
+  assertOneOf(value.category, CATEGORIES, 'HubAlert.category');
+  assertNonEmptyString(value.title, 'HubAlert.title');
+  assertNonEmptyString(value.summary, 'HubAlert.summary');
+  if (typeof value.acknowledged !== 'boolean') {
+    throw new TypeError('HubAlert.acknowledged must be boolean');
+  }
 }
 
 export function assertHubWhisperProbeResult(
   value: unknown,
 ): asserts value is HubWhisperProbeResult {
   assertRecord(value, 'HubWhisperProbeResult');
-  assertEnum(value.backend, HubWhisperBackend, 'HubWhisperProbeResult.backend');
+  assertOneOf(value.backend, WHISPER, 'HubWhisperProbeResult.backend');
   if (typeof value.available !== 'boolean') {
     throw new TypeError('HubWhisperProbeResult.available must be boolean');
   }
@@ -81,19 +159,18 @@ export function assertHubWhisperProbeResult(
   }
 }
 
-export function assertHubDispatchReceipt(
+export function assertHubBootAnnouncementPlan(
   value: unknown,
-): asserts value is HubDispatchReceipt {
-  assertRecord(value, 'HubDispatchReceipt');
-  assertNonEmptyString(value.idempotencyKey, 'HubDispatchReceipt.idempotencyKey');
-  assertNonEmptyString(value.commandId, 'HubDispatchReceipt.commandId');
-  assertEnum(value.status, HubDispatchStatus, 'HubDispatchReceipt.status');
-  assertEnum(value.capability, HubCapability, 'HubDispatchReceipt.capability');
-  assertNonEmptyString(value.summary, 'HubDispatchReceipt.summary');
-  assertTimestamp(value.updatedAt, 'HubDispatchReceipt.updatedAt');
-  if (typeof value.replayed !== 'boolean') {
-    throw new TypeError('HubDispatchReceipt.replayed must be boolean');
+): asserts value is HubBootAnnouncementPlan {
+  assertRecord(value, 'HubBootAnnouncementPlan');
+  assertNonEmptyString(value.bootId, 'HubBootAnnouncementPlan.bootId');
+  assertNonEmptyString(value.idempotencyKey, 'HubBootAnnouncementPlan.idempotencyKey');
+  if (value.channel !== 'telegram') {
+    throw new TypeError('HubBootAnnouncementPlan.channel must be telegram');
   }
+  assertNonEmptyString(value.text, 'HubBootAnnouncementPlan.text');
+  assertTotals(value.totals, 'HubBootAnnouncementPlan.totals');
+  assertTimestamp(value.createdAt, 'HubBootAnnouncementPlan.createdAt');
 }
 
 export function assertHubAggregationWindow(
@@ -105,58 +182,16 @@ export function assertHubAggregationWindow(
   }
   assertTimestamp(value.since, 'HubAggregationWindow.since');
   assertTimestamp(value.until, 'HubAggregationWindow.until');
-  if (!Array.isArray(value.items)) {
-    throw new TypeError('HubAggregationWindow.items must be an array');
-  }
-  value.items.forEach((item, index) => assertHubAggregateItem(item, `items[${index}]`));
+  if (!Array.isArray(value.items)) throw new TypeError('HubAggregationWindow.items must be an array');
+  value.items.forEach((item, index) => assertHubContextItem(item, `items[${index}]`));
   assertRecord(value.counts, 'HubAggregationWindow.counts');
-  for (const category of AGGREGATE_CATEGORIES) {
-    const count = value.counts[category];
+  for (const category of CONTEXT_CATEGORIES) {
+    const count = value.counts[category as HubContextItem['category']];
     if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
-      throw new TypeError(`HubAggregationWindow.counts.${category} must be a non-negative integer`);
+      throw new TypeError(`HubAggregationWindow.counts.${category} invalid`);
     }
   }
-}
-
-export function assertHubAgentHeartbeat(
-  value: unknown,
-): asserts value is HubAgentHeartbeat {
-  assertRecord(value, 'HubAgentHeartbeat');
-  assertNonEmptyString(value.agentId, 'HubAgentHeartbeat.agentId');
-  assertEnum(value.capability, HubCapability, 'HubAgentHeartbeat.capability');
-  assertEnum(value.presence, HubAgentPresence, 'HubAgentHeartbeat.presence');
-  assertTimestamp(value.lastSeenAt, 'HubAgentHeartbeat.lastSeenAt');
-  if (typeof value.sequence !== 'number' || !Number.isInteger(value.sequence) || value.sequence < 0) {
-    throw new TypeError('HubAgentHeartbeat.sequence must be a non-negative integer');
-  }
-  assertNonEmptyString(value.detail, 'HubAgentHeartbeat.detail');
-}
-
-export function assertHubAlert(value: unknown): asserts value is HubAlert {
-  assertRecord(value, 'HubAlert');
-  assertNonEmptyString(value.id, 'HubAlert.id');
-  assertEnum(value.severity, HubAlertSeverity, 'HubAlert.severity');
-  assertTimestamp(value.raisedAt, 'HubAlert.raisedAt');
-  assertNonEmptyString(value.code, 'HubAlert.code');
-  assertNonEmptyString(value.message, 'HubAlert.message');
-  if ('relatedCommandId' in value) {
-    assertNonEmptyString(value.relatedCommandId, 'HubAlert.relatedCommandId');
-  }
-}
-
-export function assertHubBootSummary(value: unknown): asserts value is HubBootSummary {
-  assertRecord(value, 'HubBootSummary');
-  assertNonEmptyString(value.bootId, 'HubBootSummary.bootId');
-  assertTimestamp(value.startedAt, 'HubBootSummary.startedAt');
-  assertTimestamp(value.readyAt, 'HubBootSummary.readyAt');
-  assertHubWhisperProbeResult(value.whisper);
-  assertDenseEnumArray(value.ingressPorts, HubIngressPort, 'HubBootSummary.ingressPorts');
-  assertDenseEnumArray(value.capabilities, HubCapability, 'HubBootSummary.capabilities');
-  if (!Array.isArray(value.alerts)) throw new TypeError('HubBootSummary.alerts must be an array');
-  value.alerts.forEach((alert) => assertHubAlert(alert));
-  if (typeof value.healthy !== 'boolean') {
-    throw new TypeError('HubBootSummary.healthy must be boolean');
-  }
+  assertDenseStringArray(value.degradedProviders, 'HubAggregationWindow.degradedProviders');
 }
 
 export function assertHubSealedDemoSnapshot(
@@ -176,7 +211,7 @@ export function assertHubWalkthroughEvent(
   value: unknown,
 ): asserts value is HubWalkthroughEvent {
   assertRecord(value, 'HubWalkthroughEvent');
-  assertEnum(value.stream, HubWalkthroughStream, 'HubWalkthroughEvent.stream');
+  assertOneOf(value.stream, DEMO_STREAMS, 'HubWalkthroughEvent.stream');
   if (typeof value.sequence !== 'number' || !Number.isInteger(value.sequence) || value.sequence < 0) {
     throw new TypeError('HubWalkthroughEvent.sequence must be a non-negative integer');
   }
@@ -186,105 +221,97 @@ export function assertHubWalkthroughEvent(
   assertStringScalarMap(value.data, 'HubWalkthroughEvent.data');
 }
 
-export function assertHubCommandRecord(value: unknown): asserts value is HubCommandRecord {
-  assertRecord(value, 'HubCommandRecord');
-  assertNonEmptyString(value.id, 'HubCommandRecord.id');
-  assertEnum(value.kind, HubCommandKind, 'HubCommandRecord.kind');
-  assertEnum(value.capability, HubCapability, 'HubCommandRecord.capability');
-  assertNonEmptyString(value.summary, 'HubCommandRecord.summary');
-  assertEnum(value.ingressPort, HubIngressPort, 'HubCommandRecord.ingressPort');
-  assertEnum(value.status, HubDispatchStatus, 'HubCommandRecord.status');
-  assertTimestamp(value.createdAt, 'HubCommandRecord.createdAt');
-  assertTimestamp(value.updatedAt, 'HubCommandRecord.updatedAt');
-  if ('idempotencyKey' in value) {
-    assertNonEmptyString(value.idempotencyKey, 'HubCommandRecord.idempotencyKey');
-  }
-}
-
 export function assertHubSnapshot(value: unknown): asserts value is HubSnapshot {
   assertRecord(value, 'HubSnapshot');
-  assertNonEmptyString(value.revision, 'HubSnapshot.revision');
+  if (value.schemaVersion !== 1) throw new TypeError('HubSnapshot.schemaVersion must be 1');
   assertTimestamp(value.generatedAt, 'HubSnapshot.generatedAt');
-  assertHubBootSummary(value.boot);
-  if (!Array.isArray(value.commands)) throw new TypeError('HubSnapshot.commands must be an array');
-  value.commands.forEach((command) => assertHubCommandRecord(command));
-  if (!Array.isArray(value.heartbeats)) throw new TypeError('HubSnapshot.heartbeats must be an array');
-  value.heartbeats.forEach((heartbeat) => assertHubAgentHeartbeat(heartbeat));
+  assertOneOf(value.mode, MODES, 'HubSnapshot.mode');
+  assertOneOf(value.connection, CONNECTIONS, 'HubSnapshot.connection');
+  if (!Array.isArray(value.agents)) throw new TypeError('HubSnapshot.agents must be an array');
+  value.agents.forEach((agent) => assertHubAgentStatus(agent));
+  if (!Array.isArray(value.commandLog)) throw new TypeError('HubSnapshot.commandLog must be an array');
+  value.commandLog.forEach((entry) => assertHubCommandLogEntry(entry));
   if (!Array.isArray(value.alerts)) throw new TypeError('HubSnapshot.alerts must be an array');
   value.alerts.forEach((alert) => assertHubAlert(alert));
-  assertHubAggregationWindow(value.aggregation);
-  if (!Array.isArray(value.demos)) throw new TypeError('HubSnapshot.demos must be an array');
-  value.demos.forEach((demo) => assertHubSealedDemoSnapshot(demo));
-  assertRecord(value.walkthroughs, 'HubSnapshot.walkthroughs');
-  for (const stream of Object.values(HubWalkthroughStream)) {
-    const events = value.walkthroughs[stream];
-    if (!Array.isArray(events)) {
-      throw new TypeError(`HubSnapshot.walkthroughs.${stream} must be an array`);
-    }
-    events.forEach((event) => assertHubWalkthroughEvent(event));
+  assertTotals(value.totals, 'HubSnapshot.totals');
+  assertNonEmptyString(value.revision, 'HubSnapshot.revision');
+  if ('bootAnnouncement' in value) assertHubBootAnnouncementPlan(value.bootAnnouncement);
+  if ('aggregation' in value) assertHubAggregationWindow(value.aggregation);
+  if ('whisper' in value) assertHubWhisperProbeResult(value.whisper);
+  if ('demos' in value) {
+    if (!Array.isArray(value.demos)) throw new TypeError('HubSnapshot.demos must be an array');
+    value.demos.forEach((demo) => assertHubSealedDemoSnapshot(demo));
   }
-  assertHubWhisperProbeResult(value.whisper);
-  assertDenseEnumArray(value.ingressPorts, HubIngressPort, 'HubSnapshot.ingressPorts');
+  if ('walkthroughs' in value) {
+    assertRecord(value.walkthroughs, 'HubSnapshot.walkthroughs');
+    for (const stream of DEMO_STREAMS) {
+      const events = value.walkthroughs[stream as string];
+      if (!Array.isArray(events)) {
+        throw new TypeError(`HubSnapshot.walkthroughs.${stream} must be an array`);
+      }
+      events.forEach((event) => assertHubWalkthroughEvent(event));
+    }
+  }
 }
 
 export function assertHubEvent(value: unknown): asserts value is HubEvent {
   assertRecord(value, 'HubEvent');
-  assertEnum(value.type, HubEventType, 'HubEvent.type');
-  assertTimestamp(value.at, 'HubEvent.at');
+  if (typeof value.sequence !== 'number' || !Number.isInteger(value.sequence) || value.sequence < 0) {
+    throw new TypeError('HubEvent.sequence must be a non-negative integer');
+  }
   switch (value.type) {
-    case HubEventType.CommandClassified:
-      assertNonEmptyString(value.commandId, 'HubEvent.commandId');
-      assertHubCommandClassification(value.classification);
+    case 'snapshot':
+      assertHubSnapshot(value.snapshot);
       break;
-    case HubEventType.CommandRouted:
-      assertNonEmptyString(value.commandId, 'HubEvent.commandId');
-      assertHubRoutingDecision(value.routing);
+    case 'agent_status':
+      assertHubAgentStatus(value.status);
       break;
-    case HubEventType.IngressReceived:
-      assertHubIngressMessage(value.message);
+    case 'command_log':
+      assertHubCommandLogEntry(value.entry);
       break;
-    case HubEventType.WhisperProbed:
-      assertHubWhisperProbeResult(value.result);
-      break;
-    case HubEventType.DispatchUpdated:
-      assertHubDispatchReceipt(value.receipt);
-      break;
-    case HubEventType.AggregationReady:
-      assertHubAggregationWindow(value.aggregation);
-      break;
-    case HubEventType.AgentHeartbeat:
-      assertHubAgentHeartbeat(value.heartbeat);
-      break;
-    case HubEventType.AlertRaised:
+    case 'alert':
       assertHubAlert(value.alert);
       break;
-    case HubEventType.BootSummary:
-      assertHubBootSummary(value.boot);
-      break;
-    case HubEventType.DemoSealed:
-      assertHubSealedDemoSnapshot(value.demo);
-      break;
-    case HubEventType.WalkthroughEvent:
-      assertHubWalkthroughEvent(value.event);
-      break;
-    case HubEventType.Snapshot:
-      assertHubSnapshot(value.snapshot);
+    case 'mode':
+      assertOneOf(value.mode, MODES, 'HubEvent.mode');
       break;
     default:
       throw new TypeError('HubEvent.type is unsupported');
   }
 }
 
-function assertHubAggregateItem(value: unknown, field: string): asserts value is HubAggregateItem {
+function assertHubContextItem(value: unknown, field: string): asserts value is HubContextItem {
   assertRecord(value, field);
   assertNonEmptyString(value.id, `${field}.id`);
-  if (typeof value.category !== 'string' || !AGGREGATE_CATEGORIES.has(value.category as HubAggregateItem['category'])) {
-    throw new TypeError(`${field}.category is invalid`);
-  }
+  assertOneOf(value.category, CONTEXT_CATEGORIES, `${field}.category`);
   assertNonEmptyString(value.title, `${field}.title`);
   assertTimestamp(value.occurredAt, `${field}.occurredAt`);
   assertNonEmptyString(value.source, `${field}.source`);
   assertNonEmptyString(value.summary, `${field}.summary`);
+  if ('signal' in value) {
+    if (typeof value.signal !== 'number' || !Number.isFinite(value.signal)) {
+      throw new TypeError(`${field}.signal must be finite`);
+    }
+  }
+}
+
+function assertTotals(
+  value: unknown,
+  field: string,
+): asserts value is { activeAgents: number; queuedTasks: number; opportunities: number } {
+  assertRecord(value, field);
+  for (const key of ['activeAgents', 'queuedTasks', 'opportunities'] as const) {
+    const count = value[key];
+    if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) {
+      throw new TypeError(`${field}.${key} must be a non-negative integer`);
+    }
+  }
+}
+
+function assertAgentId(value: unknown, field: string): asserts value is HubAgentId {
+  if (typeof value !== 'string' || !AGENT_IDS.has(value)) {
+    throw new TypeError(`${field} is invalid`);
+  }
 }
 
 function assertRecord(value: unknown, field: string): asserts value is Record<string, unknown> {
@@ -311,35 +338,18 @@ function assertTimestamp(value: unknown, field: string): asserts value is string
   }
 }
 
+function assertOneOf(value: unknown, allowed: Set<string>, field: string): void {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    throw new TypeError(`${field} is invalid`);
+  }
+}
+
 function assertDenseStringArray(value: unknown, field: string): asserts value is string[] {
   if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
     throw new TypeError(`${field} must be a dense array`);
   }
   for (const item of value) {
     if (typeof item !== 'string') throw new TypeError(`${field} must contain only strings`);
-  }
-}
-
-function assertDenseEnumArray<T extends Record<string, string>>(
-  value: unknown,
-  enumeration: T,
-  field: string,
-): asserts value is Array<T[keyof T]> {
-  if (!Array.isArray(value) || Object.keys(value).length !== value.length) {
-    throw new TypeError(`${field} must be a dense array`);
-  }
-  for (const item of value) {
-    assertEnum(item, enumeration, field);
-  }
-}
-
-function assertEnum<T extends Record<string, string>>(
-  value: unknown,
-  enumeration: T,
-  field: string,
-): asserts value is T[keyof T] {
-  if (typeof value !== 'string' || !Object.values(enumeration).includes(value)) {
-    throw new TypeError(`${field} is invalid`);
   }
 }
 

@@ -1,68 +1,124 @@
-import {
-  HubCapability,
-  HubCommandKind,
-  type HubCommandClassification,
-  type HubRoutingDecision,
+import type {
+  HubAgentId,
+  HubDispatchPlan,
+  HubIntentClassification,
+  HubIntentKind,
 } from '@jericho/shared';
 
-/**
- * Routes a classified Hub command to DEV, Donald, PA, Iris, or Jericho.
- */
-export function routeHubCommand(
-  classification: Readonly<HubCommandClassification>,
-  text = classification.summary,
-): HubRoutingDecision {
-  const normalized = text.toLowerCase();
-
-  if (classification.kind === HubCommandKind.Demo || classification.kind === HubCommandKind.Brief) {
-    return decision(
-      HubCapability.Jericho,
-      'hub:jericho-presentation',
-      Math.max(classification.confidence, 0.8),
-      'Briefs and demos stay on the Jericho presentation lane',
-    );
-  }
-
-  if (/\b(design|visual|image|brand|mockup|ui|ux)\b/.test(normalized)) {
-    return decision(HubCapability.Iris, 'hub:iris-visual', classification.confidence, 'Visual work routes to Iris');
-  }
-  if (/\b(sales|crm|outreach|lead|prospect|deal|pipeline)\b/.test(normalized)) {
-    return decision(HubCapability.Donald, 'hub:donald-sales', classification.confidence, 'Sales work routes to Donald');
-  }
-  if (/\b(calendar|inbox|meeting|schedule|personal|travel|ops|pa\b)\b/.test(normalized)) {
-    return decision(HubCapability.PA, 'hub:pa-ops', classification.confidence, 'Personal ops route to PA');
-  }
-  if (/\b(code|repo|git|github|linear|ci|deploy|pr\b|implement|fix|build)\b/.test(normalized)) {
-    return decision(HubCapability.Dev, 'hub:dev-delivery', classification.confidence, 'Delivery work routes to DEV');
-  }
-
-  if (classification.kind === HubCommandKind.Query) {
-    return decision(
-      HubCapability.Jericho,
-      'hub:jericho-query',
-      classification.confidence,
-      'General queries stay with Jericho',
-    );
-  }
-
-  return decision(
-    HubCapability.Dev,
-    'hub:default-dev',
-    Math.min(classification.confidence, 0.7),
-    'Unmatched actionable work defaults to DEV',
-  );
+export interface HubCapabilityDefinition {
+  agentId: HubAgentId;
+  owns: readonly string[];
+  description: string;
 }
 
-function decision(
-  capability: HubCapability,
-  ruleId: string,
-  confidence: number,
-  rationale: string,
-): HubRoutingDecision {
+export const HUB_CAPABILITY_REGISTRY: readonly HubCapabilityDefinition[] = [
+  {
+    agentId: 'DEV',
+    owns: ['infra', 'repo', 'git', 'github', 'deploy', 'debug', 'health', 'ci', 'linear', 'code'],
+    description: 'Infrastructure, repositories, deploy, debug, and health',
+  },
+  {
+    agentId: 'DONALD',
+    owns: ['sales', 'lead', 'money', 'opportunity', 'crm', 'outreach', 'deal', 'pipeline', 'bd'],
+    description: 'BD, leads, money, and opportunity extraction',
+  },
+  {
+    agentId: 'PA',
+    owns: ['calendar', 'email', 'schedule', 'inbox', 'travel', 'personal', 'logistics', 'meeting'],
+    description: 'Scheduling, email drafts, and personal logistics',
+  },
+  {
+    agentId: 'IRIS',
+    owns: ['research', 'report', 'competitive', 'intel', 'analysis', 'design', 'visual', 'brand'],
+    description: 'Research, reports, and competitive intelligence',
+  },
+  {
+    agentId: 'JERICHO',
+    owns: ['scan', 'brief', 'cron', 'demo', 'status', 'overview'],
+    description: 'Scans, briefs, cron management, and presentation',
+  },
+];
+
+const MUTATING_INTENTS = new Set<HubIntentKind>(['TASK', 'CREATE']);
+
+/** Route a classification to a capability lane without performing agent work. */
+export function planHubDispatch(
+  commandId: string,
+  classification: Readonly<HubIntentClassification>,
+  text = classification.summary,
+): HubDispatchPlan {
+  const targetAgent = selectAgent(classification, text);
+  const requiresConfirmation = MUTATING_INTENTS.has(classification.intent);
+  const ambiguous = classification.confidence < 0.65;
+
+  if (ambiguous) {
+    return {
+      schemaVersion: 1,
+      commandId,
+      intent: classification.intent,
+      targetAgent,
+      confidence: classification.confidence,
+      summary: classification.summary,
+      requiresConfirmation: true,
+      status: 'pending_approval',
+      reason: 'Ambiguous classification held for review',
+    };
+  }
+
+  if (classification.intent === 'DEMO' || classification.intent === 'BRIEF') {
+    return {
+      schemaVersion: 1,
+      commandId,
+      intent: classification.intent,
+      targetAgent: 'JERICHO',
+      confidence: classification.confidence,
+      summary: classification.summary,
+      requiresConfirmation: false,
+      status: 'planned',
+    };
+  }
+
+  if (classification.intent === 'QUERY') {
+    return {
+      schemaVersion: 1,
+      commandId,
+      intent: 'QUERY',
+      targetAgent: targetAgent ?? 'JERICHO',
+      confidence: classification.confidence,
+      summary: classification.summary,
+      requiresConfirmation: false,
+      status: 'planned',
+    };
+  }
+
   return {
-    capability,
-    ruleId,
-    confidence: Math.min(1, Math.max(0, confidence)),
-    rationale,
+    schemaVersion: 1,
+    commandId,
+    intent: classification.intent,
+    targetAgent,
+    confidence: classification.confidence,
+    summary: classification.summary,
+    requiresConfirmation,
+    status: requiresConfirmation ? 'pending_approval' : 'planned',
+    ...(requiresConfirmation ? { reason: 'External effects require explicit confirmation' } : {}),
   };
+}
+
+function selectAgent(
+  classification: Readonly<HubIntentClassification>,
+  text: string,
+): HubAgentId | null {
+  const haystack = `${text} ${classification.signals.join(' ')}`.toLowerCase();
+  let best: { agentId: HubAgentId; score: number } | undefined;
+  for (const capability of HUB_CAPABILITY_REGISTRY) {
+    const score = capability.owns.reduce(
+      (total, token) => total + (haystack.includes(token) ? 1 : 0),
+      0,
+    );
+    if (score > 0 && (!best || score > best.score)) {
+      best = { agentId: capability.agentId, score };
+    }
+  }
+  if (classification.intent === 'DEMO' || classification.intent === 'BRIEF') return 'JERICHO';
+  return best?.agentId ?? (classification.intent === 'QUERY' ? 'JERICHO' : 'DEV');
 }

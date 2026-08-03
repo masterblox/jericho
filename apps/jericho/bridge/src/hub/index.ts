@@ -1,9 +1,9 @@
-export { classifyHubCommand } from './classifier.js';
-export { routeHubCommand } from './router.js';
+export { classifyHubIntent, type HubModelClassifierPort } from './classifier.js';
+export { planHubDispatch, HUB_CAPABILITY_REGISTRY, type HubCapabilityDefinition } from './router.js';
 export {
-  acceptHubIngress,
-  HUB_INGRESS_PORTS,
-  type AcceptIngressInput,
+  acceptHubCommand,
+  HUB_COMMAND_SOURCES,
+  type AcceptHubCommandInput,
   type HubIngressTransport,
 } from './ingress.js';
 export {
@@ -22,10 +22,11 @@ export {
   emptyAggregationSources,
   type HubAggregationSources,
 } from './aggregator.js';
-export { HubTelemetry, ALL_CAPABILITIES } from './heartbeat.js';
-export { sealHubDemoSnapshot, buildWalkthroughStreams } from './demo.js';
-export { buildHubSnapshot } from './snapshot.js';
+export { HubEventBus, HubTelemetry } from './heartbeat.js';
 export {
-  HubCommandPlane,
-  type HubCommandPlaneOptions,
-} from './command-plane.js';
+  sealHubDemoSnapshot,
+  buildWalkthroughStreams,
+  buildBootAnnouncementPlan,
+} from './demo.js';
+export { buildHubSnapshot } from './snapshot.js';
+export { HubCommandPlane, type HubCommandPlaneOptions } from './command-plane.js';

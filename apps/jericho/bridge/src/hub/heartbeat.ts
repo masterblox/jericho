@@ -1,140 +1,161 @@
 import {
-  HubAlertSeverity,
-  HubAgentPresence,
-  HubCapability,
-  HubEventType,
-  type HubAgentHeartbeat,
+  HUB_AGENT_IDS,
+  type HubAgentId,
+  type HubAgentStatus,
   type HubAlert,
-  type HubBootSummary,
+  type HubCommandLogEntry,
   type HubEvent,
-  type HubIngressPort,
-  type HubWhisperProbeResult,
+  type HubHealth,
+  type HubMode,
 } from '@jericho/shared';
 
-import { HUB_INGRESS_PORTS } from './ingress.js';
-
-const ALL_CAPABILITIES: readonly HubCapability[] = [
-  HubCapability.Dev,
-  HubCapability.Donald,
-  HubCapability.PA,
-  HubCapability.Iris,
-  HubCapability.Jericho,
-];
-
-/**
- * Track agent heartbeats, raise alerts, and assemble boot summaries.
- */
-export class HubTelemetry {
-  readonly #heartbeats = new Map<string, HubAgentHeartbeat>();
-  readonly #alerts: HubAlert[] = [];
-  readonly #events: HubEvent[] = [];
-  readonly #now: () => string;
+/** Ordered Hub event bus for authenticated WebSocket-ready payloads. */
+export class HubEventBus {
   #sequence = 0;
+  readonly #events: HubEvent[] = [];
 
-  constructor(now: () => string = () => new Date().toISOString()) {
-    this.#now = now;
+  nextSequence(): number {
+    this.#sequence += 1;
+    return this.#sequence;
   }
 
-  recordHeartbeat(input: {
-    agentId: string;
-    capability: HubCapability;
-    presence: HubAgentPresence;
-    detail: string;
-  }): HubAgentHeartbeat {
-    const previous = this.#heartbeats.get(input.agentId);
-    const heartbeat: HubAgentHeartbeat = {
-      agentId: input.agentId,
-      capability: input.capability,
-      presence: input.presence,
-      lastSeenAt: this.#now(),
-      sequence: (previous?.sequence ?? -1) + 1,
-      detail: input.detail,
-    };
-    this.#heartbeats.set(input.agentId, heartbeat);
-    this.#push({
-      type: HubEventType.AgentHeartbeat,
-      at: heartbeat.lastSeenAt,
-      heartbeat: { ...heartbeat },
-    });
-    return { ...heartbeat };
+  publish(event: HubEvent): HubEvent {
+    const sequenced = {
+      ...event,
+      sequence: event.sequence > 0 ? event.sequence : this.nextSequence(),
+    } as HubEvent;
+    this.#events.push(structuredClone(sequenced));
+    return structuredClone(sequenced);
   }
 
-  raiseAlert(input: {
-    id: string;
-    severity: HubAlertSeverity;
-    code: string;
-    message: string;
-    relatedCommandId?: string;
-  }): HubAlert {
-    const alert: HubAlert = {
-      id: input.id,
-      severity: input.severity,
-      raisedAt: this.#now(),
-      code: input.code,
-      message: input.message,
-      ...(input.relatedCommandId ? { relatedCommandId: input.relatedCommandId } : {}),
-    };
-    this.#alerts.push(alert);
-    this.#push({
-      type: HubEventType.AlertRaised,
-      at: alert.raisedAt,
-      alert: { ...alert },
-    });
-    return { ...alert };
-  }
-
-  buildBootSummary(input: {
-    bootId: string;
-    startedAt: string;
-    whisper: HubWhisperProbeResult;
-    ingressPorts?: readonly HubIngressPort[];
-    capabilities?: readonly HubCapability[];
-  }): HubBootSummary {
-    const readyAt = this.#now();
-    const alerts = this.#alerts.map((alert) => ({ ...alert }));
-    const boot: HubBootSummary = {
-      bootId: input.bootId,
-      startedAt: input.startedAt,
-      readyAt,
-      whisper: { ...input.whisper },
-      ingressPorts: [...(input.ingressPorts ?? HUB_INGRESS_PORTS)],
-      capabilities: [...(input.capabilities ?? ALL_CAPABILITIES)],
-      alerts,
-      healthy:
-        input.whisper.available &&
-        !alerts.some((alert) => alert.severity === HubAlertSeverity.Critical),
-    };
-    this.#push({
-      type: HubEventType.BootSummary,
-      at: readyAt,
-      boot: structuredClone(boot),
-    });
-    return structuredClone(boot);
-  }
-
-  listHeartbeats(): HubAgentHeartbeat[] {
-    return [...this.#heartbeats.values()].map((heartbeat) => ({ ...heartbeat }));
-  }
-
-  listAlerts(): HubAlert[] {
-    return this.#alerts.map((alert) => ({ ...alert }));
-  }
-
-  drainEvents(): HubEvent[] {
-    const events = [...this.#events];
+  drain(): HubEvent[] {
+    const events = this.#events.map((event) => structuredClone(event));
     this.#events.length = 0;
     return events;
   }
 
-  peekEvents(): HubEvent[] {
+  peek(): HubEvent[] {
     return this.#events.map((event) => structuredClone(event));
-  }
-
-  #push(event: HubEvent): void {
-    this.#sequence += 1;
-    void this.#sequence;
-    this.#events.push(event);
   }
 }
 
-export { ALL_CAPABILITIES };
+export class HubTelemetry {
+  readonly #agents = new Map<HubAgentId, HubAgentStatus>();
+  readonly #alerts: HubAlert[] = [];
+  readonly #log: HubCommandLogEntry[] = [];
+  readonly #bus: HubEventBus;
+  readonly #now: () => string;
+  #mode: HubMode = 'live';
+
+  constructor(bus: HubEventBus, now: () => string = () => new Date().toISOString()) {
+    this.#bus = bus;
+    this.#now = now;
+    for (const agentId of HUB_AGENT_IDS) {
+      this.#agents.set(agentId, {
+        agentId,
+        health: 'green',
+        currentTask: null,
+        lastOutputAt: null,
+        unreadAlerts: 0,
+      });
+    }
+  }
+
+  setMode(mode: HubMode): void {
+    this.#mode = mode;
+    this.#bus.publish({ type: 'mode', sequence: 0, mode });
+  }
+
+  get mode(): HubMode {
+    return this.#mode;
+  }
+
+  recordHeartbeat(input: {
+    agentId: HubAgentId;
+    health: HubHealth;
+    currentTask: string | null;
+  }): HubAgentStatus {
+    const status: HubAgentStatus = {
+      agentId: input.agentId,
+      health: input.health,
+      currentTask: input.currentTask,
+      lastOutputAt: this.#now(),
+      unreadAlerts: this.#alerts.filter(
+        (alert) => alert.agentId === input.agentId && !alert.acknowledged,
+      ).length,
+    };
+    this.#agents.set(input.agentId, status);
+    this.#bus.publish({ type: 'agent_status', sequence: 0, status });
+    return { ...status };
+  }
+
+  appendCommandLog(entry: Omit<HubCommandLogEntry, 'occurredAt'> & { occurredAt?: string }): HubCommandLogEntry {
+    const full: HubCommandLogEntry = {
+      ...entry,
+      occurredAt: entry.occurredAt ?? this.#now(),
+    };
+    this.#log.push(full);
+    this.#bus.publish({ type: 'command_log', sequence: 0, entry: full });
+    return { ...full };
+  }
+
+  raiseAlert(alert: Omit<HubAlert, 'occurredAt' | 'acknowledged'> & {
+    occurredAt?: string;
+    acknowledged?: boolean;
+  }): HubAlert {
+    const full: HubAlert = {
+      ...alert,
+      occurredAt: alert.occurredAt ?? this.#now(),
+      acknowledged: alert.acknowledged ?? false,
+    };
+    this.#alerts.push(full);
+    const agent = this.#agents.get(full.agentId);
+    if (agent) {
+      agent.unreadAlerts = this.#alerts.filter(
+        (item) => item.agentId === full.agentId && !item.acknowledged,
+      ).length;
+      this.#agents.set(full.agentId, agent);
+    }
+    this.#bus.publish({ type: 'alert', sequence: 0, alert: full });
+    return { ...full };
+  }
+
+  listAgents(): HubAgentStatus[] {
+    return HUB_AGENT_IDS.map((id) => ({ ...this.#agents.get(id)! }));
+  }
+
+  listAlerts(): HubAlert[] {
+    return [...this.#alerts]
+      .sort((a, b) => priorityRank(a.priority) - priorityRank(b.priority))
+      .map((alert) => ({ ...alert }));
+  }
+
+  listCommandLog(): HubCommandLogEntry[] {
+    return this.#log.map((entry) => ({ ...entry }));
+  }
+
+  totals(queuedTasks: number, opportunities: number): {
+    activeAgents: number;
+    queuedTasks: number;
+    opportunities: number;
+  } {
+    return {
+      activeAgents: this.listAgents().filter((agent) => agent.health !== 'offline').length,
+      queuedTasks,
+      opportunities,
+    };
+  }
+}
+
+function priorityRank(priority: HubAlert['priority']): number {
+  switch (priority) {
+    case 'critical':
+      return 0;
+    case 'high':
+      return 1;
+    case 'normal':
+      return 2;
+    case 'low':
+      return 3;
+  }
+}

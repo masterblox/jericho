@@ -1,18 +1,13 @@
 import {
-  HubAgentPresence,
-  HubCapability,
-  HubDispatchStatus,
-  HubEventType,
-  HubIngressPort,
-  type HubBootSummary,
-  type HubCommandRecord,
+  HUB_AGENT_IDS,
+  type HubCommand,
+  type HubDemoStream,
   type HubDispatchReceipt,
   type HubEvent,
-  type HubIngressMessage,
+  type HubMode,
   type HubSealedDemoSnapshot,
   type HubSnapshot,
   type HubWalkthroughEvent,
-  type HubWalkthroughStream,
   type HubWhisperProbeResult,
 } from '@jericho/shared';
 
@@ -21,21 +16,24 @@ import {
   emptyAggregationSources,
   type HubAggregationSources,
 } from './aggregator.js';
-import { classifyHubCommand } from './classifier.js';
-import { buildWalkthroughStreams, sealHubDemoSnapshot } from './demo.js';
+import { classifyHubIntent } from './classifier.js';
+import {
+  buildBootAnnouncementPlan,
+  buildWalkthroughStreams,
+  sealHubDemoSnapshot,
+} from './demo.js';
 import {
   createTokenDispatchGate,
   HubDispatcher,
   type HubDispatchGate,
 } from './dispatch.js';
-import { ALL_CAPABILITIES, HubTelemetry } from './heartbeat.js';
+import { HubEventBus, HubTelemetry } from './heartbeat.js';
 import {
-  acceptHubIngress,
-  HUB_INGRESS_PORTS,
-  type AcceptIngressInput,
+  acceptHubCommand,
+  type AcceptHubCommandInput,
   type HubIngressTransport,
 } from './ingress.js';
-import { routeHubCommand } from './router.js';
+import { planHubDispatch } from './router.js';
 import { buildHubSnapshot } from './snapshot.js';
 import {
   probeHubWhisper,
@@ -55,8 +53,8 @@ export interface HubCommandPlaneOptions {
 }
 
 /**
- * In-memory Hub command plane. Uses injected fakes only — no live sends,
- * workspace operations, or wiring into server/runtime/config.
+ * In-memory Hub command plane. Injected fakes only — no live sends, workspace
+ * operations, or wiring into server/runtime/config.
  */
 export class HubCommandPlane {
   readonly #now: () => string;
@@ -65,16 +63,16 @@ export class HubCommandPlane {
   readonly #ingressTransport: HubIngressTransport;
   readonly #aggregationSources: HubAggregationSources;
   readonly #dispatcher: HubDispatcher;
+  readonly #bus = new HubEventBus();
   readonly #telemetry: HubTelemetry;
   readonly #bootId: string;
-  readonly #startedAt: string;
-  readonly #commands = new Map<string, HubCommandRecord>();
   readonly #demos: HubSealedDemoSnapshot[] = [];
-  readonly #walkthroughs: Record<HubWalkthroughStream, HubWalkthroughEvent[]>;
-  readonly #events: HubEvent[] = [];
+  readonly #walkthroughs: Record<HubDemoStream, HubWalkthroughEvent[]>;
+  readonly #commands = new Map<string, HubCommand>();
+  readonly #bootAnnouncements = new Map<string, ReturnType<typeof buildBootAnnouncementPlan>>();
   #booted = false;
-  #bootSummary: HubBootSummary | undefined;
   #whisper: HubWhisperProbeResult | undefined;
+  #bootAnnouncement: ReturnType<typeof buildBootAnnouncementPlan> | undefined;
 
   constructor(options: HubCommandPlaneOptions) {
     this.#now = options.now ?? (() => new Date().toISOString());
@@ -86,10 +84,9 @@ export class HubCommandPlane {
       options.dispatchGate ?? createTokenDispatchGate(options.confirmationToken),
       this.#now,
     );
-    this.#telemetry = new HubTelemetry(this.#now);
+    this.#telemetry = new HubTelemetry(this.#bus, this.#now);
     this.#bootId = options.bootId ?? `hub-boot-${this.#now()}`;
-    this.#startedAt = this.#now();
-    this.#walkthroughs = buildWalkthroughStreams(this.#startedAt);
+    this.#walkthroughs = buildWalkthroughStreams(this.#now());
   }
 
   async boot(): Promise<HubSnapshot> {
@@ -98,116 +95,108 @@ export class HubCommandPlane {
       apiFallback: this.#apiFallback,
       now: this.#now,
     });
-    this.#push({
-      type: HubEventType.WhisperProbed,
-      at: this.#whisper.probedAt,
-      result: { ...this.#whisper },
-    });
 
-    for (const capability of ALL_CAPABILITIES) {
+    for (const agentId of HUB_AGENT_IDS) {
       this.#telemetry.recordHeartbeat({
-        agentId: `agent:${capability}`,
-        capability,
-        presence: HubAgentPresence.Online,
-        detail: `${capability} capability online`,
+        agentId,
+        health: 'green',
+        currentTask: null,
       });
     }
 
-    this.#bootSummary = this.#telemetry.buildBootSummary({
-      bootId: this.#bootId,
-      startedAt: this.#startedAt,
-      whisper: this.#whisper,
-    });
+    const aggregation = await aggregateHubWindow(this.#aggregationSources, this.#now());
+    const totals = this.#telemetry.totals(
+      aggregation.counts.task,
+      aggregation.counts.opportunity,
+    );
+    this.#bootAnnouncement = this.planBootAnnouncement(totals);
     this.#booted = true;
-    this.#events.push(...this.#telemetry.drainEvents());
-    return this.snapshot();
+    return this.snapshot(aggregation);
   }
 
-  async ingest(input: AcceptIngressInput): Promise<{
-    message: HubIngressMessage;
-    command: HubCommandRecord;
+  planBootAnnouncement(totals: {
+    activeAgents: number;
+    queuedTasks: number;
+    opportunities: number;
+  }): ReturnType<typeof buildBootAnnouncementPlan> {
+    const existing = this.#bootAnnouncements.get(this.#bootId);
+    if (existing) return structuredClone(existing);
+    const plan = buildBootAnnouncementPlan({
+      bootId: this.#bootId,
+      createdAt: this.#now(),
+      totals,
+    });
+    this.#bootAnnouncements.set(this.#bootId, plan);
+    return structuredClone(plan);
+  }
+
+  async ingest(input: AcceptHubCommandInput): Promise<{
+    command: HubCommand;
     receipt: HubDispatchReceipt;
   }> {
     this.#ensureBooted();
-    const message = await acceptHubIngress(input, this.#ingressTransport);
-    this.#push({
-      type: HubEventType.IngressReceived,
-      at: message.receivedAt,
-      message: { ...message, metadata: { ...message.metadata } },
+    const command = await acceptHubCommand(input, this.#ingressTransport);
+    this.#commands.set(command.id, command);
+    this.#telemetry.appendCommandLog({
+      id: `log:${command.id}:received`,
+      agentId: 'JERICHO',
+      phase: 'received',
+      summary: `Received from ${command.source}`,
     });
 
-    const classification = classifyHubCommand(message.text);
-    const routing = routeHubCommand(classification, message.text);
-    const commandId = `cmd:${message.id}`;
-    this.#push({
-      type: HubEventType.CommandClassified,
-      at: this.#now(),
-      commandId,
-      classification: { ...classification, signals: [...classification.signals] },
-    });
-    this.#push({
-      type: HubEventType.CommandRouted,
-      at: this.#now(),
-      commandId,
-      routing: { ...routing },
+    const classification = classifyHubIntent(command.text);
+    this.#telemetry.appendCommandLog({
+      id: `log:${command.id}:classified`,
+      agentId: 'JERICHO',
+      phase: 'classified',
+      summary: `${classification.intent} (${classification.confidence})`,
     });
 
-    const createdAt = this.#now();
-    const idempotencyKey = `ingress:${message.id}`;
-    const receipt = this.#dispatcher.enqueue({
-      idempotencyKey,
-      commandId,
-      kind: classification.kind,
-      capability: routing.capability,
-      summary: classification.summary,
-      createdAt,
-    });
-    this.#push({
-      type: HubEventType.DispatchUpdated,
-      at: receipt.updatedAt,
-      receipt: { ...receipt },
+    const plan = planHubDispatch(command.id, classification, command.text);
+    this.#telemetry.appendCommandLog({
+      id: `log:${command.id}:planned`,
+      agentId: plan.targetAgent ?? 'JERICHO',
+      phase: 'planned',
+      summary: plan.summary,
     });
 
-    const command: HubCommandRecord = {
-      id: commandId,
-      kind: classification.kind,
-      capability: routing.capability,
-      summary: classification.summary,
-      ingressPort: message.port,
-      status: receipt.status,
-      createdAt,
-      updatedAt: receipt.updatedAt,
-      idempotencyKey,
-    };
-    this.#commands.set(commandId, command);
-    return { message, command, receipt };
+    const receipt = this.#dispatcher.enqueue(plan, command.idempotencyKey);
+    if (receipt.plan.status === 'pending_approval') {
+      this.#telemetry.appendCommandLog({
+        id: `log:${command.id}:pending`,
+        agentId: plan.targetAgent ?? 'JERICHO',
+        phase: 'planned',
+        summary: 'Awaiting confirmation',
+      });
+    }
+    return { command, receipt };
   }
 
   confirm(idempotencyKey: string, confirmationToken: string): HubDispatchReceipt {
     this.#ensureBooted();
-    const command = [...this.#commands.values()].find(
-      (entry) => entry.idempotencyKey === idempotencyKey,
-    );
-    if (!command) {
-      throw new Error(`Unknown Hub command for key: ${idempotencyKey}`);
+    const receipt = this.#dispatcher.confirm(idempotencyKey, confirmationToken);
+    if (receipt.plan.status === 'dispatched') {
+      this.#telemetry.appendCommandLog({
+        id: `log:${receipt.commandId}:dispatched`,
+        agentId: receipt.plan.targetAgent ?? 'JERICHO',
+        phase: 'dispatched',
+        summary: receipt.plan.summary,
+      });
     }
-    const receipt = this.#dispatcher.confirm({
-      idempotencyKey,
-      commandId: command.id,
-      kind: command.kind,
-      capability: command.capability,
-      summary: command.summary,
-      confirmationToken,
-      createdAt: command.createdAt,
-    });
-    this.#push({
-      type: HubEventType.DispatchUpdated,
-      at: receipt.updatedAt,
-      receipt: { ...receipt },
-    });
-    command.status = receipt.status;
-    command.updatedAt = receipt.updatedAt;
     return receipt;
+  }
+
+  enterDemo(): HubSnapshot {
+    this.#ensureBooted();
+    this.#telemetry.setMode('demo');
+    // DEMO never constructs live providers — sealed streams only.
+    return this.snapshotSync();
+  }
+
+  exitDemo(): HubSnapshot {
+    this.#ensureBooted();
+    this.#telemetry.setMode('live');
+    return this.snapshotSync();
   }
 
   sealDemo(input: {
@@ -215,61 +204,53 @@ export class HubCommandPlane {
     label: string;
     payload: Record<string, string | number | boolean | null>;
   }): HubSealedDemoSnapshot {
-    const demo = sealHubDemoSnapshot({
-      ...input,
-      sealedAt: this.#now(),
-    });
+    const demo = sealHubDemoSnapshot({ ...input, sealedAt: this.#now() });
     this.#demos.push(demo);
-    this.#push({
-      type: HubEventType.DemoSealed,
-      at: demo.sealedAt,
-      demo: { ...demo, payload: { ...demo.payload } },
-    });
     return { ...demo, payload: { ...demo.payload } };
   }
 
-  walkthroughs(): Record<HubWalkthroughStream, HubWalkthroughEvent[]> {
-    const clone = {} as Record<HubWalkthroughStream, HubWalkthroughEvent[]>;
+  walkthroughs(): Record<HubDemoStream, HubWalkthroughEvent[]> {
+    const clone = {} as Record<HubDemoStream, HubWalkthroughEvent[]>;
     for (const [stream, events] of Object.entries(this.#walkthroughs) as Array<
-      [HubWalkthroughStream, HubWalkthroughEvent[]]
+      [HubDemoStream, HubWalkthroughEvent[]]
     >) {
       clone[stream] = events.map((event) => ({ ...event, data: { ...event.data } }));
     }
     return clone;
   }
 
-  async snapshot(): Promise<HubSnapshot> {
+  async snapshot(aggregation?: Awaited<ReturnType<typeof aggregateHubWindow>>): Promise<HubSnapshot> {
     this.#ensureBooted();
-    const aggregation = await aggregateHubWindow(this.#aggregationSources, this.#now());
-    this.#push({
-      type: HubEventType.AggregationReady,
-      at: aggregation.until,
-      aggregation: structuredClone(aggregation),
+    const window = aggregation ?? (await aggregateHubWindow(this.#aggregationSources, this.#now()));
+    return this.#publishSnapshot(window);
+  }
+
+  snapshotSync(): HubSnapshot {
+    this.#ensureBooted();
+    return this.#publishSnapshot({
+      windowMs: 72 * 60 * 60 * 1000,
+      since: this.#now(),
+      until: this.#now(),
+      items: [],
+      counts: {
+        transcript: 0,
+        repo: 0,
+        pr: 0,
+        linear: 0,
+        opportunity: 0,
+        task: 0,
+        heartbeat: 0,
+      },
+      degradedProviders: [],
     });
-    const snapshot = buildHubSnapshot({
-      generatedAt: this.#now(),
-      boot: this.#bootSummary!,
-      commands: [...this.#commands.values()],
-      heartbeats: this.#telemetry.listHeartbeats(),
-      alerts: this.#telemetry.listAlerts(),
-      aggregation,
-      demos: this.#demos,
-      walkthroughs: this.#walkthroughs,
-      whisper: this.#whisper!,
-      ingressPorts: HUB_INGRESS_PORTS,
-    });
-    this.#push({
-      type: HubEventType.Snapshot,
-      at: snapshot.generatedAt,
-      snapshot: structuredClone(snapshot),
-    });
-    return snapshot;
   }
 
   drainEvents(): HubEvent[] {
-    const events = [...this.#events, ...this.#telemetry.drainEvents()];
-    this.#events.length = 0;
-    return events;
+    return this.#bus.drain();
+  }
+
+  get mode(): HubMode {
+    return this.#telemetry.mode;
   }
 
   get dispatcher(): HubDispatcher {
@@ -280,19 +261,34 @@ export class HubCommandPlane {
     return this.#telemetry;
   }
 
+  #publishSnapshot(
+    aggregation: Awaited<ReturnType<typeof aggregateHubWindow>>,
+  ): HubSnapshot {
+    const totals = this.#telemetry.totals(
+      aggregation.counts.task,
+      aggregation.counts.opportunity,
+    );
+    const snapshot = buildHubSnapshot({
+      generatedAt: this.#now(),
+      mode: this.#telemetry.mode,
+      connection: aggregation.degradedProviders.length ? 'degraded' : 'connected',
+      agents: this.#telemetry.listAgents(),
+      commandLog: this.#telemetry.listCommandLog(),
+      alerts: this.#telemetry.listAlerts(),
+      totals,
+      bootAnnouncement: this.#bootAnnouncement,
+      aggregation,
+      whisper: this.#whisper,
+      demos: this.#demos,
+      walkthroughs: this.#walkthroughs,
+    });
+    this.#bus.publish({ type: 'snapshot', sequence: 0, snapshot });
+    return snapshot;
+  }
+
   #ensureBooted(): void {
-    if (!this.#booted || !this.#bootSummary || !this.#whisper) {
+    if (!this.#booted || !this.#whisper) {
       throw new Error('HubCommandPlane.boot() must run before use');
     }
   }
-
-  #push(event: HubEvent): void {
-    this.#events.push(event);
-  }
 }
-
-export {
-  HubCapability,
-  HubDispatchStatus,
-  HubIngressPort,
-};
