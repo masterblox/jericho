@@ -21,6 +21,7 @@ import {
   type VoiceConnectionCallbacks,
   type VoiceConnectionRequest,
 } from '../src/server.js';
+import type { SpeakerVerifier } from '../src/voice/speaker-verifier.js';
 
 const TOKEN = 'voice-gate-test-token';
 const openServers: Array<{ close(): Promise<void> }> = [];
@@ -88,7 +89,8 @@ describe('voice socket privacy gate', () => {
     const runtime = await startVoiceServer(voiceConnect, 1_000, { vaultSearch: { search } });
     const socket = await connectSocket(runtime.port);
     socket.send(JSON.stringify({ type: 'wake' }));
-    await flushIo();
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
 
     callbacks?.onmessage({
       toolCall: { functionCalls: [{ id: 'call-1', name: 'search_vault', args: { query: ' evidence ' } }] },
@@ -134,7 +136,8 @@ describe('voice socket privacy gate', () => {
     expect(JSON.stringify(voiceConnect.mock.calls[0][0].config)).toContain('open_browser');
 
     socket.send(JSON.stringify({ type: 'wake' }));
-    await flushIo();
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
     callbacks?.onmessage({
       toolCall: { functionCalls: [{
         id: 'local-action-1', name: 'open_browser',
@@ -159,6 +162,99 @@ describe('voice socket privacy gate', () => {
     }));
   });
 
+  it('blocks every tool when the active voice has no evaluated enrolled-speaker match', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const localOperator = localOperatorFixture();
+    const runtime = await startVoiceServer(voiceConnect, 1_000, {
+      localOperator,
+      requireSpeakerVerification: true,
+    });
+    const socket = await connectSocket(runtime.port);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+
+    callbacks?.onmessage({
+      toolCall: { functionCalls: [{
+        id: 'blocked-1', name: 'open_browser', args: { url: 'https://example.com' },
+      }] },
+    });
+
+    await vi.waitFor(() => expect(session.sendToolResponse).toHaveBeenCalledWith({
+      functionResponses: [{
+        id: 'blocked-1', name: 'open_browser', response: {
+          available: false, status: 'blocked', error: 'speaker_verification_required',
+        },
+      }],
+    }));
+    expect(localOperator.openBrowser).not.toHaveBeenCalled();
+  });
+
+  it('executes a voice tool only after an injected evaluated verifier matches the enrolled owner', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const verify = vi.fn(async (audio: Float32Array) => {
+      expect(audio).toHaveLength(16_000);
+      return {
+        status: 'verified' as const,
+        speakerId: 'enrolled-owner',
+        confidence: 0.97,
+        enrolled: true,
+      };
+    });
+    const speakerVerifier: SpeakerVerifier = {
+      status: 'verified',
+      enroll: async () => undefined,
+      verify,
+      reset: vi.fn(),
+    };
+    const localOperator = localOperatorFixture();
+    const runtime = await startVoiceServer(voiceConnect, 1_000, {
+      localOperator,
+      requireSpeakerVerification: true,
+      speakerVerifier,
+    });
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
+    socket.send(JSON.stringify({ type: 'audio', data: Buffer.alloc(32_000, 1).toString('base64') }));
+    await vi.waitFor(() => expect(verify).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(messages()).toContainEqual(expect.objectContaining({
+      type: 'speaker_verification', status: 'verified', enrolled: true, confidence: 0.97,
+    })));
+
+    callbacks?.onmessage({
+      toolCall: { functionCalls: [{
+        id: 'allowed-1', name: 'open_browser', args: { url: 'https://example.com' },
+      }] },
+    });
+
+    await vi.waitFor(() => expect(localOperator.openBrowser).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(session.sendToolResponse).toHaveBeenCalledWith({
+      functionResponses: [expect.objectContaining({
+        id: 'allowed-1', name: 'open_browser',
+        response: expect.objectContaining({ available: true, receiptId: 'local-e2e-1' }),
+      })],
+    }));
+  });
+
   it('lets Gemini search the bounded local Obsidian adapter when no RAG gateway is configured', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
@@ -175,7 +271,8 @@ describe('voice socket privacy gate', () => {
     const runtime = await startVoiceServer(voiceConnect, 1_000, { obsidianSearch: { search } });
     const socket = await connectSocket(runtime.port);
     socket.send(JSON.stringify({ type: 'wake' }));
-    await flushIo();
+    await vi.waitFor(() => expect(session.sendClientContent).toHaveBeenCalledTimes(1));
+    callbacks?.onmessage({ serverContent: { turnComplete: true } });
 
     callbacks?.onmessage({
       toolCall: { functionCalls: [{ id: 'local-1', name: 'search_vault', args: { query: 'Isabella' } }] },
@@ -639,6 +736,8 @@ async function startVoiceServer(
     vaultSearch?: { search(query: string, limit: number, signal: AbortSignal): Promise<any> };
     obsidianSearch?: { search(query: string, limit: number): Promise<any> };
     localOperator?: any;
+    requireSpeakerVerification?: boolean;
+    speakerVerifier?: SpeakerVerifier;
   } | undefined = undefined,
 ) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });
@@ -657,6 +756,22 @@ async function startVoiceServer(
   openServers.push(server);
   const address = await server.listen(0);
   return { ...address, address, store, server };
+}
+
+function localOperatorFixture() {
+  const receipt = {
+    receiptId: 'local-e2e-1', action: 'open_browser', status: 'succeeded' as const,
+    occurredAt: '2026-08-04T00:00:00.000Z', summary: 'Opened example.com.', evidence: {},
+  };
+  return {
+    openBrowser: vi.fn(async () => receipt),
+    openApplication: vi.fn(async () => receipt),
+    computerStatus: vi.fn(async () => receipt),
+    arrangeWindow: vi.fn(async () => receipt),
+    inspectRepository: vi.fn(async () => receipt),
+    openRepository: vi.fn(async () => receipt),
+    createCodingWorkspace: vi.fn(async () => receipt),
+  };
 }
 
 function connectSocket(port: number): Promise<WebSocket> {

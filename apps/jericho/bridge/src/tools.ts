@@ -11,7 +11,11 @@ import {
 } from '@jericho/shared';
 
 import type { JerichoStore } from './core/store.js';
+import type { CodingAgentManagerPort } from './coding-agent/manager.js';
+import type { WifiMappingExperienceLauncher } from './experiences/wifi-mapping/index.js';
 import type { LocalOperator } from './local-control/local-operator.js';
+import { translateAllToGeminiDeclarations, translateGeminiArguments } from './mcp/discovery.js';
+import type { MCPRegistry } from './mcp/registry.js';
 
 export interface ToolDecl {
   name: string;
@@ -126,7 +130,7 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
   },
   {
     name: 'create_coding_workspace',
-    description: 'Create a new local Conductor workspace for an explicit coding task in one configured repository. Use only when Carlos explicitly asks to create or start a coding workspace.',
+    description: 'Start and monitor a new economical Codex task in a local Conductor workspace for an explicit coding request. Returns a task receipt immediately and reports success only after a full Git SHA is verified in the configured repository.',
     parameters: {
       type: 'object',
       properties: {
@@ -136,7 +140,51 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
       required: ['repository', 'task'],
     },
   },
+  {
+    name: 'coding_agent_status',
+    description: 'Check the current Conductor workspace, session, and verified Git completion receipt for a coding task previously started by Jericho.',
+    parameters: {
+      type: 'object',
+      properties: { taskId: { type: 'string', description: 'Exact taskId returned by create_coding_workspace' } },
+      required: ['taskId'],
+    },
+  },
+  {
+    name: 'steer_coding_agent',
+    description: 'Send a bounded follow-up instruction to an active coding task only when Carlos explicitly asks to steer or clarify it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Exact active coding taskId' },
+        message: { type: 'string', description: 'Follow-up instruction, at most 4000 characters' },
+      },
+      required: ['taskId', 'message'],
+    },
+  },
+  {
+    name: 'cancel_coding_agent',
+    description: 'Cancel an active Conductor coding task only when Carlos explicitly asks to stop it.',
+    parameters: {
+      type: 'object',
+      properties: { taskId: { type: 'string', description: 'Exact active coding taskId' } },
+      required: ['taskId'],
+    },
+  },
+  {
+    name: 'open_wifi_mapping',
+    description: 'Open the clearly labelled simulated Wi-Fi mapping observatory in a fresh Chrome window and move it full-size to the secondary display. Use when Carlos asks for the Wi-Fi mapping tool or party trick.',
+    parameters: { type: 'object', properties: {} },
+  },
 ];
+
+export function buildFunctionDeclarations(
+  mcpRegistry?: Pick<MCPRegistry, 'allowedDescriptors'>,
+): ToolDecl[] {
+  return [
+    ...FUNCTION_DECLARATIONS,
+    ...translateAllToGeminiDeclarations(mcpRegistry?.allowedDescriptors() ?? []),
+  ];
+}
 
 export interface VaultToolSearchPort {
   search(query: string, limit: number, signal: AbortSignal): Promise<{
@@ -150,6 +198,9 @@ export interface ToolExecutorOptions {
   clock?: () => string;
   idFactory?: () => string;
   vaultSearch?: VaultToolSearchPort;
+  codingAgent?: CodingAgentManagerPort;
+  wifiMapping?: Pick<WifiMappingExperienceLauncher, 'openOnSecondaryDisplay'>;
+  mcpRegistry?: Pick<MCPRegistry, 'descriptorForModelName' | 'executeCall'>;
   localOperator?: Pick<LocalOperator,
     | 'openBrowser'
     | 'openApplication'
@@ -284,14 +335,132 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
             repository: args.repository, application: args.application,
           }));
         case 'create_coding_workspace':
+          if (options.codingAgent) {
+            return executeCodingAgent(() => options.codingAgent!.start({
+              repository: args.repository,
+              task: args.task,
+            }));
+          }
           return executeLocal(options.localOperator, () => options.localOperator!.createCodingWorkspace({
             repository: args.repository, task: args.task,
           }));
+        case 'coding_agent_status':
+          return executeCodingAgent(() => requiredCodingAgent(options.codingAgent).status(args.taskId));
+        case 'steer_coding_agent':
+          return executeCodingAgent(() => requiredCodingAgent(options.codingAgent).steer(args.taskId, args.message));
+        case 'cancel_coding_agent':
+          return executeCodingAgent(() => requiredCodingAgent(options.codingAgent).cancel(args.taskId));
+        case 'open_wifi_mapping':
+          return executeWifiMapping(options.wifiMapping);
         default:
-          return { error: `unknown tool: ${name}` };
+          return executeMcp(options.mcpRegistry, name, args);
       }
     },
   };
+}
+
+async function executeCodingAgent(
+  action: () => Promise<object>,
+): Promise<Record<string, unknown>> {
+  try {
+    const receipt = await action() as Record<string, unknown>;
+    const lifecycleStatus = receipt.lifecycleStatus;
+    const failed = lifecycleStatus === 'conductor_auth_required'
+      || lifecycleStatus === 'failed'
+      || lifecycleStatus === 'timed_out'
+      || lifecycleStatus === 'incomplete';
+    return {
+      available: !failed,
+      ...(failed ? { status: lifecycleStatus === 'conductor_auth_required' ? 'blocked' : 'failed' } : {}),
+      ...receipt,
+      ...(failed && typeof receipt.errorCode === 'string' ? { error: receipt.errorCode } : {}),
+    };
+  } catch (error) {
+    return {
+      available: false,
+      status: 'failed',
+      error: codingAgentError(error),
+    };
+  }
+}
+
+function requiredCodingAgent(manager: CodingAgentManagerPort | undefined): CodingAgentManagerPort {
+  if (!manager) throw new Error('coding_agent_unavailable');
+  return manager;
+}
+
+function codingAgentError(error: unknown): string {
+  const value = error instanceof Error ? error.message : '';
+  const allowed = new Set([
+    'coding_agent_capacity_reached', 'coding_agent_session_pending',
+    'coding_agent_task_not_found', 'coding_agent_task_terminal',
+    'coding_agent_unavailable', 'message_invalid', 'repository_invalid',
+    'repository_not_configured', 'task_id_invalid', 'task_invalid',
+  ]);
+  return allowed.has(value) ? value : 'coding_agent_failed';
+}
+
+async function executeWifiMapping(
+  launcher: ToolExecutorOptions['wifiMapping'],
+): Promise<Record<string, unknown>> {
+  if (!launcher) return { available: false, status: 'unavailable', error: 'wifi_mapping_unavailable' };
+  try {
+    const receipt = await launcher.openOnSecondaryDisplay();
+    return {
+      available: true,
+      status: 'succeeded',
+      experienceId: receipt.plan.experienceId,
+      url: receipt.plan.url,
+      simulation: receipt.start.descriptor.simulation,
+      targetDisplay: receipt.plan.targetDisplay,
+      browser: receipt.browser,
+      placement: receipt.placement,
+    };
+  } catch (error) {
+    const value = error instanceof Error ? error.message : '';
+    const allowed = new Set([
+      'accessibility_permission_required', 'automation_permission_required',
+      'secondary_display_required', 'wifi_mapping_window_control_failed',
+    ]);
+    return {
+      available: false,
+      status: 'failed',
+      error: allowed.has(value) ? value : 'wifi_mapping_failed',
+    };
+  }
+}
+
+async function executeMcp(
+  registry: ToolExecutorOptions['mcpRegistry'],
+  modelName: string,
+  args: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const descriptor = registry?.descriptorForModelName(modelName);
+  if (!registry || !descriptor) return { available: false, status: 'failed', error: 'unknown_tool' };
+  try {
+    const result = await registry.executeCall({
+      id: randomUUID(),
+      namespacedName: descriptor.namespacedName,
+      args: translateGeminiArguments(descriptor.inputSchema, args),
+    }, new AbortController().signal);
+    return {
+      available: true,
+      ok: result.receipt.ok,
+      serverName: result.receipt.serverName,
+      toolName: result.receipt.toolName,
+      latencyMs: result.receipt.latencyMs,
+      outputBytes: result.receipt.outputBytes,
+      truncated: result.receipt.truncated,
+      ...(result.receipt.content === undefined ? {} : { content: result.receipt.content }),
+      ...(result.receipt.error === undefined ? {} : {
+        error: /^(?:cancelled|timeout after \d+ms)$/u.test(result.receipt.error)
+          ? result.receipt.error
+          : 'mcp_tool_error',
+      }),
+    };
+  } catch {
+    return { available: false, status: 'failed', error: 'mcp_tool_failed' };
+  }
 }
 
 async function executeLocal(

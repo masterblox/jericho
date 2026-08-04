@@ -401,8 +401,8 @@ export function KnowledgeProjection({ actions = {} }) {
         {proposal?.integrityHash && <div className="k-review" aria-label="Reorganization review">
           <p>{proposal.summary ?? 'Review the exact reorganization proposal before recording a decision.'}</p>
           <div className="k-actions">
-            <button type="button" className="ok" onClick={() => void decideReorganization('approved')}>APPROVE REORGANIZATION</button>
-            <button type="button" onClick={() => void decideReorganization('rejected')}>REJECT REORGANIZATION</button>
+            <button type="button" className="ok" data-gesture-target="knowledge:reorganize-approve" onClick={() => void decideReorganization('approved')}>APPROVE REORGANIZATION</button>
+            <button type="button" data-gesture-target="knowledge:reorganize-reject" onClick={() => void decideReorganization('rejected')}>REJECT REORGANIZATION</button>
           </div>
         </div>}
         {status && <p className="k-status micro" role="status">{status}</p>}

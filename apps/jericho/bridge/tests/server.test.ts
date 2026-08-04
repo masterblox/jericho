@@ -69,6 +69,10 @@ describe('runtime config', () => {
       JERICHO_ALLOWED_ORIGINS: 'http://localhost:5173',
       JERICHO_CONNECTOR_POLL_INTERVAL_MS: '15000',
       JERICHO_VOICE_ACTIVE_TURN_MS: '45000',
+      JERICHO_REQUIRE_SPEAKER_VERIFICATION: 'false',
+      JERICHO_CODING_AGENT_MODEL: 'gpt-5.3-codex-spark',
+      JERICHO_MCP_SERVERS_JSON: '[{"name":"local-tools","transport":"stdio","command":"/usr/bin/node","args":["server.mjs"],"env":{"MODE":"local"}}]',
+      JERICHO_MCP_ALLOWLIST: 'local-tools/list_tabs',
     }, ['--port', '0'])).toMatchObject({
       port: 0,
       geminiApiKey: undefined,
@@ -103,6 +107,13 @@ describe('runtime config', () => {
       allowedOrigins: ['http://localhost:5173'],
       connectorPollIntervalMs: 15_000,
       voiceActiveTurnMs: 45_000,
+      requireSpeakerVerification: false,
+      codingAgentModel: 'gpt-5.3-codex-spark',
+      mcpServers: [{
+        name: 'local-tools', transport: 'stdio', command: '/usr/bin/node',
+        args: ['server.mjs'], env: { MODE: 'local' },
+      }],
+      mcpAllowedTools: ['local-tools/list_tabs'],
     });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, CONDUCTOR_PORT: '4100', PORT: '4200' }, [])).toMatchObject({ port: 4100 });
     expect(loadConfig({ JERICHO_API_TOKEN: TOKEN, PORT: '4200' }, [])).toMatchObject({ port: 4200 });
@@ -111,6 +122,10 @@ describe('runtime config', () => {
       port: 8787,
       host: '127.0.0.1',
       voiceActiveTurnMs: 30_000,
+      requireSpeakerVerification: true,
+      codingAgentModel: 'gpt-5.3-codex-spark',
+      mcpServers: [],
+      mcpAllowedTools: [],
       hermesPollIntervalMs: 250,
       hermesMaxWaitMs: 15 * 60_000,
       reflectionIntervalMs: 6 * 60 * 60_000,
@@ -143,6 +158,18 @@ describe('runtime config', () => {
       JERICHO_VAULT_REBUILD_WINDOW_START_UTC: '5',
       JERICHO_VAULT_REBUILD_WINDOW_END_UTC: '5',
     }, [])).toThrow(/window/i);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_REQUIRE_SPEAKER_VERIFICATION: 'yes',
+    }, [])).toThrow(/true or false/i);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_MCP_SERVERS_JSON: '[{"name":"remote","transport":"streamable-http","url":"http://example.com/mcp"}]',
+    }, [])).toThrow(/HTTPS or loopback HTTP/i);
+    expect(() => loadConfig({
+      JERICHO_API_TOKEN: TOKEN,
+      JERICHO_MCP_ALLOWLIST: 'missing/list',
+    }, [])).toThrow(/unconfigured MCP server/i);
   });
 
   it('fails closed when only part of the Hermes execution workspace is configured', () => {
@@ -205,6 +232,8 @@ describe('production Core composition', () => {
         JERICHO_HERMES_POLL_INTERVAL_MS: '10',
         JERICHO_HERMES_MAX_WAIT_MS: '100',
         JERICHO_REFLECTION_INTERVAL_MS: '60000',
+        JERICHO_MCP_SERVERS_JSON: '',
+        JERICHO_MCP_ALLOWLIST: '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -479,6 +508,29 @@ describe('authenticated local Core HTTP/SSE server', () => {
     });
     expect(search).toHaveBeenCalledWith('project', 5, expect.any(AbortSignal));
     expect((await api(runtime.url, '/api/v1/obsidian/search?q=project&limit=11')).status).toBe(400);
+  });
+
+  it('projects monitored coding-agent receipts without repository paths or transcript content', async () => {
+    const codingAgent = {
+      start: vi.fn(), status: vi.fn(), steer: vi.fn(), cancel: vi.fn(),
+      list: vi.fn(async () => [{
+        taskId: 'coding-1', workspaceId: 'ws-1', workspaceName: 'jericho: fix wake',
+        sessionId: 'session-1', lifecycleStatus: 'succeeded' as const,
+        commitSha: '0123456789abcdef0123456789abcdef01234567',
+      }]),
+    };
+    const runtime = await startServer({ codingAgent });
+
+    const result = await apiJson(runtime.url, '/api/v1/coding-agents');
+    expect(result).toEqual({
+      available: true,
+      tasks: [{
+        taskId: 'coding-1', workspaceId: 'ws-1', workspaceName: 'jericho: fix wake',
+        sessionId: 'session-1', lifecycleStatus: 'succeeded',
+        commitSha: '0123456789abcdef0123456789abcdef01234567',
+      }],
+    });
+    expect(JSON.stringify(result)).not.toMatch(/repositoryPath|transcript|prompt/u);
   });
 
   it('serves the fleet snapshot through the injected port and fails closed without one', async () => {
@@ -761,6 +813,7 @@ interface StartOverrides {
   reflection?: { runOnce: ReturnType<typeof vi.fn> };
   startupStatus?: import('../src/core/recovery.js').CoreStartupStatus;
   vaultReady?: boolean;
+  codingAgent?: import('../src/coding-agent/manager.js').CodingAgentManagerPort;
 }
 
 function localEvent(index: number): EventEnvelope {

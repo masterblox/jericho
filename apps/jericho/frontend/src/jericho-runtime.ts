@@ -195,7 +195,9 @@ export class JerichoRuntime {
   private readonly onEngagementState?: (state: EngagementState) => void;
   private autoCalibrationQueue: Handedness[] = [];
   private autoCalibrationMode = false;
-  private finishEngagementFn: (() => void) | null = null;
+  private autoCalibrationCompletion: 'initialize' | 'resume' = 'initialize';
+  private finishEngagementResolve: (() => void) | null = null;
+  private finishEngagementReject: ((error: Error) => void) | null = null;
 
   constructor(options: JerichoRuntimeOptions) {
     this.root = options.root;
@@ -259,9 +261,22 @@ export class JerichoRuntime {
     this.bridge?.wake('manual');
   }
 
+  recalibrate(): void {
+    if (!this.engaged || this.disposed || !this.engine || this.calibrationHand) return;
+    this.resetCalibration();
+    this.autoCalibrationMode = true;
+    this.autoCalibrationCompletion = 'resume';
+    this.autoCalibrationQueue = ['Left', 'Right'];
+    this.onEngagementState?.('calibrating_left');
+    this.startCalibration('Left');
+  }
+
   dispose(): Promise<void> {
     if (this.disposePromise) return this.disposePromise;
     this.disposed = true;
+    this.finishEngagementReject?.(new Error('Jericho runtime was disposed during calibration'));
+    this.finishEngagementResolve = null;
+    this.finishEngagementReject = null;
     this.disposePromise = this.disposeInternal();
     return this.disposePromise;
   }
@@ -327,11 +342,13 @@ export class JerichoRuntime {
       const missingHands = (['Left', 'Right'] as const).filter((h) => !this.profiles.has(h));
       if (missingHands.length > 0 && this.onEngagementState) {
         this.autoCalibrationMode = true;
+        this.autoCalibrationCompletion = 'initialize';
         this.autoCalibrationQueue = missingHands;
-        this.onEngagementState('calibrating_left');
+        this.onEngagementState(missingHands[0] === 'Left' ? 'calibrating_left' : 'calibrating_right');
         this.startCalibration(missingHands[0]);
-        return new Promise<void>((resolve) => {
-          this.finishEngagementFn = resolve;
+        return await new Promise<void>((resolve, reject) => {
+          this.finishEngagementResolve = resolve;
+          this.finishEngagementReject = reject;
         });
       }
 
@@ -350,6 +367,9 @@ export class JerichoRuntime {
       }
       this.releaseVideoAndStream();
       this.registry.releaseSticky();
+      this.autoCalibrationMode = false;
+      this.finishEngagementResolve = null;
+      this.finishEngagementReject = null;
       if (!this.disposed) this.setStatus('camera unavailable · keyboard mode remains active');
       throw error;
     }
@@ -983,10 +1003,25 @@ export class JerichoRuntime {
         this.onEngagementState?.(nextState);
         this.startCalibration(nextHand);
       } else {
-        void this.initializeBridgeAndEngage().then(() => {
-          this.finishEngagementFn?.();
-          this.finishEngagementFn = null;
+        if (this.autoCalibrationCompletion === 'resume') {
           this.autoCalibrationMode = false;
+          this.autoCalibrationQueue = [];
+          this.onEngagementState?.('engaged');
+          this.setStatus('both hands calibrated · gestures online');
+          return;
+        }
+        void this.initializeBridgeAndEngage().then(() => {
+          this.finishEngagementResolve?.();
+          this.finishEngagementResolve = null;
+          this.finishEngagementReject = null;
+          this.autoCalibrationMode = false;
+          this.autoCalibrationQueue = [];
+        }).catch((error: unknown) => {
+          this.finishEngagementReject?.(
+            error instanceof Error ? error : new Error('Voice bridge initialization failed'),
+          );
+          this.finishEngagementResolve = null;
+          this.finishEngagementReject = null;
         });
       }
     }

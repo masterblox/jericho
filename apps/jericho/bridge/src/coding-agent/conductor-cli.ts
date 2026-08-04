@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { promisify } from 'node:util';
 
 import type {
@@ -11,6 +12,8 @@ import type {
 } from './contracts.js';
 
 const execFileAsync = promisify(execFile);
+const COMMAND_TIMEOUT_MS = 30_000;
+const MAX_COMMAND_OUTPUT_BYTES = 2 * 1024 * 1024;
 
 export interface ConductorCliRunner {
   (executable: string, args: readonly string[]): Promise<{ stdout: string; stderr: string; exitCode: number }>;
@@ -25,6 +28,7 @@ export interface ConductorCliPortOptions {
 export class ConductorCliPort implements CodingAgentPort {
   readonly #executable: string;
   readonly #runner: ConductorCliRunner;
+  readonly #transcripts = new Map<string, { id: string; text: string }>();
 
   constructor(options: ConductorCliPortOptions = {}) {
     this.#executable = options.executable ?? 'conductor';
@@ -34,57 +38,86 @@ export class ConductorCliPort implements CodingAgentPort {
   async authProbe(): Promise<ConductorAuthProbe> {
     const status = await this.#run(['auth', 'status']);
     if (!status.ok) return { authenticated: false };
-    const parsed = parseJson(status.stdout);
-    const keychainEntry = parsed?.authenticated ?? parsed?.hasKey ?? parsed?.configured ?? parsed?.keychainEntry;
-    if (keychainEntry === false) return { authenticated: false };
     const whoami = await this.#run(['auth', 'whoami']);
     return { authenticated: whoami.ok && !looksUnauthenticated(whoami.stdout, whoami.stderr) };
   }
 
   async listProjects(): Promise<readonly ConductorProject[]> {
-    const parsed = await this.#json(['projects', 'list']);
-    return asArray(parsed).map((item) => ({ id: requiredString(item.id), name: optionalString(item.name), repoUrl: optionalString(item.repoUrl ?? item.repo_url) }));
+    const projects: ConductorProject[] = [];
+    const limit = 100;
+    for (let offset = 0; offset < 1_000; offset += limit) {
+      const parsed = await this.#json([
+        'projects', 'list', '--limit', String(limit), '--offset', String(offset),
+      ]);
+      const rows = asArray(parsed);
+      projects.push(...rows.map((item) => ({
+        id: requiredString(item.id),
+        name: optionalString(item.name),
+        repoUrl: optionalString(item.repoUrl ?? item.repo_url ?? item.gitRemote ?? item.git_remote),
+      })));
+      const response = isRecord(parsed) ? parsed : {};
+      if (response.hasMore !== true && response.has_more !== true) break;
+      if (rows.length === 0) throw new Error('conductor_projects_pagination_invalid');
+    }
+    return projects;
   }
 
   async createWorkspace(input: Parameters<CodingAgentPort['createWorkspace']>[0]): Promise<ConductorWorkspace> {
-    const parsed = await this.#json([
+    const parsed = asRecord(await this.#json([
       'workspaces', 'create', '--project-id', input.projectId, '--name', input.name,
       '--agent', input.agent, '--model', input.model,
-    ]);
+    ]));
     return {
-      id: requiredString(parsed.id), name: requiredString(parsed.name ?? input.name),
+      id: requiredString(parsed.workspaceId ?? parsed.workspace_id ?? parsed.id),
+      name: input.name,
       sessionId: requiredString(parsed.sessionId ?? parsed.session_id),
       deepLink: optionalString(parsed.deepLink ?? parsed.deep_link),
     };
   }
 
   async sendMessage(sessionId: string, message: string): Promise<void> {
-    await this.#json(['messages', 'create', '--session', sessionId, '--message', message]);
+    await this.#command(['messages', 'create', '--session', boundedId(sessionId, 'session_id'), '--message', message]);
   }
 
   async getStatus(sessionId: string): Promise<ConductorSessionStatus> {
-    const parsed = await this.#json(['sessions', 'status', sessionId]);
-    return requiredString(parsed.status) as ConductorSessionStatus;
+    const parsed = asRecord(await this.#json(['sessions', 'status', boundedId(sessionId, 'session_id')]));
+    return requiredString(parsed.status).toLocaleLowerCase('en-US') as ConductorSessionStatus;
   }
 
   async readTranscript(sessionId: string, afterMessageId?: string): Promise<readonly ConductorMessage[]> {
-    const args = ['sessions', 'messages', sessionId];
-    if (afterMessageId) args.push('--after', afterMessageId);
-    const parsed = await this.#json(args);
-    return asArray(parsed).map((item) => ({
-      id: requiredString(item.id), role: optionalString(item.role), text: optionalString(item.text ?? item.content),
-      commitSha: optionalString(item.commitSha ?? item.commit_sha), prUrl: optionalString(item.prUrl ?? item.pr_url),
-    }));
+    const id = boundedId(sessionId, 'session_id');
+    const query = [
+      'SELECT session_id, transcript, transcript_updated_at',
+      'FROM session_transcripts_view',
+      `WHERE session_id = '${id}'`,
+      'LIMIT 1',
+    ].join(' ');
+    const parsed = asRecord(await this.#json(['sql', query]));
+    const row = asArray(parsed.rows)[0];
+    const transcript = optionalString(row?.transcript);
+    if (!transcript) return [];
+
+    const messageId = `transcript-${createHash('sha256').update(transcript).digest('hex')}`;
+    if (afterMessageId === messageId) return [];
+    this.#transcripts.set(id, { id: messageId, text: transcript });
+    return [{ id: messageId, role: 'assistant', text: transcript }];
   }
 
   async cancel(sessionId: string): Promise<void> {
-    await this.#json(['sessions', 'cancel', sessionId]);
+    await this.#command(['sessions', 'cancel', boundedId(sessionId, 'session_id')]);
   }
 
-  async #json(args: string[]): Promise<Record<string, any>> {
+  async #command(args: string[]): Promise<void> {
     const result = await this.#run(args);
     if (!result.ok) throw new Error('conductor_cli_request_failed');
-    return parseJson(result.stdout) ?? {};
+  }
+
+  async #json(args: string[]): Promise<unknown> {
+    const result = await this.#run(args);
+    if (!result.ok) throw new Error('conductor_cli_request_failed');
+    const parsed = parseJson(result.stdout);
+    if (parsed === undefined) throw new Error('conductor_cli_invalid_json');
+    return parsed;
   }
 
   async #run(args: string[]): Promise<{ ok: boolean; stdout: string; stderr: string }> {
@@ -95,7 +128,11 @@ export class ConductorCliPort implements CodingAgentPort {
 
 async function defaultRunner(executable: string, args: readonly string[]) {
   try {
-    const result = await execFileAsync(executable, [...args], { encoding: 'utf8', maxBuffer: 2 * 1024 * 1024 });
+    const result = await execFileAsync(executable, [...args], {
+      encoding: 'utf8',
+      timeout: COMMAND_TIMEOUT_MS,
+      maxBuffer: MAX_COMMAND_OUTPUT_BYTES,
+    });
     return { stdout: result.stdout, stderr: result.stderr, exitCode: 0 };
   } catch (error) {
     const failure = error as { stdout?: string; stderr?: string; code?: number };
@@ -103,13 +140,26 @@ async function defaultRunner(executable: string, args: readonly string[]) {
   }
 }
 
-function parseJson(stdout: string): Record<string, any> | undefined {
-  try { return JSON.parse(stdout) as Record<string, any>; } catch { return undefined; }
+function parseJson(stdout: string): unknown {
+  try { return JSON.parse(stdout) as unknown; } catch { return undefined; }
 }
 
-function asArray(value: Record<string, any> | undefined): Record<string, any>[] {
-  const data = value?.data ?? value;
-  return Array.isArray(data) ? data : [];
+function asArray(value: unknown): Array<Record<string, unknown>> {
+  if (Array.isArray(value)) return value.filter(isRecord);
+  if (!isRecord(value)) return [];
+  for (const key of ['data', 'rows', 'items', 'projects']) {
+    if (Array.isArray(value[key])) return value[key].filter(isRecord);
+  }
+  return [];
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) throw new Error('conductor_response_invalid_object');
+  return value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
 function requiredString(value: unknown): string {
@@ -119,6 +169,11 @@ function requiredString(value: unknown): string {
 
 function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
+}
+
+function boundedId(value: string, field: string): string {
+  if (!/^[A-Za-z0-9_-]{1,128}$/u.test(value)) throw new Error(`${field}_invalid`);
+  return value;
 }
 
 function looksUnauthenticated(stdout: string, stderr: string): boolean {

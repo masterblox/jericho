@@ -29,7 +29,7 @@ export function DispatchModal({ directive, onClose, onDispatch }) {
       <header>
         <span className="micro">DIRECTIVE DECOMPOSITION / HUMAN GATE</span>
         <Chip tone={route.risky ? 'fault' : 'ok'}>{route.risky ? 'HIGH RISK' : 'LOW RISK'}</Chip>
-        <button onClick={onClose} aria-label="Close">×</button>
+        <button data-gesture-target="dispatch:close" onClick={onClose} aria-label="Close">×</button>
       </header>
       <div className="modal-body">
         <p className="micro cy">DIRECTIVE</p>

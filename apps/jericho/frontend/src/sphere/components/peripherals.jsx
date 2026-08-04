@@ -41,8 +41,8 @@ export function IdCluster({ activeView, onView, coreState = 'idle', connected = 
   </div>
 }
 
-// AGENTS — the live Hermes fleet from the Paperclip board, via the bridge.
-// Fail-closed: an offline board renders as an explicit state, never a roster.
+// AGENTS — monitored Conductor coding sessions plus the live Hermes fleet.
+// Fail-closed: unavailable sources never become a fixture roster.
 const AGENT_SLOTS = [
   { x: -46, y: -22 }, { x: -54, y: 2 }, { x: -44, y: 26 },
   { x: 44, y: -22 }, { x: 54, y: 2 }, { x: 44, y: 26 },
@@ -57,32 +57,45 @@ function heartbeatLabel(iso) {
 }
 
 export function AgentsProjection({ fleet }) {
-  if (!fleet?.available) {
+  const codingTasks = fleet?.codingAgents?.tasks ?? []
+  const boardAgents = fleet?.available ? fleet.agents : []
+  if (codingTasks.length === 0 && boardAgents.length === 0) {
     return <div className="projection-radial" aria-label="Agent projection">
       <JerichoCard index={0} className="radial-card" style={{ '--tx': '0vmin', '--ty': '-30vmin' }}
-        tone="fault" eyebrow="HERMES FLEET" chip="OFFLINE" chipTone="fault"
-        provenance="PAPERCLIP BOARD UNREACHABLE · READ-ONLY PROJECTION">
-        <p className="jc-title">Fleet board unavailable — no roster is shown rather than a stale one.</p>
+        eyebrow="JERICHO OPERATOR" chip="READY" chipTone="ok"
+        provenance={fleet?.codingAgents?.available ? 'NO ACTIVE CODING WORKSPACES' : 'CODING AGENT NOT CONFIGURED'}>
+        <p className="jc-title">Say “start a coding workspace in Jericho” to put a monitored Codex session here.</p>
       </JerichoCard>
     </div>
   }
+  const entries = [
+    ...codingTasks.map(task => ({ kind: 'coding', ...task })),
+    ...boardAgents.map(agent => ({ kind: 'fleet', ...agent })),
+  ]
   return <div className="projection-radial" aria-label="Agent projection">
-    {fleet.agents.slice(0, AGENT_SLOTS.length).map((agent, i) => {
+    {entries.slice(0, AGENT_SLOTS.length).map((agent, i) => {
       const slot = AGENT_SLOTS[i % AGENT_SLOTS.length]
-      const faulted = agent.status === 'error' || agent.status === 'stale'
+      const status = agent.kind === 'coding' ? agent.lifecycleStatus : agent.status
+      const faulted = ['error', 'stale', 'failed', 'timed_out', 'conductor_auth_required', 'incomplete'].includes(status)
+      const title = agent.kind === 'coding'
+        ? (agent.lifecycleStatus === 'conductor_auth_required' ? 'Conductor sign-in required' : agent.workspaceName ?? agent.taskId)
+        : agent.name
+      const provenance = agent.kind === 'coding'
+        ? (agent.commitSha ? `VERIFIED SHA · ${agent.commitSha}` : agent.errorCode ?? agent.sessionId ?? agent.taskId)
+        : heartbeatLabel(agent.lastHeartbeatAt)
       return <JerichoCard
-        key={agent.id}
+        key={agent.kind === 'coding' ? agent.taskId : agent.id}
         index={i}
         className="radial-card radial-card--compact"
-        data-gesture-target={`agent:${agent.id}`}
+        data-gesture-target={`agent:${agent.kind === 'coding' ? agent.taskId : agent.id}`}
         style={{ '--tx': `${slot.x}vmin`, '--ty': `${slot.y}vmin` }}
         tone={faulted ? 'fault' : ''}
-        eyebrow={agent.role.toUpperCase()}
-        chip={agent.status.toUpperCase()}
-        chipTone={faulted ? 'fault' : agent.status === 'paused' ? 'dim' : 'ok'}
-        provenance={heartbeatLabel(agent.lastHeartbeatAt)}
+        eyebrow={agent.kind === 'coding' ? 'CODEX · CONDUCTOR' : agent.role.toUpperCase()}
+        chip={status.replaceAll('_', ' ').toUpperCase()}
+        chipTone={faulted ? 'fault' : status === 'paused' || status === 'queued' ? 'dim' : 'ok'}
+        provenance={provenance}
       >
-        <p className="jc-title">{agent.name}</p>
+        <p className="jc-title">{title}</p>
       </JerichoCard>
     })}
   </div>
@@ -143,7 +156,6 @@ export function TasksProjection({ tasks, fleet }) {
         </ol>
       </section>
     })}
-    {!fleet?.available && <p className="kanban-offline micro">PAPERCLIP OFFLINE · SHOWING CORE MISSIONS ONLY</p>}
   </div>
 }
 

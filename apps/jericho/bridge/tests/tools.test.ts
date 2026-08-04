@@ -14,7 +14,9 @@ import {
 } from '@jericho/shared';
 
 import { JerichoStore } from '../src/core/store.js';
-import { createToolExecutor, FUNCTION_DECLARATIONS } from '../src/tools.js';
+import { wifiMappingExperienceDescriptor } from '../src/experiences/wifi-mapping/index.js';
+import { buildDescriptor } from '../src/mcp/index.js';
+import { buildFunctionDeclarations, createToolExecutor, FUNCTION_DECLARATIONS } from '../src/tools.js';
 
 const KEY = Buffer.alloc(32, 62);
 const T0 = '2026-07-11T00:00:00.000Z';
@@ -46,6 +48,8 @@ describe('truth-backed voice tools', () => {
     expect(FUNCTION_DECLARATIONS.map(item => item.name)).toEqual(expect.arrayContaining([
       'open_browser', 'open_application', 'computer_status', 'arrange_window',
       'inspect_repository', 'open_repository', 'create_coding_workspace',
+      'coding_agent_status', 'steer_coding_agent', 'cancel_coding_agent',
+      'open_wifi_mapping',
     ]));
     await expect(tools.execute('open_browser', {
       url: 'https://example.com', browser: 'safari', newWindow: true,
@@ -58,6 +62,95 @@ describe('truth-backed voice tools', () => {
     await expect(unavailable.execute('computer_status', {})).resolves.toEqual({
       available: false, status: 'unavailable', error: 'local_operator_unavailable',
     });
+  });
+
+  it('starts and monitors coding tasks through the real manager boundary when configured', async () => {
+    const store = openStore();
+    const codingAgent = {
+      start: vi.fn(async () => ({ taskId: 'coding-1', lifecycleStatus: 'queued' as const })),
+      status: vi.fn(async () => ({ taskId: 'coding-1', lifecycleStatus: 'working' as const, workspaceId: 'ws-1' })),
+      steer: vi.fn(async () => ({ taskId: 'coding-1', lifecycleStatus: 'working' as const })),
+      cancel: vi.fn(async () => ({ taskId: 'coding-1', lifecycleStatus: 'cancelled' as const })),
+      list: vi.fn(async () => []),
+    };
+    const tools = createToolExecutor({ store, codingAgent });
+
+    await expect(tools.execute('create_coding_workspace', {
+      repository: 'jericho', task: 'Fix the wake flow.',
+    })).resolves.toEqual({ available: true, taskId: 'coding-1', lifecycleStatus: 'queued' });
+    await expect(tools.execute('coding_agent_status', { taskId: 'coding-1' }))
+      .resolves.toMatchObject({ available: true, lifecycleStatus: 'working', workspaceId: 'ws-1' });
+    await tools.execute('steer_coding_agent', { taskId: 'coding-1', message: 'Run the UX test.' });
+    await tools.execute('cancel_coding_agent', { taskId: 'coding-1' });
+    expect(codingAgent.start).toHaveBeenCalledWith({ repository: 'jericho', task: 'Fix the wake flow.' });
+    expect(codingAgent.steer).toHaveBeenCalledWith('coding-1', 'Run the UX test.');
+  });
+
+  it('exposes and executes only allowlisted MCP model tools with restored argument names', async () => {
+    const store = openStore();
+    const descriptor = buildDescriptor('browser', 'open-tab', 'Create a browser tab', {
+      type: 'object',
+      properties: { 'target-url': { type: 'string' } },
+      required: ['target-url'],
+      additionalProperties: false,
+    });
+    const executeCall = vi.fn(async (call) => ({
+      callId: call.id,
+      namespacedName: call.namespacedName,
+      receipt: {
+        ok: true, content: [{ type: 'text', text: 'opened' }],
+        serverName: 'browser', toolName: 'open-tab', latencyMs: 4,
+        outputBytes: 35, truncated: false,
+      },
+    }));
+    const mcpRegistry = {
+      allowedDescriptors: () => [descriptor],
+      descriptorForModelName: (name: string) => name === descriptor.modelName ? descriptor : undefined,
+      executeCall,
+    };
+    const declarations = buildFunctionDeclarations(mcpRegistry);
+    expect(declarations).toContainEqual(expect.objectContaining({ name: descriptor.modelName }));
+    expect(JSON.stringify(declarations)).not.toMatch(/server\.mjs|api.?key|https?:\/\//iu);
+
+    const tools = createToolExecutor({ store, mcpRegistry });
+    await expect(tools.execute(descriptor.modelName, { target_url: 'https://example.com' }))
+      .resolves.toMatchObject({
+        available: true, ok: true, serverName: 'browser', toolName: 'open-tab',
+      });
+    expect(executeCall).toHaveBeenCalledWith(expect.objectContaining({
+      namespacedName: 'mcp/browser/open-tab',
+      args: { 'target-url': 'https://example.com' },
+    }), expect.any(AbortSignal));
+    await expect(tools.execute('mcp_not_allowlisted', {})).resolves.toEqual({
+      available: false, status: 'failed', error: 'unknown_tool',
+    });
+  });
+
+  it('projects the Wi-Fi launch receipt without leaking server handles or temporary provenance', async () => {
+    const store = openStore();
+    const wifiMapping = {
+      openOnSecondaryDisplay: vi.fn(async () => ({
+        start: {
+          url: 'http://127.0.0.1:39004/observatory.html', ready: true as const,
+          descriptor: wifiMappingExperienceDescriptor,
+          server: { baseUrl: 'private', readyUrl: 'private', close: vi.fn() },
+        },
+        plan: {
+          experienceId: 'wifi-mapping' as const,
+          url: 'http://127.0.0.1:39004/observatory.html',
+          targetDisplay: { id: '1', x: 100, y: 0, width: 1000, height: 800 },
+          actions: [] as never,
+        },
+        browser: { application: 'Google Chrome' as const, windowCountAfter: 2 },
+        placement: { application: 'Google Chrome' as const, displayId: '1', bounds: { x: 100, y: 0, width: 1000, height: 800 } },
+      })),
+    };
+    const result = await createToolExecutor({ store, wifiMapping }).execute('open_wifi_mapping', {});
+    expect(result).toMatchObject({
+      available: true, status: 'succeeded', experienceId: 'wifi-mapping',
+      targetDisplay: { id: '1' }, placement: { displayId: '1' },
+    });
+    expect(JSON.stringify(result)).not.toMatch(/server|private|\/tmp\//iu);
   });
 
   it('declares and executes bounded vault search without mutation authority', async () => {

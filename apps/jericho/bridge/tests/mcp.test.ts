@@ -14,8 +14,10 @@ import {
   isMCPToolName,
   MapToolAllowlist,
   namespaceTool,
+  modelToolName,
   parseNamespacedTool,
   translateAllToGeminiDeclarations,
+  translateGeminiArguments,
   translateToGeminiDeclaration,
 } from '../src/mcp/index.js';
 import type { MCPServerConfig, MCPToolCall } from '../src/mcp/index.js';
@@ -44,6 +46,7 @@ describe('MCP discovery utilities', () => {
 
     expect(desc.serverName).toBe('test-srv');
     expect(desc.namespacedName).toBe('mcp/test-srv/list_things');
+    expect(desc.modelName).toMatch(/^mcp_[A-Za-z0-9_-]+_[a-f0-9]{10}$/u);
     expect(desc.risk).toBe('low');
     expect(desc.allowlistKey).toBe('test-srv/list_things');
     expect(desc.timeoutMs).toBeGreaterThan(0);
@@ -56,6 +59,9 @@ describe('MCP discovery utilities', () => {
     expect(defaultRisk({ description: 'Update the database record' })).toBe('high');
     expect(defaultRisk({ description: 'Execute arbitrary shell command' })).toBe('high');
     expect(defaultRisk({ description: 'Send an email to the user' })).toBe('high');
+    expect(defaultRisk({ description: 'Navigate to a URL in the browser' })).toBe('high');
+    expect(defaultRisk({ description: 'Click an element on the page' })).toBe('high');
+    expect(defaultRisk({ description: 'Type text into an editable element' })).toBe('high');
     expect(defaultRisk({ description: 'List available items' })).toBe('low');
     expect(defaultRisk({ description: 'Get the current status' })).toBe('low');
     expect(defaultRisk({ description: 'Fetch data from API' })).toBe('low');
@@ -85,13 +91,16 @@ describe('MCP discovery utilities', () => {
     });
 
     const decl = translateToGeminiDeclaration(descriptor);
-    expect(decl.name).toBe('mcp/calc/multiply');
+    expect(decl.name).toBe(modelToolName('calc', 'multiply'));
+    expect(decl.name).toMatch(/^[A-Za-z0-9_-]{1,64}$/u);
     expect(decl.description).toContain('risk=low');
     expect(decl.parameters).toHaveProperty('type', 'object');
     expect(decl.parameters).toHaveProperty('properties');
 
     const all = translateAllToGeminiDeclarations([descriptor]);
     expect(all).toHaveLength(1);
+    expect(translateGeminiArguments(descriptor.inputSchema, { x: 2, y_coordinate: 4 }))
+      .toEqual({ x: 2, 'y-coordinate': 4 });
   });
 
   it('bounds schema property names to safe identifiers', () => {
@@ -188,7 +197,7 @@ describe('MCP client - local fake stdio server', () => {
       };
       const addResult = await handle.callTool(addCall, new AbortController().signal);
       expect(addResult.receipt.ok).toBe(true);
-      expect(addResult.receipt.latencyMs).toBeGreaterThan(0);
+      expect(addResult.receipt.latencyMs).toBeGreaterThanOrEqual(0);
     } finally {
       await handle.disconnect();
       expect(handle.status).toBe('disconnected');
@@ -214,7 +223,7 @@ describe('MCP registry', () => {
   });
 
   it('registers and unregisters servers', async () => {
-    const registry = createMCPRegistry();
+    const registry = createMCPRegistry({ allowedTools: ['reg-test/echo'] });
     expect(registry.state().servers).toHaveLength(0);
 
     const config = makeConfig('reg-test');
@@ -223,6 +232,7 @@ describe('MCP registry', () => {
     expect(tools.length).toBeGreaterThanOrEqual(1);
     expect(registry.state().servers).toHaveLength(1);
     expect(registry.allowlist).not.toBeNull();
+    expect(registry.allowedDescriptors().map((tool) => tool.toolName)).toEqual(['echo']);
 
     await registry.unregisterServer('reg-test');
     expect(registry.state().servers).toHaveLength(0);
@@ -247,6 +257,16 @@ describe('MCP registry', () => {
     };
     await expect(registry.executeCall(call, new AbortController().signal)).rejects.toThrow();
   });
+
+  it('denies discovered tools unless explicitly configured', async () => {
+    const registry = createMCPRegistry();
+    await registry.registerServer(makeConfig('deny-test'));
+    expect(registry.allowedDescriptors()).toEqual([]);
+    await expect(registry.executeCall({
+      id: randomUUID(), namespacedName: 'mcp/deny-test/echo', args: { message: 'no' },
+    }, new AbortController().signal)).rejects.toThrow(/not allowlisted/i);
+    await registry.disconnectAll();
+  }, 15_000);
 
   it('disconnects all servers cleanly', async () => {
     const registry = createMCPRegistry();

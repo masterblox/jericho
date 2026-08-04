@@ -75,7 +75,7 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
             data-gesture-target="recalibrate"
             aria-label="Recalibrate hand tracking"
             onClick={onRecalibrate}
-          >RCAL</button>
+          >CALIBRATE HANDS</button>
         )}
         <KnowledgeProjection actions={knowledgeActions} />
         <OperatorActivity />

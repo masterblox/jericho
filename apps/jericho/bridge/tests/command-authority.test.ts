@@ -18,6 +18,7 @@ describe('CommandAuthority', () => {
       clock: () => clockTime,
     });
     clockTime = 1_000_000;
+    authority.activate();
   });
 
   it('mints a valid token', () => {
@@ -64,18 +65,17 @@ describe('CommandAuthority', () => {
     }
   });
 
-  it('rejects after reactivation with stale inactive period', () => {
-    authority.deactivate();
+  it('invalidates issued tokens across deactivation and reactivation', () => {
     const token = authority.mint({
       toolName: 'search_vault',
       args: { query: 'x' },
       maxAgeMs: 30_000,
       speakerVerified: true,
     });
-
+    authority.deactivate();
     authority.activate();
     const result = authority.validate(token, 'search_vault', { query: 'x' });
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: false, reason: AuthorityRejectionReason.InvalidToken });
   });
 
   it('rejects expired tokens', () => {
@@ -128,6 +128,28 @@ describe('CommandAuthority', () => {
     }
   });
 
+  it('binds nested arguments without dropping nested keys', () => {
+    const token = authority.mint({
+      toolName: 'mcp__files__write',
+      args: { input: { path: 'a.md', body: 'safe' } },
+      maxAgeMs: 30_000,
+      speakerVerified: true,
+    });
+    expect(authority.validate(token, 'mcp__files__write', {
+      input: { path: 'a.md', body: 'altered' },
+    })).toEqual({ ok: false, reason: AuthorityRejectionReason.Altered });
+  });
+
+  it('rejects forged speaker verification and malformed digest lengths without throwing', () => {
+    const token = authority.mint({
+      toolName: 'open_browser', args: {}, maxAgeMs: 30_000, speakerVerified: false,
+    });
+    expect(authority.validate({ ...token, speakerVerified: true }, 'open_browser', {}))
+      .toEqual({ ok: false, reason: AuthorityRejectionReason.Altered });
+    expect(authority.validate({ ...token, commandDigest: 'a' }, 'open_browser', {}))
+      .toEqual({ ok: false, reason: AuthorityRejectionReason.InvalidToken });
+  });
+
   it('rejects altered tool names (even same digest)', () => {
     const token = authority.mint({
       toolName: 'search_vault',
@@ -155,7 +177,7 @@ describe('CommandAuthority', () => {
 
     const mouseToken: AuthorityToken = { ...invalidToken, source: 'pointer' as any, nonce: randomUUID() };
     const result = authority.validate(mouseToken, 'search_vault', {});
-    expect(result.ok).toBe(false);
+    expect(result).toEqual({ ok: false, reason: AuthorityRejectionReason.PointerOrigin });
   });
 
   it('rejects speaker-unverified tokens', () => {
@@ -204,6 +226,8 @@ describe('CommandAuthority', () => {
     });
     authority.validate(token1, 't', {});
     authority.resetNonces();
+    expect(authority.validate(token1, 't', {}))
+      .toEqual({ ok: false, reason: AuthorityRejectionReason.InvalidToken });
 
     const token2 = authority.mint({
       toolName: 't',

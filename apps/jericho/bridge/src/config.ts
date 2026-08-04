@@ -7,12 +7,15 @@ import { fileURLToPath } from 'node:url';
 import { MutationClass, type RepositoryGrant } from '@jericho/shared';
 
 import type { PersonaMode } from './personas.js';
+import type { MCPServerConfig } from './mcp/types.js';
 import { migratePersonaMode } from './personas-migration.js';
 import { readKeychainSecret, writeKeychainSecret } from './platform/keychain.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
+// Preserve the conventional precedence: explicit process environment first,
+// then machine-local settings, then shared defaults.
+dotenv.config({ path: path.resolve(directory, '../../.env.local') });
 dotenv.config({ path: path.resolve(directory, '../../.env') });
-dotenv.config({ path: path.resolve(directory, '../../.env.local'), override: true });
 
 export interface JerichoConfig {
   host: string;
@@ -60,6 +63,10 @@ export interface JerichoConfig {
   missionRepositoryGrants: RepositoryGrant[];
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
+  requireSpeakerVerification: boolean;
+  codingAgentModel: string;
+  mcpServers: MCPServerConfig[];
+  mcpAllowedTools: string[];
 }
 
 export interface NamedPath {
@@ -175,6 +182,12 @@ export function loadConfig(
   if (vaultRebuildWindowStartUtc === vaultRebuildWindowEndUtc) {
     throw new Error('Vault rebuild window cannot be empty');
   }
+  const mcpServers = parseMcpServers(environment.JERICHO_MCP_SERVERS_JSON);
+  const mcpAllowedTools = parseMcpAllowlist(environment.JERICHO_MCP_ALLOWLIST);
+  const mcpServerNames = new Set(mcpServers.map((server) => server.name));
+  if (mcpAllowedTools.some((entry) => !mcpServerNames.has(entry.slice(0, entry.indexOf('/'))))) {
+    throw new Error('JERICHO_MCP_ALLOWLIST references an unconfigured MCP server');
+  }
   return {
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
@@ -259,6 +272,16 @@ export function loadConfig(
       environment.JERICHO_VOICE_ACTIVE_TURN_MS ?? '30000',
       'JERICHO_VOICE_ACTIVE_TURN_MS',
     ),
+    requireSpeakerVerification: parseBoolean(
+      environment.JERICHO_REQUIRE_SPEAKER_VERIFICATION ?? 'true',
+      'JERICHO_REQUIRE_SPEAKER_VERIFICATION',
+    ),
+    codingAgentModel: parseModel(
+      environment.JERICHO_CODING_AGENT_MODEL ?? 'gpt-5.3-codex-spark',
+      'JERICHO_CODING_AGENT_MODEL',
+    ),
+    mcpServers,
+    mcpAllowedTools,
   };
 }
 
@@ -304,6 +327,7 @@ const DEFAULT_SYSTEM_INSTRUCTION = [
   'Use the available local tools when Carlos explicitly asks you to inspect a configured repository, open a browser, application, or repository, report computer status, arrange a window, or create a Conductor coding workspace.',
   'Do not claim a supported local action is unavailable before attempting its tool.',
   'Those tools authorize only the exact bounded, reversible, or read-only action described by the active request; create_coding_workspace requires an explicit request to create or start a workspace.',
+  'Every tool call is independently gated by an active local voice turn and an evaluated enrolled-speaker match; never imply a blocked action ran.',
   'Never infer authority to click, type, submit, send, delete, deploy, run repository code, or mutate Git state. All other external work requires an approved bounded mission.',
   'PRIVACY GATE: the client and server voice gates deliver audio only during an explicitly active turn.',
   'Do not demand or listen for a spoken wake word; any audio you receive has already passed the local gate.',
@@ -335,6 +359,138 @@ function optionalString(value: string | undefined): string | undefined {
 
 function parseCsv(value: string | undefined): string[] {
   return [...new Set((value ?? '').split(',').map((item) => item.trim()).filter(Boolean))];
+}
+
+function parseBoolean(value: string, variable: string): boolean {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  throw new Error(`${variable} must be true or false`);
+}
+
+function parseModel(value: string, variable: string): string {
+  const model = value.trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(model)) {
+    throw new Error(`${variable} is invalid`);
+  }
+  return model;
+}
+
+function parseMcpAllowlist(value: string | undefined): string[] {
+  const entries = parseCsv(value);
+  for (const entry of entries) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(entry)) {
+      throw new Error('JERICHO_MCP_ALLOWLIST entries must be exact server/tool keys');
+    }
+  }
+  return entries;
+}
+
+function parseMcpServers(value: string | undefined): MCPServerConfig[] {
+  if (!value?.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    throw new Error('JERICHO_MCP_SERVERS_JSON must be a JSON array of MCP server configs');
+  }
+  if (!Array.isArray(parsed) || parsed.length > 16) {
+    throw new Error('JERICHO_MCP_SERVERS_JSON must be a JSON array of at most 16 MCP server configs');
+  }
+  const servers = parsed.map((item): MCPServerConfig => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw new Error('JERICHO_MCP_SERVERS_JSON entries must be objects');
+    }
+    const record = item as Record<string, unknown>;
+    const permitted = new Set(['name', 'transport', 'command', 'args', 'env', 'url']);
+    if (Object.keys(record).some((key) => !permitted.has(key))) {
+      throw new Error('JERICHO_MCP_SERVERS_JSON contains an unsupported field');
+    }
+    const name = mcpString(record.name, 'name', 64);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(name)) {
+      throw new Error('JERICHO_MCP_SERVERS_JSON server name is invalid');
+    }
+    if (record.transport !== 'stdio' && record.transport !== 'streamable-http') {
+      throw new Error('JERICHO_MCP_SERVERS_JSON transport is invalid');
+    }
+    if (record.transport === 'stdio') {
+      if (record.url !== undefined) throw new Error('stdio MCP config cannot include url');
+      const command = mcpString(record.command, 'command', 1_024);
+      const args = mcpStringArray(record.args, 'args', 256, 4_096);
+      const env = mcpEnvironment(record.env);
+      return {
+        name,
+        transport: 'stdio',
+        command,
+        ...(args.length ? { args } : {}),
+        ...(Object.keys(env).length ? { env } : {}),
+      };
+    }
+    if (record.command !== undefined || record.args !== undefined || record.env !== undefined) {
+      throw new Error('streamable-http MCP config cannot include command, args, or env');
+    }
+    const url = mcpString(record.url, 'url', 2_048);
+    validateMcpUrl(url);
+    return { name, transport: 'streamable-http', url };
+  });
+  if (new Set(servers.map((server) => server.name)).size !== servers.length) {
+    throw new Error('JERICHO_MCP_SERVERS_JSON contains duplicate server names');
+  }
+  return servers;
+}
+
+function mcpString(value: unknown, field: string, maximum: number): string {
+  if (typeof value !== 'string') throw new Error(`MCP ${field} is required`);
+  const normalized = value.trim();
+  if (!normalized || normalized.length > maximum || /[\u0000-\u001f\u007f]/u.test(normalized)) {
+    throw new Error(`MCP ${field} is invalid`);
+  }
+  return normalized;
+}
+
+function mcpStringArray(
+  value: unknown,
+  field: string,
+  maximumItems: number,
+  maximumLength: number,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > maximumItems || !value.every((item) =>
+    typeof item === 'string' && item.length <= maximumLength && !/[\u0000\u007f]/u.test(item))) {
+    throw new Error(`MCP ${field} is invalid`);
+  }
+  return [...value];
+}
+
+function mcpEnvironment(value: unknown): Record<string, string> {
+  if (value === undefined) return {};
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error('MCP env is invalid');
+  }
+  const entries = Object.entries(value as Record<string, unknown>);
+  if (entries.length > 64) throw new Error('MCP env is invalid');
+  const environment: Record<string, string> = {};
+  for (const [key, entry] of entries) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]{0,127}$/u.test(key)
+      || typeof entry !== 'string' || entry.length > 32_768 || /\u0000/u.test(entry)) {
+      throw new Error('MCP env is invalid');
+    }
+    environment[key] = entry;
+  }
+  return environment;
+}
+
+function validateMcpUrl(value: string): void {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error('MCP url is invalid');
+  }
+  if (url.username || url.password || url.hash) throw new Error('MCP url is invalid');
+  const loopback = url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]';
+  if (url.protocol !== 'https:' && !(url.protocol === 'http:' && loopback)) {
+    throw new Error('MCP url must use HTTPS or loopback HTTP');
+  }
 }
 
 function parseNamedPaths(value: string | undefined, variable: string): NamedPath[] {

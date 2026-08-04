@@ -48,7 +48,7 @@ export function entryFromDescriptor(descriptor: MCPToolDescriptor): ToolAllowlis
 export function defaultRisk(descriptor: { description?: string; inputSchema?: { type?: string } }): MCPToolRisk {
   const text = (descriptor.description ?? '').toLowerCase();
   if (/\b(?:delete|drop|destroy|wipe|purge|truncate|rm|unlink|format)\b/iu.test(text)) return 'critical';
-  if (/\b(?:write|create|insert|update|patch|put|post|upload|send|execute|run|eval|exec)\b/iu.test(text)) return 'high';
+  if (/\b(?:write|create|insert|update|patch|put|post|upload|send|execute|run|eval|exec|open|close|navigate|click|type|fill|press|select|submit)\b/iu.test(text)) return 'high';
   if (/\b(?:read|get|fetch|list|query|search|find|describe|status|check|ping|health)\b/iu.test(text)) return 'low';
   return 'medium';
 }

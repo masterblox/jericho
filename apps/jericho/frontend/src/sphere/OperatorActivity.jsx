@@ -7,7 +7,11 @@ const ACTIONS = {
   arrange_window: ['Arranging window', 'Window arranged'],
   inspect_repository: ['Inspecting repository', 'Repository inspected'],
   open_repository: ['Opening repository', 'Repository opened'],
-  create_coding_workspace: ['Creating coding workspace', 'Workspace request opened'],
+  create_coding_workspace: ['Queueing coding task', 'Coding task queued for Conductor'],
+  coding_agent_status: ['Checking coding agent', 'Coding agent status ready'],
+  steer_coding_agent: ['Steering coding agent', 'Coding agent steered'],
+  cancel_coding_agent: ['Stopping coding agent', 'Coding agent stopped'],
+  open_wifi_mapping: ['Opening Wi-Fi observatory', 'Wi-Fi observatory opened on the secondary display'],
 }
 
 export function OperatorActivity() {
@@ -22,12 +26,12 @@ export function OperatorActivity() {
     }
     const onStart = event => {
       const name = event.detail?.name
-      const labels = ACTIONS[name]
+      const labels = ACTIONS[name] ?? (String(name).startsWith('mcp_') ? ['Running MCP tool', 'MCP tool complete'] : null)
       if (labels) show({ name, state: 'running', message: `${labels[0]}…` })
     }
     const onResult = event => {
       const name = event.detail?.name
-      const labels = ACTIONS[name]
+      const labels = ACTIONS[name] ?? (String(name).startsWith('mcp_') ? ['Running MCP tool', 'MCP tool complete'] : null)
       if (!labels) return
       const result = event.detail?.result ?? {}
       const failed = result.available === false || result.status === 'failed'
@@ -61,6 +65,10 @@ function actionError(value) {
     application_not_running: 'That application is not running',
     local_operator_unavailable: 'Local computer control is unavailable',
     repository_not_configured: 'That repository is not configured for Jericho',
+    conductor_auth_required: 'Run conductor auth login once to enable coding workspaces',
+    speaker_verification_required: 'Owner voice verification is required before tools can run',
+    voice_authority_unavailable: 'The active voice authority expired; wake Jericho and try again',
+    secondary_display_required: 'Connect a second display for the Wi-Fi observatory',
   }
   return errors[value] ?? 'Local action failed safely'
 }

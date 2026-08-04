@@ -90,14 +90,23 @@ import {
   createMissionExecutionRuntime,
 } from './runtime.js';
 import {
+  buildFunctionDeclarations,
   createToolExecutor,
   executeVaultSearch,
-  FUNCTION_DECLARATIONS,
+  type ToolDecl,
   type ToolExecutor,
   type ToolExecutorOptions,
   type VaultToolSearchPort,
 } from './tools.js';
 import { LocalOperator } from './local-control/local-operator.js';
+import {
+  CodingAgentLifecycle,
+  CodingAgentManager,
+  ConductorCliPort,
+  LocalGitRepositoryPort,
+} from './coding-agent/index.js';
+import { WifiMappingExperienceLauncher } from './experiences/wifi-mapping/index.js';
+import { createMCPRegistry } from './mcp/index.js';
 import {
   advancePhase,
   createIsabellaGuidedSession,
@@ -119,6 +128,13 @@ import {
   saveVoicePreset,
 } from './voice/voice-preference.js';
 import { VOICES } from './voice/voices.js';
+import { CommandAuthority } from './voice/command-authority.js';
+import {
+  createSpeakerVerifier,
+  isSpeakerVerified,
+  type SpeakerVerificationResult,
+  type SpeakerVerifier,
+} from './voice/speaker-verifier.js';
 
 export { VOICES } from './voice/voices.js';
 export {
@@ -126,6 +142,11 @@ export {
   VOICE_PREVIEW_TIMEOUT_MS,
   DEFAULT_FALLBACK_VOICE,
 } from './voice/voice-preference.js';
+
+const SPEAKER_WINDOW_SAMPLES = 16_000;
+const MAX_AUDIO_BASE64_LENGTH = 128 * 1024;
+const SPEAKER_MATCH_MAX_AGE_MS = 15_000;
+const SPEAKER_VERIFICATION_WAIT_MS = 3_000;
 
 export interface SyncPort {
   sync(connectorId: string, partition: string, signal: AbortSignal): Promise<unknown>;
@@ -204,11 +225,17 @@ export interface JerichoServerOptions {
   obsidianOpen?: { open(relativePath: string): Promise<{ relativePath: string }> };
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
+  toolDeclarations?: readonly ToolDecl[];
   localOperator?: ToolExecutorOptions['localOperator'];
+  codingAgent?: ToolExecutorOptions['codingAgent'];
+  wifiMapping?: ToolExecutorOptions['wifiMapping'];
+  mcpRegistry?: ToolExecutorOptions['mcpRegistry'];
   clock?: () => string;
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
   voiceActiveTurnMs?: number;
+  requireSpeakerVerification?: boolean;
+  speakerVerifier?: SpeakerVerifier;
   correctionNoteWriter?: CanonicalNoteWriter;
   /** Absolute path for the user-local presentation voice preset JSON. */
   voicePreferencePath?: string;
@@ -273,6 +300,9 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     store: options.store,
     ...(voiceVaultSearch ? { vaultSearch: voiceVaultSearch } : {}),
     ...(options.localOperator ? { localOperator: options.localOperator } : {}),
+    ...(options.codingAgent ? { codingAgent: options.codingAgent } : {}),
+    ...(options.wifiMapping ? { wifiMapping: options.wifiMapping } : {}),
+    ...(options.mcpRegistry ? { mcpRegistry: options.mcpRegistry } : {}),
   });
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -376,7 +406,12 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     if (request.method === 'GET' && url.pathname === '/api/v1/health') {
       sendJson(response, 200, {
         ok: true,
-        voice: { status: options.geminiApiKey ? 'available' : 'unavailable' },
+        voice: {
+          status: options.geminiApiKey ? 'available' : 'unavailable',
+          speakerVerification: options.requireSpeakerVerification
+            ? (options.speakerVerifier ? 'configured' : 'required')
+            : 'disabled',
+        },
         connectors: options.store.listConnectorHealth().map(projectPublicConnectorHealth),
         startup: publicStartupStatus(options.startupStatus ?? normalStartupStatus()),
         vault: { ready: options.vaultReady ?? false },
@@ -385,6 +420,13 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/command-center') {
       sendJson(response, 200, buildCommandCenterSnapshot(options.store, now()));
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/coding-agents') {
+      sendJson(response, 200, {
+        available: Boolean(options.codingAgent),
+        tasks: options.codingAgent ? await options.codingAgent.list() : [],
+      });
       return;
     }
     if (request.method === 'GET' && url.pathname === '/api/v1/knowledge/packages') {
@@ -1419,6 +1461,9 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   const voiceConnect: VoiceConnect = options.voiceConnect ?? (async (request) =>
     ai!.live.connect(request as never) as unknown as Promise<Session>);
   const activeTurnMs = options.voiceActiveTurnMs ?? 30_000;
+  const requireSpeakerVerification = options.requireSpeakerVerification ?? false;
+  const speakerVerifier = createSpeakerVerifier(options.speakerVerifier);
+  const commandAuthority = new CommandAuthority({ sessionId: randomUUID() });
   let session: VoiceSessionPort | undefined;
   const personaEnabled = options.defaultPersonaMode !== undefined || options.megatronVoice !== undefined;
   let currentMode: PersonaMode = options.defaultPersonaMode ?? 'jericho';
@@ -1452,6 +1497,15 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   } | undefined;
   let retrievalInFlight = false;
   let pendingResultId: string | undefined;
+  let speakerResult: SpeakerVerificationResult = {
+    status: 'unverified', reason: 'speaker_verification_required',
+  };
+  let speakerSamples: Float32Array[] = [];
+  let speakerSampleCount = 0;
+  let speakerVerificationPending = false;
+  let speakerVerificationPromise: Promise<void> | undefined;
+  let speakerVerifiedAt = 0;
+  let speakerGeneration = 0;
 
   const activeGuidedTest = () => {
     if (isGuidedExpired(guidedTest)) guidedTest = undefined;
@@ -1460,6 +1514,101 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
 
   const send = (message: Record<string, unknown>) => {
     if (webSocket.readyState === WebSocket.OPEN) webSocket.send(JSON.stringify(message));
+  };
+  const resetSpeakerTurn = () => {
+    speakerGeneration += 1;
+    for (const chunk of speakerSamples) chunk.fill(0);
+    speakerSamples = [];
+    speakerSampleCount = 0;
+    speakerVerificationPending = false;
+    speakerVerificationPromise = undefined;
+    speakerVerifiedAt = 0;
+    speakerResult = { status: 'unverified', reason: 'speaker_verification_required' };
+    speakerVerifier.reset();
+  };
+  const publishSpeakerResult = (result: SpeakerVerificationResult) => {
+    send({
+      type: 'speaker_verification',
+      status: result.status,
+      ...(result.confidence === undefined ? {} : { confidence: result.confidence }),
+      ...(result.enrolled === undefined ? {} : { enrolled: result.enrolled }),
+      ...(result.reason === undefined ? {} : { reason: boundedSpeakerReason(result.reason) }),
+    });
+  };
+  const collectSpeakerAudio = (encoded: string) => {
+    if (!requireSpeakerVerification || speakerVerificationPending) return;
+    if (isSpeakerVerified(speakerResult) && Date.now() - speakerVerifiedAt <= SPEAKER_MATCH_MAX_AGE_MS) return;
+    const chunk = decodePcm16(encoded);
+    if (!chunk) return;
+    speakerSamples.push(chunk);
+    speakerSampleCount += chunk.length;
+    if (speakerSampleCount < SPEAKER_WINDOW_SAMPLES) return;
+    const window = new Float32Array(SPEAKER_WINDOW_SAMPLES);
+    let offset = 0;
+    for (const samples of speakerSamples) {
+      const count = Math.min(samples.length, window.length - offset);
+      window.set(samples.subarray(0, count), offset);
+      samples.fill(0);
+      offset += count;
+      if (offset >= window.length) break;
+    }
+    for (const samples of speakerSamples) samples.fill(0);
+    speakerSamples = [];
+    speakerSampleCount = 0;
+    const verificationGeneration = speakerGeneration;
+    speakerVerificationPending = true;
+    speakerVerificationPromise = speakerVerifier.verify(window).then((result) => {
+      if (active && verificationGeneration === speakerGeneration) {
+        speakerResult = result;
+        speakerVerifiedAt = isSpeakerVerified(result) ? Date.now() : 0;
+        publishSpeakerResult(result);
+      }
+    }).catch(() => {
+      if (active && verificationGeneration === speakerGeneration) {
+        speakerResult = { status: 'rejected', reason: 'speaker_verification_failed' };
+        publishSpeakerResult(speakerResult);
+      }
+    }).finally(() => {
+      window.fill(0);
+      if (verificationGeneration === speakerGeneration) {
+        speakerVerificationPending = false;
+        speakerVerificationPromise = undefined;
+      }
+    });
+  };
+  const executeAuthorizedTool = async (
+    name: string,
+    args: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> => {
+    if (!active || greetingActive || greetingPending || preview) {
+      return { available: false, status: 'blocked', error: 'authority_inactive' };
+    }
+    try {
+      if (requireSpeakerVerification && speakerVerificationPromise) {
+        await Promise.race([
+          speakerVerificationPromise,
+          new Promise<void>((resolveWait) => {
+            const timer = setTimeout(resolveWait, SPEAKER_VERIFICATION_WAIT_MS);
+            timer.unref?.();
+          }),
+        ]);
+      }
+      const verified = isSpeakerVerified(speakerResult)
+        && Date.now() - speakerVerifiedAt <= SPEAKER_MATCH_MAX_AGE_MS;
+      const token = commandAuthority.mint({
+        toolName: name,
+        args,
+        maxAgeMs: 5_000,
+        speakerVerified: !requireSpeakerVerification || verified,
+      });
+      const validation = commandAuthority.validate(token, name, args);
+      if (!validation.ok) {
+        return { available: false, status: 'blocked', error: validation.reason };
+      }
+      return await tools.execute(name, args);
+    } catch {
+      return { available: false, status: 'blocked', error: 'voice_authority_unavailable' };
+    }
   };
   const turnResultId = (): string | undefined => captureTurn?.resultId;
   const turnGroundingState = (): 'idle' | 'retrieving' | 'answering' => captureTurn?.groundingState ?? 'idle';
@@ -1503,6 +1652,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const deactivate = (turnComplete = false) => {
     active = false;
+    commandAuthority.deactivate();
+    resetSpeakerTurn();
     greetingActive = false;
     greetingPending = false;
     if (activeTimer) clearTimeout(activeTimer);
@@ -1522,6 +1673,9 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   };
   const activate = () => {
     active = true;
+    commandAuthority.activate();
+    resetSpeakerTurn();
+    if (requireSpeakerVerification) publishSpeakerResult(speakerResult);
     if (captureTurn?.transcript.trim() && !activeGuidedTest()) finalizeCapturedTurn();
     else {
       if (transcriptTimer) clearTimeout(transcriptTimer);
@@ -1857,7 +2011,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
           ? personas[currentMode].systemInstruction
           : options.systemInstruction,
         speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: voice } } },
-        tools: [{ functionDeclarations: FUNCTION_DECLARATIONS as never }],
+        tools: [{ functionDeclarations: (options.toolDeclarations ?? buildFunctionDeclarations()) as never }],
       },
       callbacks: {
         onopen: () => {
@@ -1906,9 +2060,9 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
           const activeSession = session;
           if (calls.length && activeSession) {
             void Promise.all(calls.map(async (call: any) => {
-              const args = call.args ?? {};
+              const args = isRecord(call.args) ? call.args : {};
               send({ type: 'tool_start', name: call.name, args });
-              const result = await tools.execute(call.name, args);
+              const result = await executeAuthorizedTool(call.name, args);
               send({ type: 'tool_result', name: call.name, result });
               return { id: call.id, name: call.name, response: result };
             })).then((responses) => {
@@ -2053,6 +2207,11 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
       const message = JSON.parse(raw.toString()) as Record<string, unknown>;
       if (message.type === 'audio' && typeof message.data === 'string') {
         if (active && !greetingActive && !greetingPending && !preview) {
+          if (message.data.length > MAX_AUDIO_BASE64_LENGTH) {
+            send({ type: 'error', message: 'audio frame exceeded the local limit' });
+            return;
+          }
+          collectSpeakerAudio(message.data);
           session?.sendRealtimeInput({
             media: { data: message.data, mimeType: 'audio/pcm;rate=16000' },
           });
@@ -2118,8 +2277,35 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     if (transcriptTimer) clearTimeout(transcriptTimer);
     if (personaRevertTimer) clearTimeout(personaRevertTimer);
     captureTurn = undefined;
+    commandAuthority.deactivate();
+    resetSpeakerTurn();
     session?.close();
   });
+}
+
+function decodePcm16(encoded: string): Float32Array | undefined {
+  if (
+    !encoded || encoded.length > MAX_AUDIO_BASE64_LENGTH || encoded.length % 4 !== 0
+    || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(encoded)
+  ) return undefined;
+  const bytes = Buffer.from(encoded, 'base64');
+  if (!bytes.length || bytes.length % 2 !== 0) return undefined;
+  const samples = new Float32Array(bytes.length / 2);
+  for (let index = 0; index < samples.length; index += 1) {
+    samples[index] = bytes.readInt16LE(index * 2) / 32_768;
+  }
+  bytes.fill(0);
+  return samples;
+}
+
+function boundedSpeakerReason(value: string): string {
+  const allowed = new Set([
+    'speaker_verification_required',
+    'speaker_verification_failed',
+    'speaker_mismatch',
+    'speaker_not_enrolled',
+  ]);
+  return allowed.has(value) ? value : 'speaker_verification_failed';
 }
 
 /** Map UI completion events onto the next legal guided phase. */
@@ -2772,6 +2958,26 @@ async function main(): Promise<void> {
     ...(execution ? { execution } : {}),
   });
   const localOperator = new LocalOperator({ repositories: config.gitRepositories });
+  const localGit = config.gitRepositories.length
+    ? new LocalGitRepositoryPort({ repositoryPaths: config.gitRepositories.map((repository) => repository.path) })
+    : undefined;
+  const codingAgent = localGit
+    ? new CodingAgentManager(
+      new CodingAgentLifecycle(new ConductorCliPort(), localGit),
+      localGit,
+      config.gitRepositories,
+      { model: config.codingAgentModel },
+    )
+    : undefined;
+  const wifiMapping = new WifiMappingExperienceLauncher();
+  const mcpRegistry = createMCPRegistry({ allowedTools: config.mcpAllowedTools });
+  for (const mcpServer of config.mcpServers) {
+    try {
+      await mcpRegistry.registerServer(mcpServer);
+    } catch {
+      console.error(`[jericho] MCP server unavailable: ${mcpServer.name}`);
+    }
+  }
   const server = createJerichoServer({
     store,
     apiToken: config.apiToken,
@@ -2785,7 +2991,12 @@ async function main(): Promise<void> {
     personaAutoRevertMs: config.personaAutoRevertMs,
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
+    requireSpeakerVerification: config.requireSpeakerVerification,
     localOperator,
+    ...(codingAgent ? { codingAgent } : {}),
+    wifiMapping,
+    mcpRegistry,
+    toolDeclarations: buildFunctionDeclarations(mcpRegistry),
     startupStatus,
     vaultReady: Boolean(config.obsidianVaultPath || config.vaultGatewayUrl),
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),
@@ -2817,6 +3028,7 @@ async function main(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     await server.close();
+    await Promise.allSettled([wifiMapping.close(), mcpRegistry.disconnectAll()]);
     await runtime.stop();
     store.close();
   };

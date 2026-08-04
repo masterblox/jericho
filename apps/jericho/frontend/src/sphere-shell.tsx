@@ -7,7 +7,7 @@ import {
   type CommandCenterSnapshot,
 } from '@jericho/shared';
 
-import { CoreClient, type CoreHealth } from './core-client';
+import { CoreClient, CoreRequestError, type CoreHealth } from './core-client';
 import { CommandCenterStore } from './command-center-store';
 import {
   JERICHO_APPROVAL_GESTURE_EVENT,
@@ -20,7 +20,9 @@ import './sphere/styles/base.css';
 import './sphere/styles/scene.css';
 
 const FLEET_POLL_MS = 30_000;
+const CODING_AGENT_POLL_MS = 5_000;
 const FLEET_OFFLINE: FleetSnapshot = { available: false, agents: [], issues: [] };
+const CODING_AGENTS_OFFLINE: CodingAgentSnapshot = { available: false, tasks: [] };
 
 export interface FleetSnapshot {
   available: boolean;
@@ -32,14 +34,38 @@ export interface FleetSnapshot {
   }>;
 }
 
-export function SphereShell({ store, client }: { store: CommandCenterStore; client: CoreClient }) {
+export interface CodingAgentSnapshot {
+  available: boolean;
+  tasks: Array<{
+    taskId: string;
+    workspaceId?: string;
+    workspaceName?: string;
+    sessionId?: string;
+    deepLink?: string;
+    lifecycleStatus: string;
+    commitSha?: string;
+    prUrl?: string;
+    errorCode?: string;
+  }>;
+}
+
+export function SphereShell({
+  store,
+  client,
+  onRecalibrate,
+}: {
+  store: CommandCenterStore;
+  client: CoreClient;
+  onRecalibrate?: () => void;
+}) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [fleet, setFleet] = useState<FleetSnapshot>(FLEET_OFFLINE);
+  const [codingAgents, setCodingAgents] = useState<CodingAgentSnapshot>(CODING_AGENTS_OFFLINE);
   const [health, setHealth] = useState<CoreHealth | undefined>();
   const [healthStatus, setHealthStatus] = useState<'loading' | 'ready' | 'locked' | 'unavailable' | 'degraded'>('loading');
   const liveData = useMemo(
-    () => projectLiveData(state.snapshot, state.status === 'ready', fleet),
-    [state, fleet],
+    () => projectLiveData(state.snapshot, state.status === 'ready', fleet, codingAgents),
+    [state, fleet, codingAgents],
   );
 
   useEffect(() => {
@@ -51,8 +77,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
       })
       .catch((err: unknown) => {
         setHealth(undefined);
-        const message = err instanceof Error ? err.message : '';
-        if (message.includes('401') || message.includes('Unauthorized') || message.includes('unauthenticated')) {
+        if (err instanceof CoreRequestError && err.status === 401) {
           setHealthStatus('locked');
         } else {
           setHealthStatus('unavailable');
@@ -79,6 +104,25 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
     };
     void poll();
     const timer = setInterval(() => { void poll(); }, FLEET_POLL_MS);
+    return () => { disposed = true; clearInterval(timer); };
+  }, []);
+
+  useEffect(() => {
+    let disposed = false;
+    const poll = async () => {
+      try {
+        const response = await fetch('/api/v1/coding-agents', {
+          credentials: 'same-origin',
+          headers: { accept: 'application/json' },
+        });
+        const body = await response.json() as CodingAgentSnapshot;
+        if (!disposed) setCodingAgents(response.ok && Array.isArray(body.tasks) ? body : CODING_AGENTS_OFFLINE);
+      } catch {
+        if (!disposed) setCodingAgents(CODING_AGENTS_OFFLINE);
+      }
+    };
+    void poll();
+    const timer = setInterval(() => { void poll(); }, CODING_AGENT_POLL_MS);
     return () => { disposed = true; clearInterval(timer); };
   }, []);
 
@@ -141,7 +185,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
     };
   }, []);
 
-  return <SphereApp liveData={liveData} health={health} healthStatus={healthStatus} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
+  return <SphereApp liveData={liveData} health={health} healthStatus={healthStatus} onDirective={captureDirective} onVaultSearch={searchVault} onRecalibrate={onRecalibrate} commandActions={{
     searchMemory: (query: string) => client.searchVault(query, 8),
     openMemory: (relativePath: string) => client.openVaultNote(relativePath),
     proposeNoteReorganization: (input: { relativePath: string; title: string }) =>
@@ -168,14 +212,22 @@ function projectLiveData(
   snapshot: CommandCenterSnapshot | undefined,
   connected: boolean,
   fleet: FleetSnapshot,
+  codingAgents: CodingAgentSnapshot,
 ) {
   const missionRecords = snapshot?.missions ?? [];
   const approvals = new Map((snapshot?.approvals ?? []).map((approval) => [approval.missionId, approval]));
   // Halo agents: prefer the live Hermes fleet roster; otherwise the agents
   // attached to persisted missions. Never a fixture roster.
-  const agents = fleet.available
+  const fallbackAgents = fleet.available
     ? fleet.agents.map((agent) => ({ id: agent.name, status: haloStatus(agent.status) }))
     : missionAgents(missionRecords);
+  const agents = uniqueAgents([
+    ...codingAgents.tasks.map((task) => ({
+      id: task.workspaceName ?? task.taskId,
+      status: codingAgentHaloStatus(task.lifecycleStatus),
+    })),
+    ...fallbackAgents,
+  ]);
   const taskToMission = new Map(missionRecords.flatMap((mission) =>
     mission.taskGraph.map((task) => [task.id, mission.id] as const)));
   const receiptCountByMission = new Map<string, number>();
@@ -187,7 +239,7 @@ function projectLiveData(
   return {
     connected,
     agents,
-    fleet,
+    fleet: { ...fleet, codingAgents },
     nucleus: {
       nodes: snapshot?.nucleus.nodes.length ?? 0,
       edges: snapshot?.nucleus.edges.length ?? 0,
@@ -238,6 +290,16 @@ function projectLiveData(
     paperclip: snapshot?.knowledge?.paperclip ?? [],
     fleetStages: snapshot ? projectFleetStages(snapshot) : emptyFleetStages(),
   };
+}
+
+function uniqueAgents(agents: Array<{ id: string; status: string }>) {
+  return [...new Map(agents.map((agent) => [agent.id, agent])).values()];
+}
+
+function codingAgentHaloStatus(status: string): string {
+  if (['failed', 'timed_out', 'conductor_auth_required', 'incomplete'].includes(status)) return 'degraded';
+  if (status === 'cancelled') return 'paused';
+  return 'online';
 }
 
 function missionAgents(missions: CommandCenterSnapshot['missions']) {

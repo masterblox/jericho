@@ -3,7 +3,6 @@ import { describe, expect, it } from 'vitest';
 import {
   createSpeakerVerifier,
   isSpeakerVerified,
-  NoopSpeakerVerifier,
   RejectingSpeakerVerifier,
 } from '../src/voice/speaker-verifier.js';
 
@@ -12,7 +11,8 @@ describe('SpeakerVerifier', () => {
     const verifier = new RejectingSpeakerVerifier();
     expect(verifier.status).toBe('unverified');
 
-    await verifier.enroll(new Float32Array(16000));
+    await expect(verifier.enroll(new Float32Array(16000)))
+      .rejects.toThrow('evaluated_speaker_model_required');
     expect(verifier.status).toBe('unverified');
 
     const result = await verifier.verify(new Float32Array(16000));
@@ -21,40 +21,26 @@ describe('SpeakerVerifier', () => {
     expect(isSpeakerVerified(result)).toBe(false);
   });
 
-  it('NoopSpeakerVerifier returns verified', async () => {
-    const verifier = new NoopSpeakerVerifier();
-    expect(verifier.status).toBe('verified');
-
-    const result = await verifier.verify(new Float32Array(16000));
-    expect(result.status).toBe('verified');
-    expect(result.speakerId).toBe('default');
-    expect(result.confidence).toBe(1);
-    expect(result.enrolled).toBe(true);
-    expect(isSpeakerVerified(result)).toBe(true);
-  });
-
-  it('NoopSpeakerVerifier can be reset', async () => {
-    const verifier = new NoopSpeakerVerifier();
-    verifier.reset();
-
-    const result = await verifier.verify(new Float32Array(16000));
-    expect(result.status).toBe('verified');
-  });
-
-  it('createSpeakerVerifier returns rejecting when no evaluated model', () => {
-    const verifier = createSpeakerVerifier(false);
+  it('createSpeakerVerifier rejects by default when no evaluated implementation is injected', () => {
+    const verifier = createSpeakerVerifier();
     expect(verifier).toBeInstanceOf(RejectingSpeakerVerifier);
     expect(verifier.status).toBe('unverified');
   });
 
-  it('createSpeakerVerifier returns noop when evaluated model exists', () => {
-    const verifier = createSpeakerVerifier(true);
-    expect(verifier).toBeInstanceOf(NoopSpeakerVerifier);
-    expect(verifier.status).toBe('verified');
+  it('createSpeakerVerifier accepts only an explicit verifier implementation', () => {
+    const injected: import('../src/voice/speaker-verifier.js').SpeakerVerifier = {
+      status: 'verified',
+      enroll: async () => undefined,
+      verify: async () => ({
+        status: 'verified', speakerId: 'enrolled-owner', confidence: 0.91, enrolled: true,
+      }),
+      reset: () => undefined,
+    };
+    expect(createSpeakerVerifier(injected)).toBe(injected);
   });
 
   it('rejecting verifier never claims Carlos only', async () => {
-    const verifier = createSpeakerVerifier(false);
+    const verifier = createSpeakerVerifier();
     const result = await verifier.verify(new Float32Array(16000));
     expect(JSON.stringify(result)).not.toMatch(/carlos/i);
     expect(result.status).toBe('unverified');
@@ -62,10 +48,11 @@ describe('SpeakerVerifier', () => {
   });
 
   it('isSpeakerVerified handles edge cases', () => {
-    expect(isSpeakerVerified({ status: 'verified', enrolled: true, confidence: 0.9 })).toBe(true);
-    expect(isSpeakerVerified({ status: 'verified', enrolled: false, confidence: 0.9 })).toBe(false);
-    expect(isSpeakerVerified({ status: 'verified', enrolled: true, confidence: 0 })).toBe(false);
-    expect(isSpeakerVerified({ status: 'unverified', enrolled: true, confidence: 1 })).toBe(false);
+    expect(isSpeakerVerified({ status: 'verified', speakerId: 'owner', enrolled: true, confidence: 0.9 })).toBe(true);
+    expect(isSpeakerVerified({ status: 'verified', enrolled: true, confidence: 0.9 })).toBe(false);
+    expect(isSpeakerVerified({ status: 'verified', speakerId: 'owner', enrolled: false, confidence: 0.9 })).toBe(false);
+    expect(isSpeakerVerified({ status: 'verified', speakerId: 'owner', enrolled: true, confidence: 0.79 })).toBe(false);
+    expect(isSpeakerVerified({ status: 'unverified', speakerId: 'owner', enrolled: true, confidence: 1 })).toBe(false);
     expect(isSpeakerVerified({ status: 'rejected' })).toBe(false);
     expect(isSpeakerVerified({ status: 'verifying' })).toBe(false);
   });
@@ -74,14 +61,9 @@ describe('SpeakerVerifier', () => {
     const rejecting = new RejectingSpeakerVerifier();
     const audio = new Float32Array([0.1, 0.2, 0.3]);
 
-    await rejecting.enroll(audio);
+    await expect(rejecting.enroll(audio)).rejects.toThrow('evaluated_speaker_model_required');
 
     const result = await rejecting.verify(audio);
     expect(result.status).toBe('unverified');
-
-    const noop = new NoopSpeakerVerifier();
-    await noop.enroll(audio);
-    const noopResult = await noop.verify(audio);
-    expect(noopResult.status).toBe('verified');
   });
 });

@@ -14,7 +14,7 @@ vi.mock('../src/sphere/components/charts', () => ({
   SegmentBar: () => React.createElement('div'),
 }));
 
-import { IdCluster } from '../src/sphere/components/peripherals';
+import { AgentsProjection, IdCluster } from '../src/sphere/components/peripherals';
 import { CoreAssembly } from '../src/sphere/components/CoreAssembly';
 import { DispatchModal } from '../src/sphere/components';
 import { CommandOverlay } from '../src/sphere/CommandOverlay';
@@ -63,6 +63,29 @@ describe('gesture target audit', () => {
     render(React.createElement(DispatchModal, { directive: 'test directive', onClose: () => {}, onDispatch: () => {} }));
     expect(document.querySelector('[data-gesture-target="dispatch:cancel"]')).toBeTruthy();
     expect(document.querySelector('[data-gesture-target="dispatch:confirm"]')).toBeTruthy();
+    expect(document.querySelector('[data-gesture-target="dispatch:close"]')).toBeTruthy();
+  });
+
+  it('AgentsProjection replaces the dead offline card with an operator prompt and verified SHA receipts', () => {
+    const view = render(React.createElement(AgentsProjection, {
+      fleet: { available: false, agents: [], issues: [], codingAgents: { available: true, tasks: [] } },
+    }));
+    expect(screen.getByText('JERICHO OPERATOR')).toBeTruthy();
+    expect(view.container.textContent).not.toContain('OFFLINE');
+    cleanup();
+
+    const sha = '0123456789abcdef0123456789abcdef01234567';
+    render(React.createElement(AgentsProjection, {
+      fleet: {
+        available: false, agents: [], issues: [],
+        codingAgents: { available: true, tasks: [{
+          taskId: 'coding-1', workspaceName: 'jericho: fix wake',
+          lifecycleStatus: 'succeeded', commitSha: sha,
+        }] },
+      },
+    }));
+    expect(document.querySelector('[data-gesture-target="agent:coding-1"]')).toBeTruthy();
+    expect(document.body.textContent).toContain(sha);
   });
 
   it('CommandOverlay nav buttons have gesture targets', () => {

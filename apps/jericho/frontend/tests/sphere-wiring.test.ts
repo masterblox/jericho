@@ -20,7 +20,8 @@ describe('production sphere wiring', () => {
     expect(projection).toContain('AgentsProjection');
     expect(projection).toContain('TasksProjection');
     expect(projection).toContain('BrainProjection');
-    expect(projection).toContain('PAPERCLIP OFFLINE');
+    expect(projection).toContain('(fleet?.available ? fleet.issues : [])');
+    expect(projection).not.toContain('PAPERCLIP OFFLINE');
     expect(projection).toContain('VAULT SEARCH OFFLINE');
     expect(projection).not.toMatch(/'MISSIONS'|'SIGNALS'|MissionsProjection|SignalsProjection/);
   });

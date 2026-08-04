@@ -29,14 +29,22 @@ export class CodingAgentLifecycle {
     };
   }
 
-  async run(task: CodingAgentTask): Promise<CodingAgentReceipt> {
-    if (!task.model.trim()) return this.#failed(task.taskId, 'invalid_model');
+  async run(
+    task: CodingAgentTask,
+    onUpdate?: (receipt: CodingAgentReceipt) => void,
+  ): Promise<CodingAgentReceipt> {
+    const finish = (receipt: CodingAgentReceipt): CodingAgentReceipt => {
+      onUpdate?.(structuredClone(receipt));
+      return receipt;
+    };
+    if (!task.model.trim()) return finish(this.#failed(task.taskId, 'invalid_model'));
     const auth = await this.#conductor.authProbe();
-    if (!auth.authenticated) return { taskId: task.taskId, lifecycleStatus: 'conductor_auth_required', errorCode: 'conductor_auth_required' };
+    if (!auth.authenticated) return finish({ taskId: task.taskId, lifecycleStatus: 'conductor_auth_required', errorCode: 'conductor_auth_required' });
 
     const project = await this.#selectProject(task);
     const workspace = await this.#conductor.createWorkspace({ projectId: project.id, name: task.workspaceName, agent: this.#options.agent, model: task.model });
     const receipt = { taskId: task.taskId, workspaceId: workspace.id, workspaceName: workspace.name, sessionId: workspace.sessionId, deepLink: workspace.deepLink, lifecycleStatus: 'created' as const };
+    onUpdate?.(structuredClone(receipt));
     await this.#conductor.sendMessage(workspace.sessionId, workerPrompt(task.prompt));
 
     const deadline = this.#options.now() + (task.timeoutMs ?? this.#options.defaultTimeoutMs);
@@ -44,9 +52,17 @@ export class CodingAgentLifecycle {
     let steered = false;
     let lastMessageId: string | undefined;
     let messages: ConductorMessage[] = [];
+    let publishedStatus: string = 'created';
     while (this.#options.now() <= deadline) {
       const status = await this.#conductor.getStatus(workspace.sessionId);
       if (status === 'working') seenWorking = true;
+      const lifecycleStatus = status === 'working' ? 'working'
+        : status === 'idle' && !seenWorking ? 'queued'
+          : 'idle';
+      if (lifecycleStatus !== publishedStatus) {
+        publishedStatus = lifecycleStatus;
+        onUpdate?.({ ...receipt, lifecycleStatus });
+      }
       const newMessages = await this.#conductor.readTranscript(workspace.sessionId, lastMessageId);
       if (newMessages.length) {
         messages = messages.concat(newMessages);
@@ -55,19 +71,19 @@ export class CodingAgentLifecycle {
       const evidence = completionEvidence(messages);
       if (evidence?.commitSha && FULL_SHA.test(evidence.commitSha)) {
         const verified = await this.#git.verifyCommit({ repositoryPath: task.repositoryPath, commitSha: evidence.commitSha });
-        if (verified) return { ...receipt, lifecycleStatus: 'succeeded', commitSha: evidence.commitSha, prUrl: evidence.prUrl };
-        return { ...receipt, lifecycleStatus: 'failed', errorCode: 'commit_not_verified' };
+        if (verified) return finish({ ...receipt, lifecycleStatus: 'succeeded', commitSha: evidence.commitSha.toLowerCase(), prUrl: evidence.prUrl });
+        return finish({ ...receipt, lifecycleStatus: 'failed', errorCode: 'commit_not_verified' });
       }
-      if (evidence?.commitSha && !FULL_SHA.test(evidence.commitSha)) return { ...receipt, lifecycleStatus: 'failed', errorCode: 'invalid_commit_sha' };
-      if (status === 'errored') return { ...receipt, lifecycleStatus: 'failed', errorCode: 'conductor_session_errored' };
-      if (status === 'idle' && seenWorking) return { ...receipt, lifecycleStatus: 'failed', errorCode: 'missing_commit_sha' };
+      if (evidence?.commitSha && !FULL_SHA.test(evidence.commitSha)) return finish({ ...receipt, lifecycleStatus: 'failed', errorCode: 'invalid_commit_sha' });
+      if (status === 'errored') return finish({ ...receipt, lifecycleStatus: 'failed', errorCode: 'conductor_session_errored' });
+      if (status === 'idle' && seenWorking) return finish({ ...receipt, lifecycleStatus: 'failed', errorCode: 'missing_commit_sha' });
       if (status === 'idle' && !seenWorking && task.steeringMessage && !steered) {
         await this.#conductor.sendMessage(workspace.sessionId, task.steeringMessage);
         steered = true;
       }
       await this.#options.sleep(task.pollIntervalMs ?? this.#options.defaultPollIntervalMs);
     }
-    return { ...receipt, lifecycleStatus: 'timed_out', errorCode: 'conductor_timeout' };
+    return finish({ ...receipt, lifecycleStatus: 'timed_out', errorCode: 'conductor_timeout' });
   }
 
   async steer(sessionId: string, message: string): Promise<void> {
@@ -83,8 +99,8 @@ export class CodingAgentLifecycle {
     const projects = await this.#conductor.listProjects();
     const project = projects.find((candidate) =>
       (task.project.id && candidate.id === task.project.id) ||
-      (task.project.name && candidate.name === task.project.name) ||
-      (task.project.repoUrl && candidate.repoUrl === task.project.repoUrl));
+      (task.project.name && normalizedName(candidate.name) === normalizedName(task.project.name)) ||
+      (task.project.repoUrl && normalizedRepository(candidate.repoUrl) === normalizedRepository(task.project.repoUrl)));
     if (!project) throw new CodingAgentLifecycleError('project_not_found');
     return project;
   }
@@ -92,6 +108,21 @@ export class CodingAgentLifecycle {
   #failed(taskId: string, errorCode: string): CodingAgentReceipt {
     return { taskId, lifecycleStatus: 'failed', errorCode };
   }
+}
+
+function normalizedName(value: string | undefined): string | undefined {
+  const normalized = value?.trim().toLocaleLowerCase('en-US');
+  return normalized || undefined;
+}
+
+function normalizedRepository(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+    .replace(/^git@([^:]+):/u, '$1/')
+    .replace(/^(?:https?|ssh):\/\/(?:git@)?/u, '')
+    .replace(/\.git\/?$/u, '')
+    .replace(/\/+$/u, '')
+    .toLocaleLowerCase('en-US');
+  return normalized || undefined;
 }
 
 export function workerPrompt(prompt: string): string {

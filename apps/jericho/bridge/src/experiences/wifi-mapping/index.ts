@@ -23,7 +23,6 @@ export interface RuViewProvenance {
   source: string;
   revision: string;
   license: string;
-  pinnedUiSource?: string;
 }
 
 export interface JerichoExperienceDescriptor {
@@ -142,7 +141,6 @@ export const wifiMappingExperienceDescriptor = {
     source: 'https://github.com/ruvnet/RuView',
     revision: '5780c239e4cdcd4389eed37a96d19a98154ebe03',
     license: 'MIT',
-    pinnedUiSource: '/tmp/ruview-security-audit.rzQ8MR/repo/ui bind-mounted into ruview-party-demo:/app/ui',
   },
 } as const satisfies JerichoExperienceDescriptor;
 
@@ -177,6 +175,14 @@ export class WifiMappingExperienceLauncher {
       displayId: plan.targetDisplay.id,
     });
     return { start, plan, browser, placement };
+  }
+
+  async close(): Promise<void> {
+    const started = this.#started;
+    this.#started = undefined;
+    if (!started) return;
+    const receipt = await started.catch(() => undefined);
+    await receipt?.server.close?.();
   }
 
   async #start(): Promise<ExperienceStartReceipt> {

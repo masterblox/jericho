@@ -6,6 +6,7 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 
 import { defaultOutputCapBytes, defaultRisk, defaultTimeoutMs } from './allowlist.js';
+import { modelToolName } from './discovery.js';
 import type {
   MCPJsonSchema,
   MCPServerConfig,
@@ -19,8 +20,12 @@ import type {
 import { sanitizeResult } from './types.js';
 
 const CONNECT_TIMEOUT_MS = 10_000;
+const DISCOVERY_TIMEOUT_MS = 15_000;
 
 export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/u.test(config.name)) {
+    throw new Error('MCP server name is invalid');
+  }
   let client: Client | null = null;
   let transport: StdioClientTransport | StreamableHTTPClientTransport | null = null;
   let status: MCPServerStatus = 'disconnected';
@@ -53,11 +58,7 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
           transport = new StreamableHTTPClientTransport(new URL(config.url));
         }
 
-        const connectPromise = client.connect(transport);
-        const timeout = new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('MCP connect timeout')), CONNECT_TIMEOUT_MS),
-        );
-        await Promise.race([connectPromise, timeout]);
+        await withTimeout(client.connect(transport), CONNECT_TIMEOUT_MS, 'MCP connect timeout');
         status = 'connected';
       } catch (error) {
         status = 'failed';
@@ -85,27 +86,23 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
         throw new Error(`MCP server ${config.name} is not connected`);
       }
 
-      const toolName = call.namespacedName.replace(`mcp/${config.name}/`, '');
-      const descriptor = cachedTools.find((t) => t.toolName === toolName);
+      const descriptor = cachedTools.find((tool) => tool.namespacedName === call.namespacedName);
       if (!descriptor) {
         throw new Error(`Tool not found: ${call.namespacedName} on server ${config.name}`);
       }
+      const toolName = descriptor.toolName;
 
       const startTime = performance.now();
+      const abortController = new AbortController();
+      const timeoutId = setTimeout(() => abortController.abort(), descriptor.timeoutMs);
+      const onAbort = () => abortController.abort();
+      signal.addEventListener('abort', onAbort, { once: true });
       try {
-        const abortController = new AbortController();
-        const timeoutId = setTimeout(() => abortController.abort(), descriptor.timeoutMs);
-        const onAbort = () => abortController.abort();
-        signal.addEventListener('abort', onAbort, { once: true });
-
         const result = (await client.callTool(
           { name: toolName, arguments: call.args },
           undefined,
           { signal: abortController.signal },
         )) as CallToolResult;
-
-        clearTimeout(timeoutId);
-        signal.removeEventListener('abort', onAbort);
 
         const latencyMs = Math.round(performance.now() - startTime);
         const rawContent = sanitizeResult(result as unknown as Parameters<typeof sanitizeResult>[0]);
@@ -118,7 +115,9 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
           namespacedName: call.namespacedName,
           receipt: {
             ok: !result.isError,
-            content: truncated ? serialized.slice(0, descriptor.outputCapBytes) : (rawContent ?? result),
+            content: truncated
+              ? { truncated: true, preview: truncateUtf8(serialized, descriptor.outputCapBytes) }
+              : (rawContent ?? result),
             error: result.isError ? extractErrorText(result) : undefined,
             serverName: config.name,
             toolName,
@@ -130,7 +129,7 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
       } catch (error) {
         const latencyMs = Math.round(performance.now() - startTime);
         const message = error instanceof Error ? error.message : 'unknown error';
-        if (message.includes('aborted') || message.includes('AbortError')) {
+        if (abortController.signal.aborted || message.includes('aborted') || message.includes('AbortError')) {
           return {
             callId: call.id,
             namespacedName: call.namespacedName,
@@ -158,6 +157,9 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
             truncated: false,
           },
         };
+      } finally {
+        clearTimeout(timeoutId);
+        signal.removeEventListener('abort', onAbort);
       }
     },
 
@@ -165,12 +167,16 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
       if (status !== 'connected' || !client) {
         throw new Error(`MCP server ${config.name} is not connected`);
       }
-      const result = await client.listTools();
+      const result = await withTimeout(client.listTools(), DISCOVERY_TIMEOUT_MS, 'MCP discovery timeout');
       cachedTools = (result.tools ?? []).map((tool) => {
-        const risk = defaultRisk(tool);
+        const risk = defaultRisk({
+          description: `${tool.name} ${tool.description ?? ''}`,
+          inputSchema: tool.inputSchema,
+        });
         return {
           serverName: config.name,
           namespacedName: `mcp/${config.name}/${tool.name}`,
+          modelName: modelToolName(config.name, tool.name),
           toolName: tool.name,
           description: tool.description ?? `${tool.name} tool on ${config.name}`,
           inputSchema: (tool.inputSchema ?? { type: 'object', properties: {} }) as MCPJsonSchema,
@@ -190,8 +196,24 @@ export function createMCPClient(config: MCPServerConfig): MCPServerHandle {
 function extractErrorText(result: CallToolResult): string {
   if (result.content && Array.isArray(result.content)) {
     for (const item of result.content) {
-      if (item.type === 'text' && typeof item.text === 'string') return item.text;
+      if (item.type === 'text' && typeof item.text === 'string') return item.text.slice(0, 2_000);
     }
   }
   return 'tool execution failed';
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
+function truncateUtf8(value: string, maximumBytes: number): string {
+  const buffer = Buffer.from(value, 'utf8');
+  if (buffer.length <= maximumBytes) return value;
+  return buffer.subarray(0, maximumBytes).toString('utf8');
 }

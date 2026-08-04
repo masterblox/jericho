@@ -14,6 +14,7 @@ export interface MCPServerConfig {
 export interface MCPToolDescriptor {
   serverName: string;
   namespacedName: string;
+  modelName: string;
   toolName: string;
   description: string;
   inputSchema: MCPJsonSchema;

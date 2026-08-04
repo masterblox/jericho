@@ -38,6 +38,7 @@ describe('wifi-mapping Jericho experience contract', () => {
       },
     });
     expect(wifiMappingExperienceDescriptor.simulation.truthBoundary).toContain('DEMO/SIMULATED only');
+    expect(JSON.stringify(wifiMappingExperienceDescriptor)).not.toContain('/tmp/');
 
     const page = await readFile(new URL('../src/experiences/wifi-mapping/assets/observatory.html', import.meta.url), 'utf8');
     expect(page).toContain('data-experience-id="wifi-mapping"');
@@ -142,6 +143,25 @@ describe('wifi-mapping Jericho experience contract', () => {
     });
     expect(browserPort.openFreshChromeWindow).toHaveBeenCalledWith('http://127.0.0.1:39004/observatory.html');
     expect(windowPort.moveChromeWindowToDisplay).toHaveBeenCalledWith({ displayId: '1' });
+  });
+
+  it('closes a Jericho-owned static server and can start it again', async () => {
+    const close = vi.fn().mockResolvedValue(undefined);
+    const processPort: ExperienceProcessPort = {
+      ensureStaticSite: vi.fn(async () => ({
+        baseUrl: 'http://127.0.0.1:39004',
+        readyUrl: 'http://127.0.0.1:39004/observatory.html',
+        close,
+      })),
+    };
+    const launcher = new WifiMappingExperienceLauncher({
+      processPort, browserPort: fakeBrowserPort(), windowPort: fakeWindowPort(),
+    });
+    await launcher.start();
+    await launcher.close();
+    await launcher.start();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(processPort.ensureStaticSite).toHaveBeenCalledTimes(2);
   });
 
   it('serves the durable page without shelling out or relying on a temporary path', async () => {

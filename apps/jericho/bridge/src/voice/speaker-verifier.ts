@@ -33,7 +33,7 @@ export class RejectingSpeakerVerifier implements SpeakerVerifier {
   status: SpeakerVerificationStatus = 'unverified';
 
   async enroll(_audioChunk: Float32Array): Promise<void> {
-    // No-op: raw audio is NEVER retained
+    throw new Error('evaluated_speaker_model_required');
   }
 
   async verify(_audioChunk: Float32Array): Promise<SpeakerVerificationResult> {
@@ -48,36 +48,17 @@ export class RejectingSpeakerVerifier implements SpeakerVerifier {
   }
 }
 
-export class NoopSpeakerVerifier implements SpeakerVerifier {
-  status: SpeakerVerificationStatus = 'verified';
-  private enrolled_ = true;
-
-  async enroll(_audioChunk: Float32Array): Promise<void> {
-    // No-op: raw audio is NEVER retained
-  }
-
-  async verify(_audioChunk: Float32Array): Promise<SpeakerVerificationResult> {
-    return {
-      status: 'verified',
-      speakerId: 'default',
-      confidence: 1,
-      enrolled: this.enrolled_,
-    };
-  }
-
-  reset(): void {
-    this.status = 'verified';
-    this.enrolled_ = true;
-  }
+export function createSpeakerVerifier(verifier?: SpeakerVerifier): SpeakerVerifier {
+  return verifier ?? new RejectingSpeakerVerifier();
 }
 
-export function createSpeakerVerifier(evaluatedModelExists: boolean): SpeakerVerifier {
-  if (!evaluatedModelExists) {
-    return new RejectingSpeakerVerifier();
-  }
-  return new NoopSpeakerVerifier();
-}
-
-export function isSpeakerVerified(result: SpeakerVerificationResult): boolean {
-  return result.status === 'verified' && (result.enrolled ?? false) && (result.confidence ?? 0) > 0;
+export function isSpeakerVerified(
+  result: SpeakerVerificationResult,
+  minimumConfidence = 0.8,
+): boolean {
+  return result.status === 'verified' &&
+    Boolean(result.speakerId?.trim()) &&
+    result.enrolled === true &&
+    Number.isFinite(result.confidence) &&
+    (result.confidence ?? 0) >= minimumConfidence;
 }

@@ -99,7 +99,17 @@ export interface CoreHealth {
   };
   connectors: Array<{ connectorId: string; status: string }>;
   vault: { ready: boolean };
-  voice: { status: 'available' | 'unavailable' };
+  voice: {
+    status: 'available' | 'unavailable';
+    speakerVerification?: 'configured' | 'required' | 'disabled';
+  };
+}
+
+export class CoreRequestError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = 'CoreRequestError';
+  }
 }
 
 export class CoreClient {
@@ -153,7 +163,12 @@ export class CoreClient {
     const response = await this.#fetch('/api/v1/health', {
       credentials: 'same-origin', headers: { accept: 'application/json' },
     });
-    if (!response.ok) throw new Error(await responseError(response, 'Core health unavailable'));
+    if (!response.ok) {
+      throw new CoreRequestError(
+        response.status,
+        await responseError(response, 'Core health unavailable'),
+      );
+    }
     return response.json() as Promise<CoreHealth>;
   }
 

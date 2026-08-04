@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { ToolDecl } from '../tools.js';
 import { allowlistKey, defaultOutputCapBytes, defaultRisk, defaultTimeoutMs } from './allowlist.js';
 import type { MCPJsonSchema, MCPToolDescriptor, MCPToolRisk } from './types.js';
@@ -21,7 +23,7 @@ export function translateToGeminiDeclaration(
 ): ToolDecl {
   const bounded = boundSchema(descriptor.inputSchema, descriptor.namespacedName);
   return {
-    name: descriptor.namespacedName,
+    name: descriptor.modelName,
     description: `${descriptor.description} [risk=${descriptor.risk}]`,
     parameters: bounded,
   };
@@ -39,7 +41,9 @@ export function boundSchema(schema: MCPJsonSchema, toolName: string): Record<str
   if (schema.properties && typeof schema.properties === 'object') {
     const bounded: Record<string, unknown> = {};
     for (const [key, prop] of Object.entries(schema.properties)) {
-      bounded[boundedPropertyName(key)] = boundedProperty(prop as Record<string, unknown>, toolName);
+      const modelKey = boundedPropertyName(key);
+      if (Object.hasOwn(bounded, modelKey)) throw new Error(`MCP schema property collision: ${toolName}`);
+      bounded[modelKey] = boundedProperty(prop as Record<string, unknown>, toolName);
     }
     result.properties = bounded;
   }
@@ -53,6 +57,14 @@ export function boundSchema(schema: MCPJsonSchema, toolName: string): Record<str
   }
 
   return result;
+}
+
+/** Restore schema property names after exposing Gemini-safe parameter keys. */
+export function translateGeminiArguments(
+  schema: MCPJsonSchema,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return restoreObject(schema, value);
 }
 
 function boundedPropertyName(key: string): string {
@@ -83,7 +95,9 @@ function boundedProperty(prop: Record<string, unknown>, toolName: string): Recor
   if (type === 'object' && prop.properties && typeof prop.properties === 'object') {
     const nested: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(prop.properties as Record<string, unknown>)) {
-      nested[boundedPropertyName(key)] = boundedProperty(value as Record<string, unknown>, toolName);
+      const modelKey = boundedPropertyName(key);
+      if (Object.hasOwn(nested, modelKey)) throw new Error(`MCP schema property collision: ${toolName}`);
+      nested[modelKey] = boundedProperty(value as Record<string, unknown>, toolName);
     }
     result.properties = nested;
   }
@@ -93,6 +107,34 @@ function boundedProperty(prop: Record<string, unknown>, toolName: string): Recor
   }
 
   return result;
+}
+
+function restoreObject(schema: MCPJsonSchema, value: Record<string, unknown>): Record<string, unknown> {
+  const properties = schema.properties ?? {};
+  const restored: Record<string, unknown> = {};
+  const recognized = new Set<string>();
+  for (const [originalKey, property] of Object.entries(properties)) {
+    const modelKey = boundedPropertyName(originalKey);
+    recognized.add(modelKey);
+    if (!Object.hasOwn(value, modelKey)) continue;
+    restored[originalKey] = restoreValue(property as Record<string, unknown>, value[modelKey]);
+  }
+  if (schema.additionalProperties !== false) {
+    for (const [key, additional] of Object.entries(value)) {
+      if (!recognized.has(key)) restored[key] = additional;
+    }
+  }
+  return restored;
+}
+
+function restoreValue(schema: Record<string, unknown>, value: unknown): unknown {
+  if (schema.type === 'object' && value && typeof value === 'object' && !Array.isArray(value)) {
+    return restoreObject(schema as MCPJsonSchema, value as Record<string, unknown>);
+  }
+  if (schema.type === 'array' && Array.isArray(value) && schema.items && typeof schema.items === 'object') {
+    return value.map((item) => restoreValue(schema.items as Record<string, unknown>, item));
+  }
+  return value;
 }
 
 export function buildDescriptor(
@@ -108,6 +150,7 @@ export function buildDescriptor(
   return {
     serverName,
     namespacedName: namespaceTool(serverName, toolName),
+    modelName: modelToolName(serverName, toolName),
     toolName,
     description,
     inputSchema,
@@ -116,4 +159,14 @@ export function buildDescriptor(
     outputCapBytes: outputCapBytes ?? defaultOutputCapBytes(resolvedRisk),
     allowlistKey: allowlistKey(serverName, toolName),
   };
+}
+
+/** Gemini function names are identifier-like and capped at 64 characters. */
+export function modelToolName(serverName: string, toolName: string): string {
+  const identity = `${serverName}/${toolName}`;
+  const digest = createHash('sha256').update(identity).digest('hex').slice(0, 10);
+  const slug = identity
+    .replace(/[^A-Za-z0-9_-]+/gu, '_')
+    .replace(/^_+|_+$/gu, '') || 'tool';
+  return `mcp_${slug.slice(0, 48)}_${digest}`;
 }

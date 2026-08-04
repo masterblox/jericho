@@ -13,7 +13,11 @@ afterEach(() => {
 
 describe('EngageGate', () => {
   it('constructs hardware runtime only inside the user gesture and disposes it on unmount', async () => {
-    const runtime = { engage: vi.fn().mockResolvedValue(undefined), dispose: vi.fn().mockResolvedValue(undefined) };
+    const runtime = {
+      engage: vi.fn().mockResolvedValue(undefined),
+      recalibrate: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
     const createRuntime = vi.fn(() => runtime);
     const view = render(<StrictMode><EngageGate createRuntime={createRuntime} /></StrictMode>);
 
@@ -31,6 +35,7 @@ describe('EngageGate', () => {
   it('keeps keyboard mode available after permission failure', async () => {
     const runtime = {
       engage: vi.fn().mockRejectedValue(new Error('Camera permission denied')),
+      recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
     render(<EngageGate createRuntime={() => runtime} />);
@@ -54,6 +59,7 @@ describe('EngageGate', () => {
     let finishEngagement!: () => void;
     const runtime = {
       engage: vi.fn(() => new Promise<void>((resolve) => { finishEngagement = resolve; })),
+      recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
     render(<EngageGate createRuntime={() => runtime} />);
@@ -68,10 +74,62 @@ describe('EngageGate', () => {
   });
 
   it('calls createRuntime with the engagement state callback', async () => {
-    const runtime = { engage: vi.fn().mockResolvedValue(undefined), dispose: vi.fn().mockResolvedValue(undefined) };
+    const runtime = {
+      engage: vi.fn().mockResolvedValue(undefined),
+      recalibrate: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
     const createRuntime = vi.fn(() => runtime);
     render(<EngageGate createRuntime={createRuntime} />);
     fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
     expect(createRuntime).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it('can leave an in-progress hand calibration for keyboard mode', async () => {
+    let reportState!: (state: import('../src/jericho-runtime').EngagementState) => void;
+    const runtime = {
+      engage: vi.fn(() => new Promise<void>(() => {})),
+      recalibrate: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    render(<EngageGate createRuntime={(onState) => {
+      reportState = onState;
+      return runtime;
+    }} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
+    reportState('calibrating_left');
+    expect(await screen.findByRole('button', { name: 'Use keyboard' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Use keyboard' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(runtime.dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases a failed runtime so Retry Wake constructs a fresh one', async () => {
+    const first = {
+      engage: vi.fn().mockRejectedValue(new Error('Camera unavailable')),
+      recalibrate: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    const second = {
+      engage: vi.fn().mockResolvedValue(undefined),
+      recalibrate: vi.fn(),
+      dispose: vi.fn().mockResolvedValue(undefined),
+    };
+    const onRuntimeChange = vi.fn();
+    const createRuntime = vi.fn()
+      .mockReturnValueOnce(first)
+      .mockReturnValueOnce(second);
+    render(<EngageGate createRuntime={createRuntime} onRuntimeChange={onRuntimeChange} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
+    expect(await screen.findByRole('button', { name: 'Retry Wake' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry Wake' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(createRuntime).toHaveBeenCalledTimes(2);
+    expect(first.dispose).toHaveBeenCalledTimes(1);
+    expect(second.engage).toHaveBeenCalledTimes(1);
+    expect(onRuntimeChange).toHaveBeenCalledWith(null);
+    expect(onRuntimeChange).toHaveBeenLastCalledWith(second);
   });
 });

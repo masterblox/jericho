@@ -10,16 +10,22 @@ import type {
 } from './types.js';
 
 export interface MCPRegistryOptions {
-  clock?: () => number;
+  /** Exact server/tool keys that may be exposed and executed. Empty means deny all. */
+  allowedTools?: readonly string[];
 }
 
 export class MCPRegistry {
   private readonly handles = new Map<string, MCPServerHandle>();
-  private readonly clock: () => number;
+  private readonly allowedToolKeys: ReadonlySet<string>;
   private allowlist_: MapToolAllowlist | null = null;
 
   constructor(options: MCPRegistryOptions = {}) {
-    this.clock = options.clock ?? (() => Date.now());
+    this.allowedToolKeys = new Set((options.allowedTools ?? []).map((key) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(key)) {
+        throw new Error(`MCP allowlist key is invalid: ${key}`);
+      }
+      return key;
+    }));
   }
 
   get allowlist(): ToolAllowlist | null {
@@ -31,11 +37,16 @@ export class MCPRegistry {
       throw new Error(`MCP server already registered: ${config.name}`);
     }
     const handle = createMCPClient(config);
-    await handle.connect();
-    const tools = await handle.discover();
-    this.handles.set(config.name, handle);
-    this.rebuildAllowlist();
-    return tools;
+    try {
+      await handle.connect();
+      const tools = await handle.discover();
+      this.handles.set(config.name, handle);
+      this.rebuildAllowlist();
+      return tools;
+    } catch (error) {
+      await handle.disconnect();
+      throw error;
+    }
   }
 
   async unregisterServer(name: string): Promise<void> {
@@ -56,11 +67,9 @@ export class MCPRegistry {
       throw new Error(`MCP server not connected: ${serverName}`);
     }
 
-    if (this.allowlist_) {
-      const entry = this.allowlist_.match(call.namespacedName);
-      if (!entry) {
-        throw new Error(`Tool not allowlisted: ${call.namespacedName}`);
-      }
+    const entry = this.allowlist_?.match(call.namespacedName);
+    if (!entry) {
+      throw new Error(`Tool not allowlisted: ${call.namespacedName}`);
     }
 
     return handle.callTool(call, signal);
@@ -81,13 +90,24 @@ export class MCPRegistry {
       servers: [...this.handles.entries()].map(([name, handle]) => ({
         name,
         status: handle.status,
-        toolCount: handle.tools.length,
+        toolCount: handle.tools.filter((tool) => this.allowedToolKeys.has(tool.allowlistKey)).length,
       })),
     };
   }
 
   getServer(name: string): MCPServerHandle | undefined {
     return this.handles.get(name);
+  }
+
+  allowedDescriptors(): MCPToolDescriptor[] {
+    return [...this.handles.values()]
+      .flatMap((handle) => handle.tools)
+      .filter((tool) => this.allowedToolKeys.has(tool.allowlistKey))
+      .sort((first, second) => first.modelName.localeCompare(second.modelName));
+  }
+
+  descriptorForModelName(modelName: string): MCPToolDescriptor | undefined {
+    return this.allowedDescriptors().find((tool) => tool.modelName === modelName);
   }
 
   async disconnectAll(): Promise<void> {
@@ -114,7 +134,8 @@ export class MCPRegistry {
     const descriptors: MCPToolDescriptor[] = [];
     for (const handle of this.handles.values()) {
       if (handle.status === 'connected') {
-        descriptors.push(...handle.tools);
+        descriptors.push(...handle.tools.filter((tool) =>
+          this.allowedToolKeys.has(tool.allowlistKey)));
       }
     }
     this.allowlist_ = buildAllowlistFromDescriptors(descriptors);

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IdentityReviewDisposition, RelationType } from '@jericho/shared';
 
 import { CommandCenterStore } from '../src/command-center-store';
-import { CoreClient, type EventSourcePort } from '../src/core-client';
+import { CoreClient, CoreRequestError, type EventSourcePort } from '../src/core-client';
 import { snapshot } from './fixtures/command-center';
 
 afterEach(() => {
@@ -17,6 +17,20 @@ describe('CoreClient', () => {
     const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
     await expect(client.health()).resolves.toEqual(payload);
     expect(fetchPort).toHaveBeenCalledWith('/api/v1/health', expect.objectContaining({ credentials: 'same-origin' }));
+  });
+
+  it('reports an unauthenticated Core as locked instead of pretending it is offline', async () => {
+    const fetchPort = vi.fn().mockResolvedValue(new Response(JSON.stringify({ error: 'unauthorized' }), {
+      status: 401,
+      headers: { 'content-type': 'application/json' },
+    }));
+    const client = new CoreClient(new CommandCenterStore(), { fetch: fetchPort as typeof fetch });
+
+    await expect(client.health()).rejects.toEqual(expect.objectContaining<Partial<CoreRequestError>>({
+      name: 'CoreRequestError',
+      status: 401,
+      message: 'unauthorized',
+    }));
   });
   it('preserves the browser receiver when using native same-origin fetch', async () => {
     const nativeLikeFetch = vi.fn(function (this: unknown) {

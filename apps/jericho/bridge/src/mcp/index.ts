@@ -15,9 +15,11 @@ export {
   boundSchema,
   buildDescriptor,
   isMCPToolName,
+  modelToolName,
   namespaceTool,
   parseNamespacedTool,
   translateAllToGeminiDeclarations,
+  translateGeminiArguments,
   translateToGeminiDeclaration,
 } from './discovery.js';
 export { sanitizeResult } from './types.js';

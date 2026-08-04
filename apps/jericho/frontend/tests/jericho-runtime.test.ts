@@ -284,6 +284,64 @@ describe('JerichoRuntime lifecycle', () => {
     });
   });
 
+  it('calibrates both missing hands directly from Wake before starting voice', async () => {
+    const storage = new MemoryStorage();
+    const onEngagementState = vi.fn();
+    const harness = createHarness({
+      storage,
+      onEngagementState,
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+
+    const engaging = harness.runtime.engage();
+    await vi.waitFor(() => expect(onEngagementState).toHaveBeenCalledWith('calibrating_left'));
+    expect(harness.createBridge).not.toHaveBeenCalled();
+
+    let timestamp = calibrateHand(harness.emit, 'Left', 0);
+    expect(onEngagementState).toHaveBeenCalledWith('calibrating_right');
+    expect(harness.createBridge).not.toHaveBeenCalled();
+    timestamp = calibrateHand(harness.emit, 'Right', timestamp);
+
+    await engaging;
+    expect(timestamp).toBeGreaterThan(0);
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Left')).not.toBeNull();
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).not.toBeNull();
+    expect(harness.createBridge).toHaveBeenCalledTimes(1);
+    expect(onEngagementState).toHaveBeenLastCalledWith('engaged');
+  });
+
+  it('recalibrates both hands in place without recreating the voice bridge', async () => {
+    const storage = new MemoryStorage();
+    for (const handedness of ['Left', 'Right'] as const) {
+      saveCalibration(storage, createCalibrationProfile(
+        calibrationSamples,
+        'camera-a',
+        16 / 9,
+        handedness,
+        '2026-07-10T00:00:00.000Z',
+      ));
+    }
+    const onEngagementState = vi.fn();
+    const harness = createHarness({
+      storage,
+      onEngagementState,
+      trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
+    });
+    await harness.runtime.engage();
+    expect(harness.createBridge).toHaveBeenCalledTimes(1);
+
+    harness.runtime.recalibrate();
+    expect(onEngagementState).toHaveBeenLastCalledWith('calibrating_left');
+    let timestamp = calibrateHand(harness.emit, 'Left', 0);
+    expect(onEngagementState).toHaveBeenLastCalledWith('calibrating_right');
+    timestamp = calibrateHand(harness.emit, 'Right', timestamp);
+
+    expect(timestamp).toBeGreaterThan(0);
+    expect(onEngagementState).toHaveBeenLastCalledWith('engaged');
+    expect(harness.createBridge).toHaveBeenCalledTimes(1);
+    expect(harness.bridge.start).toHaveBeenCalledTimes(1);
+  });
+
   it('ignores a saved calibration when current camera aspect settings are incompatible', async () => {
     const storage = new MemoryStorage();
     saveCalibration(storage, createCalibrationProfile(
@@ -635,6 +693,7 @@ function createHarness(options: {
   trackSettings?: MediaTrackSettings;
   diagnosticsExporter?: ReturnType<typeof vi.fn>;
   onGestureLabSnapshot?: ReturnType<typeof vi.fn>;
+  onEngagementState?: ReturnType<typeof vi.fn>;
 } = {}) {
   const root = appRoot();
   const track = { stop: vi.fn(), getSettings: vi.fn(() => options.trackSettings ?? {}) };
@@ -675,6 +734,7 @@ function createHarness(options: {
     ...(options.storage ? { storage: options.storage } : {}),
     ...(options.diagnosticsExporter ? { diagnosticsExporter: options.diagnosticsExporter } : {}),
     ...(options.onGestureLabSnapshot ? { onGestureLabSnapshot: options.onGestureLabSnapshot } : {}),
+    ...(options.onEngagementState ? { onEngagementState: options.onEngagementState } : {}),
   });
   return {
     root, track, getUserMedia, video, engine, bridge, renderer, registry,
@@ -744,6 +804,23 @@ const calibrationSamples: CalibrationSample[] = [
   { target: 'bottom-right', camera: { x: 0.8, y: 0.8 } },
   { target: 'bottom-left', camera: { x: 0.2, y: 0.8 } },
 ];
+
+function calibrateHand(
+  emit: (value: GestureFrame) => void,
+  handedness: 'Left' | 'Right',
+  startTimestamp: number,
+): number {
+  let timestamp = startTimestamp;
+  for (const sample of calibrationSamples) {
+    for (let index = 0; index < 8; index += 1) {
+      const hand = tracked(handedness, 'palm', sample.camera.x, sample.camera.y);
+      emit(frame(timestamp++, handedness === 'Left' ? hand : undefined, handedness === 'Right' ? hand : undefined));
+    }
+    const hand = tracked(handedness, 'pinch', sample.camera.x, sample.camera.y);
+    emit(frame(timestamp++, handedness === 'Left' ? hand : undefined, handedness === 'Right' ? hand : undefined));
+  }
+  return timestamp;
+}
 
 function frame(
   timestamp: number,

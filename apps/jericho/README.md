@@ -69,8 +69,8 @@ isolated hardware test surface. The legacy `?view=command` three-bay operator
 view and the root `interface/` prototype are deleted.
 
 The sphere has four projections (keys 1–4): CORE (the resting reactor),
-AGENTS (the live Hermes fleet read from the Paperclip board through the
-authenticated `/api/v1/fleet` bridge proxy), TASKS (a kanban of Paperclip
+AGENTS (monitored Conductor coding sessions plus the live Hermes fleet read
+from the Paperclip board through authenticated bridge proxies), TASKS (a kanban of Paperclip
 issues plus Jericho Core missions; the mission cards carry exact-plan approval
 bindings), and BRAIN (Obsidian vault BM25 search through the vault gateway
 plus Nucleus truth). Every projection renders live data only and fails closed
@@ -95,6 +95,13 @@ and the command center still work and wake returns safely to standby.
 The production sphere uses the configured `LIVE_VOICE` directly and does not
 show a recurring voice picker. A deliberate voice change belongs in local
 configuration, not in the everyday command surface.
+
+Voice presentation and command authority are separate. Production defaults to
+`JERICHO_REQUIRE_SPEAKER_VERIFICATION=true`; a tool call is rejected unless the
+active audio window matches an evaluated, enrolled local speaker verifier.
+Without that verifier and Carlos's enrollment, conversation remains available
+but every tool fails closed with `speaker_verification_required`. Setting the
+flag to false is for isolated development and tests, not the Carlos-only setup.
 
 The focused production-runtime test surface is available at
 `/?lab=gestures`. Frontend redesign work must preserve the wiring contracts in
@@ -134,7 +141,10 @@ All semantic gestures are context-gated and require fresh tracked hands:
 
 Left and right hands have independent tracking/controllers. Loss under 350 ms
 freezes only the missing hand. The production sphere loads existing calibration
-profiles silently and shows no calibration toolbar. Advanced **CAL LEFT**,
+profiles silently. After the one required browser-permission click, Wake
+calibrates only missing hands in sequence and then enters the command center; it
+does not present left/right setup choices. The public **CALIBRATE HANDS** action
+restarts both profiles without recreating the bridge. Advanced **CAL LEFT**,
 **CAL RIGHT**, **SWAP**, **RESET**, **DIAGNOSTIC**, and **EXPORT 30S** controls
 live only in `/?lab=gestures`, the intentional hardware service surface.
 The low-level sticky-target invariants remain canonical in
@@ -146,17 +156,25 @@ During an explicitly active request, Gemini Live can invoke a typed local
 operator to open an http/https URL, launch an allowlisted application, list
 display geometry and application window counts, arrange the front window of a
 named application, inspect configured Git repositories read-only, open a
-configured repository, or create an explicit Conductor coding workspace.
-Every call returns a sanitized local receipt and appears as a compact activity
-strip on the sphere.
+configured repository, start and monitor an explicit Conductor coding
+workspace, or open the simulated Wi-Fi mapping observatory on the secondary
+display. Coding completion is shown only after the reported full 40-character
+SHA exists in the configured repository. `conductor auth login` is required
+before workspace creation. Every call returns a sanitized local receipt and
+appears as a compact activity strip on the sphere.
 
 The model never supplies a command, executable path, script, or filesystem path.
 Repository IDs resolve only through `JERICHO_GIT_REPOSITORIES`; Git inspection
 uses hardened argument arrays and cannot run hooks or repository code. Window
 inventory returns no titles, screenshots, or contents. The operator cannot
-click, type, submit, send, delete, deploy, or mutate Git state. macOS may ask for
-Accessibility permission when Jericho first inventories or arranges windows,
-and Automation permission when it creates a verified Chrome window.
+click, type, submit, send, delete, deploy, or mutate Git state. Separately
+configured MCP servers may expose explicitly allowlisted browser navigation,
+click, and typing tools; they remain behind the same active-turn and
+enrolled-speaker gate, with bounded time/output receipts. Discovery alone grants
+nothing, and arbitrary browser code, evaluation, uploads, drag/drop, and every
+unlisted MCP tool stay unavailable. macOS may ask for Accessibility permission
+when Jericho first inventories or arranges windows, and Automation permission
+when it creates a verified Chrome window.
 
 ## Connectors and execution
 
@@ -235,8 +253,9 @@ corepack pnpm build
 
 These commands are the deterministic gate for Core, orchestration, connectors,
 privacy, projections, and gesture state machines. Physical clap timing, webcam
-tracking accuracy, GPU/WASM behavior, microphone routing, a deployed Hermes v1
-operator, and real gateway delivery need explicit live checks. Use the
+tracking accuracy, GPU/WASM behavior, microphone routing, Carlos speaker
+enrollment/false-accept evaluation, a deployed Hermes v1 operator, and real
+gateway delivery need explicit live checks. Use the
 [`../../docs/JERICHO-LIVE-SMOKE-TEST.md`](../../docs/JERICHO-LIVE-SMOKE-TEST.md)
 runbook; its default path disables external systems and never sends, deploys,
 or mutates production.
