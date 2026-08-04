@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import {
   CaptureFailureKind,
@@ -202,6 +202,7 @@ export class ConnectorSupervisor {
     const existing = this.options.store.listConnectorHealth().find(
       (health) => health.connectorId === connectorId,
     );
+    const detailKey = connectorHealthObservationKey(details);
     this.options.store.upsertConnectorHealth({
       connectorId,
       status,
@@ -220,10 +221,24 @@ export class ConnectorSupervisor {
       provenance: [{
         source: 'connector-supervisor',
         sourceType: SourceType.System,
+        sourceEventId: `connector-health:${status}:${detailKey}`,
         observedAt: checkedAt,
       }],
     });
   }
+}
+
+function connectorHealthObservationKey(details: ConnectorHealth['details']): string {
+  const stable: Record<string, unknown> = {};
+  for (const key of Object.keys(details).sort()) {
+    if (key === 'failureId' || key === 'latencyMs' || key === 'checkedAt') continue;
+    const value = details[key];
+    if (value !== undefined) stable[key] = value;
+  }
+  return createHash('sha256')
+    .update(JSON.stringify(stable))
+    .digest('hex')
+    .slice(0, 16);
 }
 
 function captureFailure(

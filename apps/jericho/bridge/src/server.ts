@@ -65,6 +65,7 @@ import {
   MissionDecisionConflictError,
   ProposalDecisionConflictError,
   ReviewIntentDecisionConflictError,
+  projectPublicConnectorHealth,
   type CorrectionPreviewInput,
   type CorrectionConfirmInput,
   type CorrectionRetryInput,
@@ -376,7 +377,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       sendJson(response, 200, {
         ok: true,
         voice: { status: options.geminiApiKey ? 'available' : 'unavailable' },
-        connectors: options.store.listConnectorHealth(),
+        connectors: options.store.listConnectorHealth().map(projectPublicConnectorHealth),
         startup: publicStartupStatus(options.startupStatus ?? normalStartupStatus()),
         vault: { ready: options.vaultReady ?? false },
       });

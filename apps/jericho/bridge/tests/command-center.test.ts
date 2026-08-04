@@ -373,6 +373,7 @@ describe('command-center truth projection', () => {
     expect(snapshot.nucleus.activityPulses.length).toBeGreaterThan(0);
     expect(buildCommandCenterSnapshot(store, '2026-07-11T08:31:00.000Z').revision)
       .toBe(snapshot.revision);
+    expect(Buffer.byteLength(JSON.stringify(snapshot), 'utf8')).toBeLessThan(1.5 * 1024 * 1024);
   });
 
   it('keeps encrypted receipt integrity distinct from destination verification', () => {

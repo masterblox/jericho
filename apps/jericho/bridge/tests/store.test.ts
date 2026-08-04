@@ -21,7 +21,9 @@ import {
   type Relation,
 } from '@jericho/shared';
 
-import { JerichoStore } from '../src/core/store.js';
+import { JerichoStore, projectPublicConnectorHealth, compactConnectorHealthProvenance } from '../src/core/store.js';
+import { buildCommandCenterSnapshot } from '../src/command-center.js';
+import { CoreCrypto } from '../src/core/crypto.js';
 
 const KEY = Buffer.alloc(32, 41);
 const openStores: JerichoStore[] = [];
@@ -799,6 +801,265 @@ describe('JerichoStore connector health', () => {
       expect.objectContaining({ capability: ConnectorCapability.Search, status: ConnectorHealthStatus.Unavailable }),
     ]));
   });
+
+  it('collapses identical polling provenance while retaining status and authorization transitions', () => {
+    const store = openStore();
+    const base = makeConnectorHealth({
+      status: ConnectorHealthStatus.Healthy,
+      checkedAt: '2026-07-11T01:00:00.000Z',
+      lastSuccessAt: '2026-07-11T01:00:00.000Z',
+      consecutiveFailures: 0,
+      details: { account: 'primary' },
+      freshness: { observedAt: '2026-07-11T01:00:00.000Z' },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt: '2026-07-11T01:00:00.000Z',
+        lastSuccessAt: '2026-07-11T01:00:00.000Z',
+        details: { account: 'primary' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:00:00.000Z',
+      }],
+    });
+    store.upsertConnectorHealth(base);
+    store.upsertConnectorHealth(makeConnectorHealth({
+      ...base,
+      checkedAt: '2026-07-11T01:01:00.000Z',
+      lastSuccessAt: '2026-07-11T01:01:00.000Z',
+      freshness: { observedAt: '2026-07-11T01:01:00.000Z' },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt: '2026-07-11T01:01:00.000Z',
+        lastSuccessAt: '2026-07-11T01:01:00.000Z',
+        details: { account: 'primary' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:01:00.000Z',
+      }],
+    }));
+    const unauthorized = store.upsertConnectorHealth(makeConnectorHealth({
+      ...base,
+      status: ConnectorHealthStatus.Unauthorized,
+      checkedAt: '2026-07-11T01:02:00.000Z',
+      lastFailureAt: '2026-07-11T01:02:00.000Z',
+      consecutiveFailures: 1,
+      details: { reason: 'token_revoked' },
+      freshness: { observedAt: '2026-07-11T01:02:00.000Z' },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Unauthorized,
+        checkedAt: '2026-07-11T01:02:00.000Z',
+        lastFailureAt: '2026-07-11T01:02:00.000Z',
+        details: { reason: 'token_revoked' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:02:00.000Z',
+      }],
+    }));
+    const recovered = store.upsertConnectorHealth(makeConnectorHealth({
+      ...base,
+      status: ConnectorHealthStatus.Healthy,
+      checkedAt: '2026-07-11T01:03:00.000Z',
+      lastSuccessAt: '2026-07-11T01:03:00.000Z',
+      consecutiveFailures: 0,
+      details: { account: 'primary' },
+      freshness: { observedAt: '2026-07-11T01:03:00.000Z' },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt: '2026-07-11T01:03:00.000Z',
+        lastSuccessAt: '2026-07-11T01:03:00.000Z',
+        details: { account: 'primary' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:03:00.000Z',
+      }],
+    }));
+    const unavailable = store.upsertConnectorHealth(makeConnectorHealth({
+      ...base,
+      status: ConnectorHealthStatus.Unavailable,
+      checkedAt: '2026-07-11T01:04:00.000Z',
+      lastFailureAt: '2026-07-11T01:04:00.000Z',
+      consecutiveFailures: 1,
+      details: { reason: 'transport_timeout' },
+      freshness: { observedAt: '2026-07-11T01:04:00.000Z' },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Unavailable,
+        checkedAt: '2026-07-11T01:04:00.000Z',
+        lastFailureAt: '2026-07-11T01:04:00.000Z',
+        details: { reason: 'transport_timeout' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:04:00.000Z',
+      }],
+    }));
+
+    expect(unauthorized.provenance).toHaveLength(2);
+    expect(recovered.provenance).toHaveLength(2);
+    expect(unavailable.provenance).toHaveLength(3);
+    expect(unavailable.provenance.map((item) => item.sourceEventId)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('healthy'),
+        expect.stringContaining('unauthorized'),
+        expect.stringContaining('unavailable'),
+      ]),
+    );
+    expect(projectPublicConnectorHealth(unavailable).provenance.length).toBeLessThanOrEqual(32);
+  });
+
+  it('compacts legacy duplicated connector-health provenance on subsequent read', () => {
+    const path = temporaryDatabasePath();
+    const store = openStore(path);
+    const seed = store.upsertConnectorHealth(makeConnectorHealth({
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: '2026-07-11T01:00:00.000Z',
+      }],
+    }));
+    store.close();
+
+    const database = new DatabaseSync(path);
+    const storeUuid = metadataText(database, 'store-uuid');
+    const row = database
+      .prepare('SELECT * FROM connector_health WHERE connector_id = ?')
+      .get('gmail') as Record<string, unknown>;
+    void row;
+    const crypto = new CoreCrypto(KEY).deriveScoped(`jericho-store:${storeUuid}`);
+    const bloated: ConnectorHealth = {
+      ...seed,
+      provenance: Array.from({ length: 1_000 }, (_, index) => ({
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: new Date(Date.parse('2026-07-11T01:00:00.000Z') + index * 1000).toISOString(),
+      })),
+    };
+    const { integrityHash: _ignored, ...hashable } = bloated;
+    const integrityHash = crypto.integrityDigest(canonicalJsonForTest(hashable));
+    const record = { ...bloated, integrityHash };
+    const projection = {
+      connector_id: record.connectorId,
+      status: record.status,
+      checked_at: record.checkedAt,
+      last_success_at: record.lastSuccessAt ?? null,
+      last_failure_at: record.lastFailureAt ?? null,
+      latency_ms: record.latencyMs ?? null,
+      consecutive_failures: record.consecutiveFailures,
+      freshness_at: record.freshness.observedAt,
+    };
+    const body = crypto.encryptJson(
+      record,
+      canonicalJsonForTest([
+        'jericho-store-record',
+        2,
+        storeUuid,
+        'connector_health',
+        record.connectorId,
+        projection,
+      ]),
+    );
+    database.prepare(`
+      UPDATE connector_health
+      SET integrity_hash = ?, body = ?
+      WHERE connector_id = ?
+    `).run(integrityHash, body, 'gmail');
+    database.close();
+
+    const reopened = openStore(path);
+    const listed = reopened.listConnectorHealth();
+    expect(listed).toHaveLength(1);
+    expect(listed[0].provenance).toHaveLength(1);
+    expect(listed[0].integrityHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(listed[0].integrityHash).not.toBe(integrityHash);
+
+    const compacted = compactConnectorHealthProvenance(bloated.provenance);
+    expect(compacted).toHaveLength(1);
+  });
+
+  it('keeps connector-health bounded after 100000 identical polls', () => {
+    const store = openStore(temporaryDatabasePath());
+    const polls = 100_000;
+    const started = Date.parse('2026-07-11T01:00:00.000Z');
+    for (let index = 0; index < polls; index += 1) {
+      const checkedAt = new Date(started + index * 1000).toISOString();
+      store.upsertConnectorHealth(makeConnectorHealth({
+        status: ConnectorHealthStatus.Healthy,
+        checkedAt,
+        lastSuccessAt: checkedAt,
+        consecutiveFailures: 0,
+        details: { account: 'linear' },
+        freshness: { observedAt: checkedAt },
+        capabilities: [{
+          capability: ConnectorCapability.Capture,
+          status: ConnectorHealthStatus.Healthy,
+          checkedAt,
+          lastSuccessAt: checkedAt,
+          details: { account: 'linear' },
+        }],
+        provenance: [{
+          source: 'connector-supervisor',
+          sourceType: SourceType.System,
+          observedAt: checkedAt,
+        }],
+      }));
+    }
+
+    store.upsertConnectorHealth(makeConnectorHealth({
+      status: ConnectorHealthStatus.Unauthorized,
+      checkedAt: new Date(started + polls * 1000).toISOString(),
+      lastFailureAt: new Date(started + polls * 1000).toISOString(),
+      consecutiveFailures: 1,
+      details: { reason: 'token_revoked' },
+      freshness: { observedAt: new Date(started + polls * 1000).toISOString() },
+      capabilities: [{
+        capability: ConnectorCapability.Capture,
+        status: ConnectorHealthStatus.Unauthorized,
+        checkedAt: new Date(started + polls * 1000).toISOString(),
+        lastFailureAt: new Date(started + polls * 1000).toISOString(),
+        details: { reason: 'token_revoked' },
+      }],
+      provenance: [{
+        source: 'connector-supervisor',
+        sourceType: SourceType.System,
+        observedAt: new Date(started + polls * 1000).toISOString(),
+      }],
+    }));
+
+    const health = store.listConnectorHealth();
+    expect(health).toHaveLength(1);
+    expect(health[0].provenance.length).toBeLessThanOrEqual(8);
+    expect(health[0].status).toBe(ConnectorHealthStatus.Unauthorized);
+    const projected = health.map(projectPublicConnectorHealth);
+    const serializedHealth = Buffer.byteLength(JSON.stringify({
+      ok: true,
+      voice: { status: 'available' },
+      connectors: projected,
+      startup: { storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false },
+      vault: { ready: true },
+    }), 'utf8');
+    expect(serializedHealth).toBeLessThan(50 * 1024);
+
+    const snapshot = buildCommandCenterSnapshot(store, '2026-07-12T01:00:00.000Z');
+    const serializedSnapshot = Buffer.byteLength(JSON.stringify(snapshot), 'utf8');
+    expect(serializedSnapshot).toBeLessThan(1.5 * 1024 * 1024);
+    expect(snapshot.connectors[0]?.provenance.length).toBeLessThanOrEqual(32);
+    expect(snapshot.revision).toMatch(/^[a-f0-9]{64}$/);
+    expect(buildCommandCenterSnapshot(store, '2026-07-12T01:00:00.000Z').revision)
+      .toBe(snapshot.revision);
+  }, 120_000);
 });
 
 function openStore(path = ':memory:'): JerichoStore {

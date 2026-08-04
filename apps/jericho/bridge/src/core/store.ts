@@ -3405,6 +3405,11 @@ export class JerichoStore {
           (value) => assertConnectorHealth(value),
           (value) => value.connectorId,
         );
+        const compactedCurrentProvenance = compactConnectorHealthProvenance(
+          current.provenance,
+        );
+        const needsCompaction =
+          compactedCurrentProvenance.length < current.provenance.length;
         const mergedCapabilities = [...current.capabilities];
         let capabilityChanged = false;
         for (const incoming of normalized.capabilities) {
@@ -3425,13 +3430,26 @@ export class JerichoStore {
         const incomingIsNewer =
           timestampEpoch(normalized.checkedAt) > timestampEpoch(current.checkedAt);
         if (!capabilityChanged && !incomingIsNewer) {
-          return current;
+          if (!needsCompaction) return current;
+          const { integrityHash: _ignored, ...rest } = current;
+          return this.#writeConnectorHealthRecord({
+            ...rest,
+            provenance: compactedCurrentProvenance,
+          });
         }
-        const newest = incomingIsNewer ? normalized : current;
-        normalized.capabilities = mergedCapabilities.sort((first, second) =>
+        const mergedDetails = { ...current.details, ...normalized.details };
+        const nextCapabilities = mergedCapabilities.sort((first, second) =>
           first.capability.localeCompare(second.capability),
         );
-        normalized.status = aggregateConnectorHealth(normalized.capabilities);
+        const nextStatus = aggregateConnectorHealth(nextCapabilities);
+        const mergedProvenance = mergeConnectorHealthProvenance(
+          compactedCurrentProvenance,
+          normalized.provenance,
+          { status: nextStatus, details: normalized.details },
+        );
+        const newest = incomingIsNewer ? normalized : current;
+        normalized.capabilities = nextCapabilities;
+        normalized.status = nextStatus;
         normalized.checkedAt = laterTimestamp(current.checkedAt, normalized.checkedAt);
         normalized.lastSuccessAt = latestOptionalTimestamp(
           current.lastSuccessAt,
@@ -3447,51 +3465,25 @@ export class JerichoStore {
           timestampEpoch(current.freshness.observedAt)
           ? normalized.freshness
           : current.freshness;
-        normalized.details = { ...current.details, ...normalized.details };
-        normalized.provenance = mergeProvenance(current.provenance, normalized.provenance);
+        normalized.details = mergedDetails;
+        normalized.provenance = mergedProvenance;
+      } else {
+        normalized.capabilities = [...normalized.capabilities].sort((first, second) =>
+          first.capability.localeCompare(second.capability),
+        );
+        normalized.status = aggregateConnectorHealth(normalized.capabilities);
+        normalized.provenance = mergeConnectorHealthProvenance(
+          [],
+          normalized.provenance,
+          { status: normalized.status, details: normalized.details },
+        );
       }
 
-      normalized.status = aggregateConnectorHealth(normalized.capabilities);
       if (normalized.lastSuccessAt === undefined) delete normalized.lastSuccessAt;
       if (normalized.lastFailureAt === undefined) delete normalized.lastFailureAt;
       if (normalized.latencyMs === undefined) delete normalized.latencyMs;
 
-      const sealed = this.#sealRecord(
-        'connector_health',
-        normalized.connectorId,
-        normalized,
-      );
-      const stored = sealed.record;
-      this.#database
-        .prepare(`
-          INSERT INTO connector_health (
-            connector_id, status, checked_at, last_success_at, last_failure_at,
-            latency_ms, consecutive_failures, freshness_at, integrity_hash, body
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          ON CONFLICT (connector_id) DO UPDATE SET
-            status = excluded.status,
-            checked_at = excluded.checked_at,
-            last_success_at = excluded.last_success_at,
-            last_failure_at = excluded.last_failure_at,
-            latency_ms = excluded.latency_ms,
-            consecutive_failures = excluded.consecutive_failures,
-            freshness_at = excluded.freshness_at,
-            integrity_hash = excluded.integrity_hash,
-            body = excluded.body
-        `)
-        .run(
-          stored.connectorId,
-          stored.status,
-          stored.checkedAt,
-          stored.lastSuccessAt ?? null,
-          stored.lastFailureAt ?? null,
-          stored.latencyMs ?? null,
-          stored.consecutiveFailures,
-          stored.freshness.observedAt,
-          sealed.integrityHash,
-          sealed.body,
-        );
-      return stored;
+      return this.#writeConnectorHealthRecord(normalized);
     });
   }
 
@@ -3512,15 +3504,65 @@ export class JerichoStore {
             ORDER BY checked_at DESC, connector_id ASC
           `)
           .all();
-    return rows.map((row) =>
-      this.#readRecord<ConnectorHealth>(
+    return rows.map((row) => {
+      const health = this.#readRecord<ConnectorHealth>(
         'connector_health',
         String(row.connector_id),
         row,
         (value) => assertConnectorHealth(value),
         (value) => value.connectorId,
-      ),
+      );
+      return this.#compactStoredConnectorHealth(health);
+    });
+  }
+
+  #compactStoredConnectorHealth(health: ConnectorHealth): ConnectorHealth {
+    const compacted = compactConnectorHealthProvenance(health.provenance);
+    if (compacted.length === health.provenance.length) return health;
+    const { integrityHash: _ignored, ...rest } = health;
+    return this.upsertConnectorHealth({
+      ...rest,
+      provenance: compacted,
+    });
+  }
+
+  #writeConnectorHealthRecord(normalized: ConnectorHealth): ConnectorHealth {
+    const sealed = this.#sealRecord(
+      'connector_health',
+      normalized.connectorId,
+      normalized,
     );
+    const stored = sealed.record;
+    this.#database
+      .prepare(`
+        INSERT INTO connector_health (
+          connector_id, status, checked_at, last_success_at, last_failure_at,
+          latency_ms, consecutive_failures, freshness_at, integrity_hash, body
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (connector_id) DO UPDATE SET
+          status = excluded.status,
+          checked_at = excluded.checked_at,
+          last_success_at = excluded.last_success_at,
+          last_failure_at = excluded.last_failure_at,
+          latency_ms = excluded.latency_ms,
+          consecutive_failures = excluded.consecutive_failures,
+          freshness_at = excluded.freshness_at,
+          integrity_hash = excluded.integrity_hash,
+          body = excluded.body
+      `)
+      .run(
+        stored.connectorId,
+        stored.status,
+        stored.checkedAt,
+        stored.lastSuccessAt ?? null,
+        stored.lastFailureAt ?? null,
+        stored.latencyMs ?? null,
+        stored.consecutiveFailures,
+        stored.freshness.observedAt,
+        sealed.integrityHash,
+        sealed.body,
+      );
+    return stored;
   }
 
   #appendEventRecord(normalized: EventEnvelope): AppendEventResult {
@@ -5855,6 +5897,120 @@ function mergeProvenance(
     byValue.set(canonicalJson(item), item);
   }
   return [...byValue.values()];
+}
+
+const EPHEMERAL_CONNECTOR_HEALTH_DETAIL_KEYS = new Set([
+  'failureId',
+  'latencyMs',
+  'checkedAt',
+  'lastSuccessAt',
+  'lastFailureAt',
+  'consecutiveFailures',
+]);
+
+const MAX_PUBLIC_CONNECTOR_HEALTH_PROVENANCE = 32;
+
+export function projectPublicConnectorHealth(health: ConnectorHealth): ConnectorHealth {
+  const provenance = compactConnectorHealthProvenance(health.provenance)
+    .sort(compareConnectorHealthProvenance)
+    .slice(-MAX_PUBLIC_CONNECTOR_HEALTH_PROVENANCE);
+  return {
+    connectorId: health.connectorId,
+    status: health.status,
+    checkedAt: health.checkedAt,
+    ...(health.lastSuccessAt ? { lastSuccessAt: health.lastSuccessAt } : {}),
+    ...(health.lastFailureAt ? { lastFailureAt: health.lastFailureAt } : {}),
+    ...(health.latencyMs !== undefined ? { latencyMs: health.latencyMs } : {}),
+    consecutiveFailures: health.consecutiveFailures,
+    freshness: health.freshness,
+    capabilities: health.capabilities,
+    details: health.details,
+    provenance,
+    ...(health.integrityHash ? { integrityHash: health.integrityHash } : {}),
+  };
+}
+
+export function compactConnectorHealthProvenance(
+  provenance: readonly Provenance[],
+): Provenance[] {
+  const byIdentity = new Map<string, Provenance>();
+  for (const item of provenance) {
+    const key = connectorHealthProvenanceIdentity(item);
+    const existing = byIdentity.get(key);
+    if (!existing) {
+      byIdentity.set(key, item);
+      continue;
+    }
+    byIdentity.set(key, mergeConnectorHealthProvenanceObservation(existing, item));
+  }
+  return [...byIdentity.values()].sort(compareConnectorHealthProvenance);
+}
+
+function mergeConnectorHealthProvenance(
+  current: readonly Provenance[],
+  incoming: readonly Provenance[],
+  context: {
+    status: ConnectorHealthStatus;
+    details: JsonObject;
+  },
+): Provenance[] {
+  const annotatedIncoming = incoming.map((item) =>
+    annotateConnectorHealthProvenance(item, context.status, context.details),
+  );
+  return compactConnectorHealthProvenance([...current, ...annotatedIncoming]);
+}
+
+function annotateConnectorHealthProvenance(
+  item: Provenance,
+  status: ConnectorHealthStatus,
+  details: JsonObject,
+): Provenance {
+  if (item.sourceEventId) return item;
+  return {
+    ...item,
+    sourceEventId: `connector-health:${status}:${stableConnectorHealthDetailsKey(details)}`,
+  };
+}
+
+function connectorHealthProvenanceIdentity(item: Provenance): string {
+  return canonicalJson({
+    source: item.source,
+    sourceType: item.sourceType,
+    sourceEventId: item.sourceEventId ?? null,
+    actorId: item.actorId ?? null,
+    confidence: item.confidence ?? null,
+    integrityHash: item.integrityHash ?? null,
+  });
+}
+
+function mergeConnectorHealthProvenanceObservation(
+  current: Provenance,
+  incoming: Provenance,
+): Provenance {
+  const observedAt = laterTimestamp(current.observedAt, incoming.observedAt);
+  const receivedAt = latestOptionalTimestamp(current.receivedAt, incoming.receivedAt);
+  return {
+    ...current,
+    observedAt,
+    ...(receivedAt ? { receivedAt } : {}),
+  };
+}
+
+function compareConnectorHealthProvenance(first: Provenance, second: Provenance): number {
+  const byTime = timestampEpoch(first.observedAt) - timestampEpoch(second.observedAt);
+  if (byTime !== 0) return byTime;
+  return connectorHealthProvenanceIdentity(first)
+    .localeCompare(connectorHealthProvenanceIdentity(second));
+}
+
+function stableConnectorHealthDetailsKey(details: JsonObject): string {
+  const stable: Record<string, JsonValue> = {};
+  for (const key of Object.keys(details).sort()) {
+    if (EPHEMERAL_CONNECTOR_HEALTH_DETAIL_KEYS.has(key)) continue;
+    const value = details[key];
+    if (value !== undefined) stable[key] = value;
+  }
+  return createHash('sha256').update(canonicalJson(stable)).digest('hex').slice(0, 16);
 }
 
 function normalizeEvent(event: EventEnvelope): EventEnvelope {

@@ -36,6 +36,7 @@ import {
 } from '@jericho/shared';
 
 import type { JerichoStore } from './core/store.js';
+import { projectPublicConnectorHealth } from './core/store.js';
 import { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
 
 const ACTIVE_MISSION_STATUSES = new Set<LifecycleStatus>([
@@ -72,7 +73,7 @@ export function buildCommandCenterSnapshot(
   const decisions = store.listDecisions();
   const intents = store.listIntents();
   const changes = store.listChangeLog({ limit: 10_000 });
-  const connectors = store.listConnectorHealth();
+  const connectors = store.listConnectorHealth().map(projectPublicConnectorHealth);
   const captureFailures = store.listCaptureFailures().map(redactIdentityReviewCandidate);
   const identityReviews = store.listIdentityReviews();
   const disposedReviewIntentIds = new Set(
