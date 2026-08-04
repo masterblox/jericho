@@ -1,0 +1,83 @@
+ObjC.import('AppKit')
+
+function number(value) {
+  return Number(value)
+}
+
+function displays() {
+  const mainFrame = $.NSScreen.mainScreen.frame
+  const globalTop = number(mainFrame.origin.y) + number(mainFrame.size.height)
+  return $.NSScreen.screens.js.map((screen, index) => {
+    const frame = screen.visibleFrame
+    const x = Math.round(number(frame.origin.x))
+    const y = Math.round(globalTop - (number(frame.origin.y) + number(frame.size.height)))
+    const width = Math.round(number(frame.size.width))
+    const height = Math.round(number(frame.size.height))
+    return {
+      id: String(index),
+      index,
+      x,
+      y,
+      width,
+      height,
+      primary: index === 0,
+    }
+  })
+}
+
+function boundsFor(display) {
+  return {
+    x: display.x,
+    y: display.y,
+    width: display.width,
+    height: display.height,
+  }
+}
+
+function openChromeWindow(url) {
+  if (!/^https?:\/\/127\.0\.0\.1:\d+\//u.test(url)) throw new Error('url_not_local_experience')
+  const browser = Application('Google Chrome')
+  const before = browser.windows().length
+  browser.activate()
+  const created = browser.make({ new: 'window' })
+  created.activeTab().url = url
+  browser.activate()
+  delay(0.35)
+  const after = browser.windows().length
+  if (after <= before || !created.visible()) throw new Error('chrome_window_not_created')
+  return { application: 'Google Chrome', windowCountAfter: after }
+}
+
+function moveChromeWindow(displayId) {
+  const rows = displays()
+  const display = rows.find(item => item.id === String(displayId))
+  if (!display) throw new Error('display_not_found')
+  const browser = Application('Google Chrome')
+  if (!browser.running()) throw new Error('chrome_not_running')
+  const windows = browser.windows()
+  if (!windows.length) throw new Error('chrome_has_no_windows')
+  const targetBounds = boundsFor(display)
+  browser.activate()
+  windows[0].bounds = targetBounds
+  delay(0.25)
+  const actual = windows[0].bounds()
+  if (actual.width <= 0 || actual.height <= 0) throw new Error('window_move_failed')
+  return {
+    application: 'Google Chrome',
+    displayId: display.id,
+    bounds: {
+      x: Math.round(actual.x),
+      y: Math.round(actual.y),
+      width: Math.round(actual.width),
+      height: Math.round(actual.height),
+    },
+  }
+}
+
+function run(argv) {
+  const request = JSON.parse(argv[0] || '{}')
+  if (request.action === 'list_displays') return JSON.stringify({ displays: displays() })
+  if (request.action === 'open_chrome_window') return JSON.stringify(openChromeWindow(request.url))
+  if (request.action === 'move_chrome_window') return JSON.stringify(moveChromeWindow(request.displayId))
+  throw new Error('unknown_action')
+}

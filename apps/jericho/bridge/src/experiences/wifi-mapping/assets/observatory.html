@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="en" data-experience-id="wifi-mapping" data-experience-version="2026.08.04">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Jericho WiFi Mapping Observatory - DEMO</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #08100e;
+      --panel: rgba(14, 24, 22, 0.82);
+      --line: rgba(141, 224, 191, 0.36);
+      --text: #eaf7f1;
+      --muted: #9fbaaf;
+      --accent: #8de0bf;
+      --warn: #f1c96b;
+      --tv: #4da3ff;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      overflow: hidden;
+      background:
+        radial-gradient(circle at 22% 18%, rgba(77, 163, 255, 0.12), transparent 24rem),
+        linear-gradient(140deg, #08100e 0%, #101817 55%, #161914 100%);
+      color: var(--text);
+    }
+
+    main {
+      position: relative;
+      min-height: 100vh;
+      padding: 24px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 18px;
+    }
+
+    header, footer, aside {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      backdrop-filter: blur(12px);
+    }
+
+    header {
+      min-height: 78px;
+      padding: 16px 18px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 24px;
+      font-weight: 680;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin-top: 5px;
+      color: var(--muted);
+      font-size: 13px;
+      max-width: 760px;
+    }
+
+    .badge-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .badge {
+      border: 1px solid rgba(241, 201, 107, 0.62);
+      color: #ffe2a0;
+      background: rgba(128, 82, 11, 0.24);
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+    }
+
+    .stage {
+      min-height: 0;
+      display: grid;
+      grid-template-columns: 280px minmax(460px, 1fr) 300px;
+      gap: 18px;
+    }
+
+    aside {
+      padding: 16px;
+      align-self: stretch;
+      overflow: hidden;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 15px;
+      font-weight: 660;
+      letter-spacing: 0;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      padding: 10px 0;
+      border-top: 1px solid rgba(141, 224, 191, 0.18);
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .kv strong {
+      color: var(--text);
+      font-weight: 620;
+    }
+
+    .room {
+      position: relative;
+      min-height: 520px;
+      border: 1px solid var(--line);
+      background:
+        linear-gradient(rgba(141, 224, 191, 0.08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(141, 224, 191, 0.08) 1px, transparent 1px),
+        rgba(8, 16, 14, 0.68);
+      background-size: 34px 34px;
+      overflow: hidden;
+    }
+
+    .room::before {
+      content: "";
+      position: absolute;
+      inset: 9%;
+      border: 1px solid rgba(141, 224, 191, 0.18);
+    }
+
+    .wall-label, .floor-label {
+      position: absolute;
+      color: rgba(234, 247, 241, 0.55);
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+
+    .wall-label { top: 18px; left: 22px; }
+    .floor-label { right: 22px; bottom: 18px; }
+
+    .person {
+      position: absolute;
+      width: 80px;
+      height: 160px;
+      left: 48%;
+      top: 45%;
+      transform: translate(-50%, -50%);
+    }
+
+    .person::before {
+      content: "";
+      position: absolute;
+      left: 27px;
+      top: 0;
+      width: 26px;
+      height: 26px;
+      border-radius: 50%;
+      border: 2px solid var(--accent);
+      background: rgba(141, 224, 191, 0.12);
+      box-shadow: 0 0 18px rgba(141, 224, 191, 0.38);
+    }
+
+    .torso, .arm, .leg {
+      position: absolute;
+      background: var(--accent);
+      box-shadow: 0 0 16px rgba(141, 224, 191, 0.32);
+      transform-origin: top center;
+    }
+
+    .torso { left: 37px; top: 28px; width: 6px; height: 62px; }
+    .arm.left { left: 32px; top: 38px; width: 5px; height: 58px; transform: rotate(38deg); }
+    .arm.right { left: 43px; top: 38px; width: 5px; height: 58px; transform: rotate(-44deg); }
+    .leg.left { left: 35px; top: 88px; width: 5px; height: 66px; transform: rotate(15deg); }
+    .leg.right { left: 41px; top: 88px; width: 5px; height: 66px; transform: rotate(-18deg); }
+
+    .tv {
+      position: absolute;
+      right: 12%;
+      top: 34%;
+      width: 160px;
+      height: 92px;
+      border: 3px solid rgba(77, 163, 255, 0.82);
+      background: linear-gradient(135deg, rgba(77, 163, 255, 0.26), rgba(10, 26, 41, 0.86));
+      box-shadow: 0 0 28px rgba(77, 163, 255, 0.24);
+    }
+
+    .tv::after {
+      content: "TV PROP";
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      color: #d4ecff;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .signal {
+      position: absolute;
+      border: 1px solid rgba(141, 224, 191, 0.34);
+      border-radius: 50%;
+      transform: translate(-50%, -50%);
+      animation: pulse 3.6s ease-in-out infinite;
+    }
+
+    .signal.one { left: 48%; top: 45%; width: 190px; height: 190px; }
+    .signal.two { left: 48%; top: 45%; width: 310px; height: 310px; animation-delay: 0.9s; }
+    .signal.three { left: 48%; top: 45%; width: 440px; height: 440px; animation-delay: 1.8s; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.22; transform: translate(-50%, -50%) scale(0.96); }
+      50% { opacity: 0.68; transform: translate(-50%, -50%) scale(1.02); }
+    }
+
+    .notice {
+      padding: 13px 14px;
+      border: 1px solid rgba(241, 201, 107, 0.5);
+      background: rgba(128, 82, 11, 0.16);
+      color: #ffe7ad;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+
+    footer {
+      padding: 12px 16px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    @media (max-width: 980px) {
+      body { overflow: auto; }
+      main { min-height: auto; }
+      .stage { grid-template-columns: 1fr; }
+      .room { min-height: 460px; }
+      header { align-items: flex-start; flex-direction: column; }
+      .badge-row { justify-content: flex-start; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <header>
+      <div>
+        <h1>Jericho WiFi Mapping Observatory</h1>
+        <div class="subtitle">Pinned single-person gesture-control party demo with a TV prop. This page is simulated and uses no CSI hardware.</div>
+      </div>
+      <div class="badge-row" aria-label="simulation labels">
+        <div class="badge">DEMO</div>
+        <div class="badge">SIMULATED</div>
+        <div class="badge">NO LIVE SENSING</div>
+      </div>
+    </header>
+
+    <section class="stage">
+      <aside>
+        <h2>Experience Contract</h2>
+        <div class="kv"><span>Descriptor</span><strong>wifi-mapping</strong></div>
+        <div class="kv"><span>Scenario</span><strong>gesture_control</strong></div>
+        <div class="kv"><span>People</span><strong>1 synthetic</strong></div>
+        <div class="kv"><span>Props</span><strong>TV</strong></div>
+        <div class="kv"><span>Auto-cycle</span><strong>off</strong></div>
+      </aside>
+
+      <section class="room" aria-label="simulated room map">
+        <span class="wall-label">Simulated room boundary</span>
+        <span class="floor-label">Synthetic CSI field</span>
+        <div class="signal one"></div>
+        <div class="signal two"></div>
+        <div class="signal three"></div>
+        <div class="person" aria-label="one synthetic person">
+          <span class="torso"></span>
+          <span class="arm left"></span>
+          <span class="arm right"></span>
+          <span class="leg left"></span>
+          <span class="leg right"></span>
+        </div>
+        <div class="tv" aria-label="TV prop"></div>
+      </section>
+
+      <aside>
+        <h2>Truth Boundary</h2>
+        <div class="notice">
+          This demo does not see Carlos's wife, TV, posture, heartbeat, walls, or home. Any person, prop, vital, wall, and signal shown here is generated for demonstration only.
+        </div>
+        <div class="kv"><span>Heartbeat</span><strong>not measured</strong></div>
+        <div class="kv"><span>Posture</span><strong>not measured</strong></div>
+        <div class="kv"><span>Walls</span><strong>not measured</strong></div>
+      </aside>
+    </section>
+
+    <footer>
+      <span>Jericho local experience: wifi-mapping@2026.08.04</span>
+      <span>Stable route: /observatory.html</span>
+    </footer>
+  </main>
+</body>
+</html>
