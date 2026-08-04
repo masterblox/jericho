@@ -27,7 +27,7 @@ Jericho smoke as passed when only the automated section passed.
 
 ## 1. Automated deterministic gate
 
-From `apps/jarvis`:
+From `apps/jericho`:
 
 ```bash
 corepack pnpm install --frozen-lockfile
@@ -65,7 +65,7 @@ Use a shell that has no production Jericho process. Explicit empty exports stop
 the local `.env` file from filling connector values during this run.
 
 ```bash
-cd apps/jarvis
+cd apps/jericho
 export HOME="$(mktemp -d -t jericho-smoke.XXXXXX)"
 export JERICHO_MASTER_KEY="$(openssl rand -base64 32)"
 export JERICHO_API_TOKEN=jericho-smoke-local-only

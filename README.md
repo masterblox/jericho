@@ -1,7 +1,7 @@
 # Jericho
 
-Jericho is Carlos's private, local-first intelligence OS: an encrypted evidence graph, bounded mission orchestrator, and voice/gesture command center inspired by JARVIS.
+Jericho is Carlos's private, local-first intelligence OS: an encrypted evidence graph, bounded mission orchestrator, and voice/gesture command center inspired by JERICHO.
 
-Start with the [repository index](INDEX.md) and [canonical architecture](ARCHITECTURE.md). The active implementation, setup, and verification commands live in [`apps/jarvis`](apps/jarvis/INDEX.md).
+Start with the [repository index](INDEX.md) and [canonical architecture](ARCHITECTURE.md). The active implementation, setup, and verification commands live in [`apps/jericho`](apps/jericho/INDEX.md).
 
 From Conductor, the shared **Jericho** run action builds and starts the complete loopback runtime on the workspace port. On macOS, local Core credentials initialize in Keychain on first boot; external connector and optional voice credentials remain explicit configuration.

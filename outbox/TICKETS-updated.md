@@ -55,7 +55,7 @@ Sequential, per lane. DEV#58 = next, PA#21 = next.
 | DEV#45 | container-cleanup | CLOSED | 2026-06-20 | Host 80%→52%, nuked hermes-dashboard image (2.9G), freed ~300M |
 | DEV#46 | memories-express-admin-motion | CLOSED | 2026-06-23 | Admin motion push shipped by engineer |
 | DEV#47 | iris-runner-cron-guard | OPEN | 2026-06-25 | Iris Reply Watcher keeps getting killed by cron quiet guard |
-| DEV#48 | iris-crybex-unblock | CLOSED | 2026-06-25 | Cloned jarvis-brain, extracted Crybex branding assets |
+| DEV#48 | iris-crybex-unblock | CLOSED | 2026-06-25 | Cloned <vault-remote>, extracted Crybex branding assets |
 | DEV#49 | elevenlabs-tts-switch | RESOLVED (via edge) | 2026-06-25 | Dropped ElevenLabs; switched PA tts to edge (Microsoft neural, free) |
 | DEV#50 | iris-visual-moa | CANCELLED | 2026-06-27 | Aborted by Carlos — not needed |
 | DEV#51 | donald-skills-perms | RESOLVED | 2026-06-27 | Host-side chown on /srv/hermes/donald-data/ |

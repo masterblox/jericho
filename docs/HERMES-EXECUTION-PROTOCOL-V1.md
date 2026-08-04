@@ -95,7 +95,7 @@ not yet define independently verified destination receipts.
 Repository grants are an explicit allowlist:
 
 ```bash
-JERICHO_MISSION_REPOSITORY_GRANTS='[{"repository":"jericho","writablePaths":["apps/jarvis"],"mutationClasses":["reversible"]}]'
+JERICHO_MISSION_REPOSITORY_GRANTS='[{"repository":"jericho","writablePaths":["apps/jericho"],"mutationClasses":["reversible"]}]'
 ```
 
 A direct Carlos capture must select one configured entry in its immutable

@@ -145,8 +145,8 @@ vite.config.ts.timestamp-*
 .vite/
 
 # Electron build artifacts
-apps/jarvis/dist-electron/
-apps/jarvis/electron/dist/
+apps/jericho/dist-electron/
+apps/jericho/electron/dist/
 
 # Serena MCP tooling artifacts
 .serena/

@@ -7,7 +7,7 @@
 ## Start here
 
 1. [`ARCHITECTURE.md`](ARCHITECTURE.md) — canonical system boundaries, lifecycle, trust model, and runtime topology.
-2. [`apps/jarvis/INDEX.md`](apps/jarvis/INDEX.md) — active TypeScript implementation and verification commands.
+2. [`apps/jericho/INDEX.md`](apps/jericho/INDEX.md) — active TypeScript implementation and verification commands.
 3. [`docs/INDEX.md`](docs/INDEX.md) — active operator documentation and historical design material.
 4. [`.conductor/settings.toml`](.conductor/settings.toml) — shared local setup, run, and verification commands.
 
@@ -15,7 +15,7 @@
 
 | Root | Status | Authority / purpose |
 |---|---|---|
-| `apps/jarvis/` | **Active, canonical runtime** | Local Core, shared contracts, connectors, bounded orchestration, React command center, voice, and gestures. |
+| `apps/jericho/` | **Active, canonical runtime** | Local Core, shared contracts, connectors, bounded orchestration, React command center, voice, and gestures. |
 | `ARCHITECTURE.md` | **Active, canonical design** | Source-of-truth boundaries and implemented lifecycle. |
 | `docs/` | **Mixed; indexed** | Current operating notes plus superseded build explorations. Consult `docs/INDEX.md`. |
 | `specs/`, `scripts/`, `paperclip/`, `inbox/`, `outbox/`, `reports/` | **Legacy fleet surfaces** | Reconciled inputs or historical automation; never authoritative over direct source APIs, Git, or Jericho Core. |

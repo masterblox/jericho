@@ -14,7 +14,7 @@
 | Property | Value | Status |
 |----------|-------|--------|
 | Size | 213MB, ~11K markdown files | — |
-| Git remote | `git@github.com:masterblox/jarvis-brain.git` (SSH) | 🔴 Broken |
+| Git remote | `git@github.com:masterblox/<vault-remote>.git` (SSH) | 🔴 Broken |
 | Branch | `main` | — |
 | Last sync push | Jun 28, 2026 (8 days stale) | 🔴 Dead |
 | Uncommitted changes | 23 files (7 modified + 16 untracked) | 🟡 Dirty |
@@ -47,7 +47,7 @@ Untracked (16):
 | Method | Status | Detail |
 |--------|--------|--------|
 | SSH (`git@github.com`) | 🔴 Dead | No SSH key at `/opt/data/home/.ssh/` |
-| HTTPS with token | 🟢 Working | Token from `.netrc`. HTTP 200 on jarvis-brain repo. |
+| HTTPS with token | 🟢 Working | Token from `.netrc`. HTTP 200 on <vault-remote> repo. |
 | `.git/config` write | 🔴 Blocked | Owned `root:root 644` |
 
 ### 1.3 Sync Mechanisms (Current)
@@ -78,7 +78,7 @@ Untracked (16):
 
 ### 1.5 Conductor Workspaces
 
-No Jarvis or Karachi workspaces. Only `hermes/cayenne` and `memories-express-mvp-cp/muscat`.
+No Jericho or Karachi workspaces. Only `hermes/cayenne` and `memories-express-mvp-cp/muscat`.
 
 ---
 
@@ -87,7 +87,7 @@ No Jarvis or Karachi workspaces. Only `hermes/cayenne` and `memories-express-mvp
 ```
   Carlos's Mac                     GitHub                        VPS Droplet
   ┌──────────┐                 ┌──────────┐                 ┌──────────┐
-  │ Obsidian │ ──push 5m──►    │ jarvis-  │                 │ /opt/    │
+  │ Obsidian │ ──push 5m──►    │ vault-  │                 │ /opt/    │
   │  + Git   │                 │  brain   │    ◄── NO PULL  │ brain/   │
   │  plugin  │ ◄──pull 5m──    │  repo   │                 │          │
   └──────────┘                 └──────────┘                 └──────────┘
@@ -107,7 +107,7 @@ No Jarvis or Karachi workspaces. Only `hermes/cayenne` and `memories-express-mvp
 ```
   Carlos's Mac                     GitHub                        VPS Droplet
   ┌──────────┐                 ┌──────────┐                 ┌──────────┐
-  │ Obsidian │ ──push 5m──►    │ jarvis-  │ ◄──push 10m──   │ CRON:    │
+  │ Obsidian │ ──push 5m──►    │ vault-  │ ◄──push 10m──   │ CRON:    │
   │  + Git   │                 │  brain   │                 │ vault-   │
   │  plugin  │ ◄──pull 5m──    │  repo   │ ──pull 10m──►   │ sync.sh  │
   └──────────┘                 └──────────┘                 └──────────┘
@@ -127,7 +127,7 @@ chown -R hermes:hermes /opt/brain/.git/
 ```bash
 cd /opt/brain
 GITHUB_TOKEN=$(grep -A2 "github.com" /opt/data/home/.netrc | grep password | awk '{print $2}')
-git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/masterblox/jarvis-brain.git"
+git remote set-url origin "https://x-access-token:${GITHUB_TOKEN}@github.com/masterblox/<vault-remote>.git"
 ```
 
 **Blocker 3: Git user config** — Already set:

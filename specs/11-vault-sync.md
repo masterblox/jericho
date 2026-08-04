@@ -9,7 +9,7 @@
 ## Integration
 
 ### What's Already Working
-- Plugin: obsidian-git auto-commits + pushes to `git@github.com:masterblox/jarvis-brain.git`
+- Plugin: obsidian-git auto-commits + pushes to `git@github.com:masterblox/<vault-remote>.git`
 - Commit author: "Hermes Agent (VPS)"
 - Message: `agent: vault sync`
 - Syncs full `/opt/brain/` tree

@@ -1,0 +1,2 @@
+# Conductor worktree seed paths. Copied files must remain mode 0600.
+apps/jericho/.env

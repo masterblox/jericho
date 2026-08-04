@@ -31,7 +31,7 @@ output: /opt/data/jericho/inbox/weekly/{date}.md
 - Mechanica-Labs/launchrail
 - Mechanica-Labs/architect-ai
 - Mechanica-Labs/memories-express-mvp-cp
-- masterblox/jarvis-brain (vault)
+- masterblox/<vault-remote> (vault)
 
 ### Verification
 - [ ] Runs Friday 18:00 UTC
