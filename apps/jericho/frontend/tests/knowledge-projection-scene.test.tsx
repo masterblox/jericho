@@ -16,7 +16,6 @@ vi.mock('../src/sphere/components/peripherals', () => ({
   TasksProjection: () => null,
 }))
 vi.mock('../src/sphere/StartupHealthCard', () => ({ StartupHealthCard: () => null }))
-vi.mock('../src/sphere/VoiceCalibrationCard', () => ({ VoiceCalibrationCard: () => null }))
 
 import Scene from '../src/sphere/Scene'
 
@@ -46,6 +45,14 @@ const renderScene = () => render(<Scene
 />)
 
 describe('Scene knowledge projection', () => {
+  it('keeps daily calibration and voice-choice chrome out of the main scene', () => {
+    const view = renderScene()
+
+    expect(view.container.querySelector('.voice-calibration')).toBeNull()
+    expect(screen.queryByText(/calibrate left hand/i)).toBeNull()
+    expect(screen.queryByText(/choose.*voice/i)).toBeNull()
+  })
+
   it('renders the projection inside layer-near and keeps the reactor through every phase', () => {
     vi.useFakeTimers()
     const view = renderScene()

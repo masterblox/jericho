@@ -4,16 +4,16 @@
 general = "Read and obey the repository-root AGENTS.md before taking action. Frontier/premium root models are orchestration and integration agents by default. For work spanning multiple subsystems or independent tracks, stop before implementation and provide separate Conductor workspace dispatch prompts for economical worker models. Never create a frontier-model swarm unless Carlos explicitly authorizes premium parallelism for that task."
 
 [scripts]
-setup = "corepack pnpm --dir apps/jericho install --frozen-lockfile && corepack pnpm --dir apps/jericho build"
+setup = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm use 22 >/dev/null; fi && corepack pnpm --dir apps/jericho install --frozen-lockfile && corepack pnpm --dir apps/jericho build"
 run_mode = "nonconcurrent"
 
 [scripts.run.jericho]
-command = "corepack pnpm --dir apps/jericho start"
+command = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm use 22 >/dev/null; fi && corepack pnpm --dir apps/jericho start"
 default = true
 icon = "monitor"
 available_in = [ "local" ]
 
 [scripts.run.verify]
-command = "corepack pnpm --dir apps/jericho test && corepack pnpm --dir apps/jericho typecheck"
+command = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm use 22 >/dev/null; fi && corepack pnpm --dir apps/jericho test && corepack pnpm --dir apps/jericho typecheck"
 icon = "test-tube"
 available_in = [ "local" ]

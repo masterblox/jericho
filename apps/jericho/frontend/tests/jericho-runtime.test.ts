@@ -669,6 +669,7 @@ function createHarness(options: {
     createBridge,
     createVideo: () => video,
     eventTarget: document,
+    showAdvancedControls: true,
     ...(options.viewport ? { viewport: options.viewport } : {}),
     ...(options.observeTargets ? { observeTargets: options.observeTargets } : {}),
     ...(options.storage ? { storage: options.storage } : {}),

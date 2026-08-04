@@ -7,6 +7,16 @@ beforeEach(() => vi.stubGlobal('matchMedia', vi.fn().mockReturnValue({ matches: 
 afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('canonical Sphere startup health card', () => {
+  it('stays out of the way when startup is healthy', () => {
+    const view = render(<StartupHealthCard health={{
+      ok: true,
+      startup: { storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false },
+      vault: { ready: true }, voice: { status: 'available' }, connectors: [],
+    }} />)
+
+    expect(view.container.innerHTML).toBe('')
+  })
+
   it('renders durable Core, vault, connector, and archive-not-migrated status', () => {
     render(<StartupHealthCard health={{
       ok: true,

@@ -18,8 +18,8 @@ describe('EngageGate', () => {
     const view = render(<StrictMode><EngageGate createRuntime={createRuntime} /></StrictMode>);
 
     expect(createRuntime).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Engage local runtime' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Engaging…' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Waking…' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(createRuntime).toHaveBeenCalledTimes(1);
     expect(runtime.engage).toHaveBeenCalledTimes(1);
@@ -34,10 +34,10 @@ describe('EngageGate', () => {
       dispose: vi.fn().mockResolvedValue(undefined),
     };
     render(<EngageGate createRuntime={() => runtime} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Engage local runtime' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
 
     expect(await screen.findByText('Camera permission denied')).toBeTruthy();
-    fireEvent.click(screen.getByRole('button', { name: 'Continue with keyboard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(runtime.dispose).toHaveBeenCalledTimes(1);
   });
@@ -46,7 +46,7 @@ describe('EngageGate', () => {
     const directCreateRuntime = vi.fn();
     const direct = render(<EngageGate createRuntime={directCreateRuntime} />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Continue with keyboard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(directCreateRuntime).not.toHaveBeenCalled();
     direct.unmount();
@@ -57,8 +57,8 @@ describe('EngageGate', () => {
       dispose: vi.fn().mockResolvedValue(undefined),
     };
     render(<EngageGate createRuntime={() => runtime} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Engage local runtime' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Continue with keyboard' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Not now' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(runtime.dispose).toHaveBeenCalledTimes(1);

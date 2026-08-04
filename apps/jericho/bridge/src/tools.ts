@@ -11,6 +11,7 @@ import {
 } from '@jericho/shared';
 
 import type { JerichoStore } from './core/store.js';
+import type { LocalOperator } from './local-control/local-operator.js';
 
 export interface ToolDecl {
   name: string;
@@ -54,6 +55,87 @@ export const FUNCTION_DECLARATIONS: ToolDecl[] = [
       required: ['query'],
     },
   },
+  {
+    name: 'open_browser',
+    description: 'Open a web URL on Carlos’s Mac. Use only when Carlos explicitly asks to open, launch, browse, or show a website. This cannot click, type, submit, or read the page.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: { type: 'string', description: 'An http/https URL, or exactly about:blank' },
+        browser: { type: 'string', enum: ['default', 'chrome', 'opera', 'safari'], description: 'Defaults to Chrome for a new window and the system browser otherwise' },
+        newWindow: { type: 'boolean', description: 'Create and verify a new Chrome window; defaults to true' },
+      },
+      required: ['url'],
+    },
+  },
+  {
+    name: 'open_application',
+    description: 'Launch or focus one supported local Mac application when Carlos explicitly asks.',
+    parameters: {
+      type: 'object',
+      properties: {
+        application: {
+          type: 'string',
+          enum: ['conductor', 'cursor', 'finder', 'obsidian', 'terminal', 'vscode'],
+        },
+      },
+      required: ['application'],
+    },
+  },
+  {
+    name: 'computer_status',
+    description: 'List display geometry and running applications with top-level window counts. Returns no screenshots, window titles, or contents.',
+    parameters: { type: 'object', properties: {} },
+  },
+  {
+    name: 'arrange_window',
+    description: 'Focus and arrange the front window of a running application on a chosen display. Use only on explicit request.',
+    parameters: {
+      type: 'object',
+      properties: {
+        application: { type: 'string', description: 'Exact application name returned by computer_status' },
+        display: { type: 'integer', description: 'Display index returned by computer_status; defaults to 0' },
+        position: { type: 'string', enum: ['left', 'right', 'center', 'full'] },
+      },
+      required: ['application', 'position'],
+    },
+  },
+  {
+    name: 'inspect_repository',
+    description: 'Read bounded status/history or search tracked text in one configured repository. This never writes or runs repository code.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repository: { type: 'string', description: 'Configured repository id' },
+        query: { type: 'string', description: 'Optional fixed-string search query; omit for branch/status/history' },
+      },
+      required: ['repository'],
+    },
+  },
+  {
+    name: 'open_repository',
+    description: 'Open one configured repository in Finder, Terminal, Cursor, VS Code, or Conductor. This does not modify it.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repository: { type: 'string', description: 'Configured repository id' },
+        application: { type: 'string', enum: ['conductor', 'cursor', 'finder', 'terminal', 'vscode'] },
+      },
+      required: ['repository'],
+    },
+  },
+  {
+    name: 'create_coding_workspace',
+    description: 'Create a new local Conductor workspace for an explicit coding task in one configured repository. Use only when Carlos explicitly asks to create or start a coding workspace.',
+    parameters: {
+      type: 'object',
+      properties: {
+        repository: { type: 'string', description: 'Configured repository id' },
+        task: { type: 'string', description: 'Self-contained task for the new workspace' },
+      },
+      required: ['repository', 'task'],
+    },
+  },
 ];
 
 export interface VaultToolSearchPort {
@@ -68,6 +150,15 @@ export interface ToolExecutorOptions {
   clock?: () => string;
   idFactory?: () => string;
   vaultSearch?: VaultToolSearchPort;
+  localOperator?: Pick<LocalOperator,
+    | 'openBrowser'
+    | 'openApplication'
+    | 'computerStatus'
+    | 'arrangeWindow'
+    | 'inspectRepository'
+    | 'openRepository'
+    | 'createCodingWorkspace'
+  >;
 }
 
 export interface ToolExecutor {
@@ -170,11 +261,67 @@ export function createToolExecutor(options: ToolExecutorOptions): ToolExecutor {
         case 'search_vault': {
           return executeVaultSearch(options.vaultSearch, args);
         }
+        case 'open_browser':
+          return executeLocal(options.localOperator, () => options.localOperator!.openBrowser({
+            url: args.url, browser: args.browser, newWindow: args.newWindow,
+          }));
+        case 'open_application':
+          return executeLocal(options.localOperator, () => options.localOperator!.openApplication({
+            application: args.application,
+          }));
+        case 'computer_status':
+          return executeLocal(options.localOperator, () => options.localOperator!.computerStatus());
+        case 'arrange_window':
+          return executeLocal(options.localOperator, () => options.localOperator!.arrangeWindow({
+            application: args.application, display: args.display, position: args.position,
+          }));
+        case 'inspect_repository':
+          return executeLocal(options.localOperator, () => options.localOperator!.inspectRepository({
+            repository: args.repository, query: args.query,
+          }));
+        case 'open_repository':
+          return executeLocal(options.localOperator, () => options.localOperator!.openRepository({
+            repository: args.repository, application: args.application,
+          }));
+        case 'create_coding_workspace':
+          return executeLocal(options.localOperator, () => options.localOperator!.createCodingWorkspace({
+            repository: args.repository, task: args.task,
+          }));
         default:
           return { error: `unknown tool: ${name}` };
       }
     },
   };
+}
+
+async function executeLocal(
+  operator: ToolExecutorOptions['localOperator'],
+  action: () => Promise<object>,
+): Promise<Record<string, unknown>> {
+  if (!operator) return { available: false, status: 'unavailable', error: 'local_operator_unavailable' };
+  try {
+    return { available: true, ...(await action()) };
+  } catch (error) {
+    return {
+      available: false,
+      status: 'failed',
+      error: localActionError(error),
+    };
+  }
+}
+
+function localActionError(error: unknown): string {
+  const value = error instanceof Error ? error.message : '';
+  const allowed = new Set([
+    'accessibility_permission_required', 'application_has_no_windows',
+    'application_not_running', 'automation_permission_required', 'browser_invalid',
+    'browser_new_window_unsupported', 'browser_window_not_created', 'display_not_found',
+    'local_control_failed', 'local_control_requires_macos',
+    'repository_not_configured', 'repository_not_directory',
+    'url_must_be_http_or_https', 'window_arrangement_failed',
+  ]);
+  if (allowed.has(value) || /^[a-z][a-z0-9_]{1,80}_invalid$/u.test(value)) return value;
+  return 'local_action_failed';
 }
 
 export async function executeVaultSearch(

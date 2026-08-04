@@ -2,13 +2,15 @@
 
 **Owner:** Jericho Core
 
-**Freshness:** reviewed 2026-07-11; update with every contract, trust-boundary, or entry-point change.
+**Freshness:** reviewed 2026-08-04; update with every contract, trust-boundary, or entry-point change.
 
 ## Entry points
 
 | Area | Canonical start | Responsibility |
 |---|---|---|
 | Local service | `bridge/src/server.ts` | Loopback-only static UI, one-use browser bootstrap, authenticated API/SSE, voice WebSocket, and connector lifecycle. |
+| Local computer operator | `bridge/src/local-control/` | Typed macOS open/window/repository primitives with static subprocess arguments and sanitized receipts. |
+| Voice tool boundary | `bridge/src/tools.ts` | Gemini declarations and dispatch for truth-backed tools and the bounded local operator. |
 | Runtime composition | `bridge/src/runtime.ts` | Registers configured source connectors, fail-closed Hermes protocol health, and durable polling supervision. |
 | Private truth | `bridge/src/core/store.ts` | Encrypted SQLite records, immutable events, provenance, identities, missions, decisions, assignments, and receipts. |
 | Orchestration | `bridge/src/orchestration/` | Classify, route, plan, policy-check, lease, execute, verify, and retain bounded missions. |
@@ -24,6 +26,9 @@
 ## Knowledge and authority map
 
 - `bridge/src/connectors/adapters/` contains read-side truth adapters. Telegram enters only through the authenticated Hermes gateway.
+- `bridge/src/local-control/` accepts enums and configured repository IDs only.
+  It has no arbitrary shell, model-supplied paths, screenshots, page interaction,
+  typing, sending, deletion, repository execution, or Git-write surface.
 - `bridge/src/orchestration/connector-action-executor.ts` is the exact-plan,
   receipt-bound Telegram/WhatsApp external action boundary. Gateway
   acknowledgement alone is not a completed receipt.

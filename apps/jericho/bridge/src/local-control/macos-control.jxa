@@ -1,0 +1,156 @@
+ObjC.import('AppKit')
+
+function number(value) {
+  return Number(value)
+}
+
+function screenRows() {
+  const mainFrame = $.NSScreen.mainScreen.frame
+  const globalTop = number(mainFrame.origin.y) + number(mainFrame.size.height)
+  return $.NSScreen.screens.js.map((screen, index) => {
+    const frame = screen.visibleFrame
+    return {
+      index,
+      x: Math.round(number(frame.origin.x)),
+      y: Math.round(globalTop - (number(frame.origin.y) + number(frame.size.height))),
+      width: Math.round(number(frame.size.width)),
+      height: Math.round(number(frame.size.height)),
+    }
+  })
+}
+
+function applicationRows(systemEvents) {
+  const rows = []
+  const processes = systemEvents.applicationProcesses.whose({ backgroundOnly: false })()
+  processes.forEach(process => {
+    try {
+      const count = process.windows().length
+      if (count > 0) rows.push({ application: String(process.name()), windowCount: count })
+    } catch (_) {
+      // Some processes expose no accessible window collection.
+    }
+  })
+  ;['Google Chrome'].forEach(application => {
+    if (rows.some(row => row.application === application)) return
+    try {
+      const browser = Application(application)
+      if (browser.running()) {
+        const count = browser.windows().length
+        if (count > 0) rows.push({ application, windowCount: count })
+      }
+    } catch (_) {
+      // The browser may not be installed or may deny automation.
+    }
+  })
+  return rows.sort((left, right) => left.application.localeCompare(right.application))
+}
+
+function selectedBounds(screen, position) {
+  const gap = 8
+  const half = Math.floor((screen.width - gap) / 2)
+  if (position === 'left') {
+    return { x: screen.x, y: screen.y, width: half, height: screen.height }
+  }
+  if (position === 'right') {
+    return {
+      x: screen.x + half + gap,
+      y: screen.y,
+      width: screen.width - half - gap,
+      height: screen.height,
+    }
+  }
+  if (position === 'center') {
+    const width = Math.max(640, Math.floor(screen.width * 0.78))
+    const height = Math.max(480, Math.floor(screen.height * 0.82))
+    return {
+      x: screen.x + Math.floor((screen.width - width) / 2),
+      y: screen.y + Math.floor((screen.height - height) / 2),
+      width,
+      height,
+    }
+  }
+  return screen
+}
+
+function openBrowserWindow(request) {
+  if (request.application !== 'Google Chrome') throw new Error('browser_new_window_unsupported')
+  if (request.url !== 'about:blank' && !/^https?:\/\//u.test(request.url)) {
+    throw new Error('url_must_be_http_or_https')
+  }
+  const browser = Application(request.application)
+  const before = browser.windows().length
+  browser.activate()
+  const created = browser.make({ new: 'window' })
+  created.activeTab().url = request.url
+  browser.activate()
+  delay(0.25)
+  const after = browser.windows().length
+  const bounds = created.bounds()
+  if (after <= before || !created.visible() || bounds.width <= 0 || bounds.height <= 0) {
+    throw new Error('browser_window_not_created')
+  }
+  return { application: request.application, windowCountAfter: after }
+}
+
+function arrangeScriptableBrowser(request, bounds) {
+  const browser = Application(request.application)
+  if (!browser.running()) throw new Error('application_not_running')
+  browser.activate()
+  delay(0.08)
+  const windows = browser.windows()
+  if (!windows.length) throw new Error('application_has_no_windows')
+  const validWindows = windows.filter(candidate => {
+    const candidateBounds = candidate.bounds()
+    return candidateBounds.width > 0 && candidateBounds.height > 0
+  })
+  const window = validWindows[0] || windows[0]
+  window.bounds = bounds
+  delay(0.15)
+  const actual = window.bounds()
+  if (actual.width <= 0 || actual.height <= 0) throw new Error('window_arrangement_failed')
+  return {
+    application: request.application,
+    display: request.display,
+    position: request.position,
+    bounds: actual,
+  }
+}
+
+function arrangeWindow(systemEvents, request) {
+  const screens = screenRows()
+  const screen = screens.find(item => item.index === request.display)
+  if (!screen) throw new Error('display_not_found')
+  const bounds = selectedBounds(screen, request.position)
+  if (request.application === 'Google Chrome') {
+    return arrangeScriptableBrowser(request, bounds)
+  }
+  const process = systemEvents.applicationProcesses.byName(request.application)
+  if (!process.exists()) throw new Error('application_not_running')
+  const windows = process.windows()
+  if (!windows.length) throw new Error('application_has_no_windows')
+  process.frontmost = true
+  windows[0].position = [bounds.x, bounds.y]
+  windows[0].size = [bounds.width, bounds.height]
+  return {
+    application: request.application,
+    display: screen.index,
+    position: request.position,
+    bounds,
+  }
+}
+
+function run(argv) {
+  const request = JSON.parse(argv[0] || '{}')
+  if (request.action === 'list_displays') return JSON.stringify({ displays: screenRows() })
+  if (request.action === 'open_browser_window') {
+    return JSON.stringify(openBrowserWindow(request))
+  }
+  const systemEvents = Application('System Events')
+  if (request.action === 'list_windows') {
+    return JSON.stringify({ applications: applicationRows(systemEvents) })
+  }
+  if (request.action === 'arrange_window') {
+    return JSON.stringify(arrangeWindow(systemEvents, request))
+  }
+  throw new Error('unknown_action')
+}

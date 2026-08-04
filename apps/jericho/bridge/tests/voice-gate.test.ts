@@ -103,6 +103,62 @@ describe('voice socket privacy gate', () => {
     }));
   });
 
+  it('carries an explicit Gemini local action through the socket, operator, receipt, and tool response', async () => {
+    let callbacks: VoiceConnectionCallbacks | undefined;
+    const session = {
+      sendClientContent: vi.fn(), sendRealtimeInput: vi.fn(), sendToolResponse: vi.fn(), close: vi.fn(),
+    };
+    const voiceConnect = vi.fn<VoiceConnect>(async (request) => {
+      callbacks = request.callbacks;
+      request.callbacks.onopen();
+      return session;
+    });
+    const receipt = {
+      receiptId: 'local-e2e-1', action: 'open_browser', status: 'succeeded' as const,
+      occurredAt: '2026-08-04T00:00:00.000Z', summary: 'Opened example.com in a new window.',
+      evidence: { browser: 'safari', newWindow: true, origin: 'https://example.com' },
+    };
+    const localOperator = {
+      openBrowser: vi.fn(async () => receipt),
+      openApplication: vi.fn(async () => receipt),
+      computerStatus: vi.fn(async () => receipt),
+      arrangeWindow: vi.fn(async () => receipt),
+      inspectRepository: vi.fn(async () => receipt),
+      openRepository: vi.fn(async () => receipt),
+      createCodingWorkspace: vi.fn(async () => receipt),
+    };
+    const runtime = await startVoiceServer(voiceConnect, 1_000, { localOperator });
+    const socket = await connectSocket(runtime.port);
+    const messages = collectMessages(socket);
+    await vi.waitFor(() => expect(voiceConnect).toHaveBeenCalledOnce());
+    expect(JSON.stringify(voiceConnect.mock.calls[0][0].config)).toContain('open_browser');
+
+    socket.send(JSON.stringify({ type: 'wake' }));
+    await flushIo();
+    callbacks?.onmessage({
+      toolCall: { functionCalls: [{
+        id: 'local-action-1', name: 'open_browser',
+        args: { url: 'https://example.com', browser: 'safari', newWindow: true },
+      }] },
+    });
+
+    await vi.waitFor(() => expect(localOperator.openBrowser).toHaveBeenCalledWith({
+      url: 'https://example.com', browser: 'safari', newWindow: true,
+    }));
+    await vi.waitFor(() => expect(messages()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'tool_start', name: 'open_browser' }),
+      expect.objectContaining({
+        type: 'tool_result', name: 'open_browser',
+        result: expect.objectContaining({ available: true, receiptId: 'local-e2e-1' }),
+      }),
+    ])));
+    await vi.waitFor(() => expect(session.sendToolResponse).toHaveBeenCalledWith({
+      functionResponses: [{
+        id: 'local-action-1', name: 'open_browser', response: { available: true, ...receipt },
+      }],
+    }));
+  });
+
   it('lets Gemini search the bounded local Obsidian adapter when no RAG gateway is configured', async () => {
     let callbacks: VoiceConnectionCallbacks | undefined;
     const session = {
@@ -582,6 +638,7 @@ async function startVoiceServer(
     voicePreferencePath?: string;
     vaultSearch?: { search(query: string, limit: number, signal: AbortSignal): Promise<any> };
     obsidianSearch?: { search(query: string, limit: number): Promise<any> };
+    localOperator?: any;
   } | undefined = undefined,
 ) {
   const store = new JerichoStore({ path: ':memory:', key: Buffer.alloc(32, 93) });

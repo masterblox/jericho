@@ -2,7 +2,7 @@
 
 **Owner:** Carlos
 
-**Freshness:** 2026-07-11
+**Freshness:** 2026-08-04
 
 Jericho is a private, local-first chief of staff and command center. The local
 Core owns evidence, identity, authority, decisions, mission state, and receipts:
@@ -80,7 +80,7 @@ a pending proposal. It does not silently rewrite the truth graph.
 
 ## Voice and gesture boundary
 
-Click **Engage local runtime** before granting camera and microphone access.
+Click **Wake Jericho** before granting camera and microphone access.
 Denial or hardware failure leaves the entire command center usable by keyboard
 and pointer. Escape pauses or resumes tracking and restores the normal cursor.
 
@@ -91,6 +91,10 @@ Algieba Jericho voice. The microphone remains muted and server-side input is
 rejected until `greeting_complete`; that event opens one active turn without
 closing it. There is no browser speech-synthesis fallback. Without Gemini, Core
 and the command center still work and wake returns safely to standby.
+
+The production sphere uses the configured `LIVE_VOICE` directly and does not
+show a recurring voice picker. A deliberate voice change belongs in local
+configuration, not in the everyday command surface.
 
 The focused production-runtime test surface is available at
 `/?lab=gestures`. Frontend redesign work must preserve the wiring contracts in
@@ -129,12 +133,30 @@ All semantic gestures are context-gated and require fresh tracked hands:
   have no command semantics.
 
 Left and right hands have independent tracking/controllers. Loss under 350 ms
-freezes only the missing hand. Use **CAL LEFT** and **CAL RIGHT** for independent
-center plus four-corner calibration; **SWAP** corrects reversed handedness and
-**RESET** removes the active camera's profiles. **DIAGNOSTIC** shows local
-sanitized telemetry; **EXPORT 30S** downloads that sanitized rolling window.
+freezes only the missing hand. The production sphere loads existing calibration
+profiles silently and shows no calibration toolbar. Advanced **CAL LEFT**,
+**CAL RIGHT**, **SWAP**, **RESET**, **DIAGNOSTIC**, and **EXPORT 30S** controls
+live only in `/?lab=gestures`, the intentional hardware service surface.
 The low-level sticky-target invariants remain canonical in
 [`../../docs/JERICHO-V1-GESTURES.md`](../../docs/JERICHO-V1-GESTURES.md).
+
+## Local computer operator
+
+During an explicitly active request, Gemini Live can invoke a typed local
+operator to open an http/https URL, launch an allowlisted application, list
+display geometry and application window counts, arrange the front window of a
+named application, inspect configured Git repositories read-only, open a
+configured repository, or create an explicit Conductor coding workspace.
+Every call returns a sanitized local receipt and appears as a compact activity
+strip on the sphere.
+
+The model never supplies a command, executable path, script, or filesystem path.
+Repository IDs resolve only through `JERICHO_GIT_REPOSITORIES`; Git inspection
+uses hardened argument arrays and cannot run hooks or repository code. Window
+inventory returns no titles, screenshots, or contents. The operator cannot
+click, type, submit, send, delete, deploy, or mutate Git state. macOS may ask for
+Accessibility permission when Jericho first inventories or arranges windows,
+and Automation permission when it creates a verified Chrome window.
 
 ## Connectors and execution
 

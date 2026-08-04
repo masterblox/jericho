@@ -270,6 +270,37 @@
 .sphere-command__status { grid-column: 1 / -1; min-height: 31px; padding: 8px 16px; border-top: 1px solid var(--stroke); color: var(--cyan); font: 9px var(--mono); letter-spacing: .12em; }
 
 .startup-health { position: absolute; right: 24px; bottom: 24px; width: min(330px, calc(100vw - 48px)); z-index: 8; }
+.operator-activity {
+  position: absolute;
+  z-index: 9;
+  left: 50%;
+  bottom: 28px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  max-width: min(520px, calc(100vw - 40px));
+  padding: 8px 12px;
+  transform: translateX(-50%);
+  border: 1px solid var(--stroke);
+  background: rgba(2, 7, 10, .88);
+  color: var(--cyan);
+  box-shadow: 0 8px 30px rgba(0, 0, 0, .35);
+  font: 9px var(--mono);
+  letter-spacing: .1em;
+  pointer-events: none;
+}
+.operator-activity i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border: 1px solid currentColor;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: 0 0 12px currentColor;
+}
+.operator-activity[data-state="running"] i { animation: operator-pulse 900ms ease-in-out infinite alternate; }
+.operator-activity[data-state="failed"] { color: var(--fault); }
+@keyframes operator-pulse { to { opacity: .2; transform: scale(.72); } }
 .sphere-command__intro { max-width: 660px; }
 .sphere-command__intro > p { color: var(--muted); font: 13px/1.6 var(--sans); }
 .sphere-command__intro dl, .sphere-mission-detail dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; }

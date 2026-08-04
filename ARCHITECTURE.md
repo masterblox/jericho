@@ -4,7 +4,7 @@
 
 **Architecture owner:** Jericho Core
 
-**Freshness:** 2026-07-11
+**Freshness:** 2026-08-04
 
 Jericho is Carlos's private, local-first chief of staff. It turns evidence into bounded missions and orchestrates registered agents after one explicit approval:
 
@@ -38,6 +38,9 @@ The laptop owns personal context and authority. Remote Hermes services may colle
 `apps/jericho` is the canonical implementation:
 
 - `bridge/` is one loopback TypeScript service. It serves the built React UI, authenticated HTTP/SSE, the optional voice WebSocket, connector polling, and mission execution from one origin.
+- `bridge/src/local-control/` is the typed macOS operator boundary for explicit,
+  reversible navigation, window arrangement, and bounded repository reads. The
+  model never provides commands, executables, scripts, or absolute paths.
 - `shared/` contains versioned contracts used by Core and the command center.
 - `frontend/` is the cinematic command center and disposable local voice/gesture runtime.
 - `frontend/public/mediapipe/` contains the same-origin gesture model and all
@@ -162,12 +165,30 @@ Open right palm aims, open left palm scrolls communications, fresh right pinch f
 
 The React tree owns application state and `#app`. The gesture renderer owns only a disposable body overlay. Hardware starts from an explicit user engagement and tears down completely on dismissal, failure, or unmount. Keyboard and pointer operation remain complete fallbacks.
 
+An explicit active request may use the typed local operator to open an http/https
+URL or allowlisted application, inventory display geometry and application
+window counts, arrange one front window, inspect or open an allowlisted Git
+repository, or open an explicit Conductor workspace request. Static `execFile`
+argument arrays and a bundled JXA program implement those actions; no model text
+is evaluated as code. Results are sanitized ephemeral receipts projected by a
+compact live activity strip. This boundary exposes no screenshots, window
+titles or contents, arbitrary filesystem access, page interaction, typing,
+submitting, sending, deletion, deployment, repository-code execution, or Git
+mutation. Workspace creation is available only when Carlos explicitly asks to
+create or start one.
+
+The main sphere loads stored hand profiles and the configured voice without
+recurring setup cards. Calibration, hand-role reset, and diagnostics remain in
+the explicit `/?lab=gestures` hardware service surface.
+
 ## Privacy invariants
 
 - Require loopback binding; reject non-loopback startup and untrusted Host and Origin values.
 - Require an authenticated bearer or per-process same-origin session for Core APIs and voice upgrade. Production prints a secret, one-use bootstrap URL; opening `/` alone never grants authority. Bearer clients may explicitly `POST /api/v1/session`.
 - Never persist or log audio frames, raw hand landmarks, or secrets. Private source payloads and a completed spoken transcript may exist only inside authenticated encrypted evidence records; sanitized gesture diagnostics contain no frames or landmarks.
 - Route only semantic gesture events into application state.
+- Keep local computer actions on typed enums and configured repository IDs; never
+  accept model-supplied commands, executables, scripts, or absolute paths.
 - Keep remote workers on minimum evidence and permissions.
 - Record estimated and actual mission cost without recording secret prompts or credentials.
 - Fail closed on wrong keys, tampered ciphertext, stale plan versions, expired leases, scope expansion, and unverifiable external results.

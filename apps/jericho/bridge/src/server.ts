@@ -1,4 +1,3 @@
-import { homedir } from 'node:os';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, realpathSync, statSync } from 'node:fs';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
@@ -94,8 +93,10 @@ import {
   executeVaultSearch,
   FUNCTION_DECLARATIONS,
   type ToolExecutor,
+  type ToolExecutorOptions,
   type VaultToolSearchPort,
 } from './tools.js';
+import { LocalOperator } from './local-control/local-operator.js';
 import {
   advancePhase,
   createIsabellaGuidedSession,
@@ -202,6 +203,7 @@ export interface JerichoServerOptions {
   obsidianOpen?: { open(relativePath: string): Promise<{ relativePath: string }> };
   ssePollMs?: number;
   toolExecutor?: ToolExecutor;
+  localOperator?: ToolExecutorOptions['localOperator'];
   clock?: () => string;
   decisionIdFactory?: () => string;
   voiceConnect?: VoiceConnect;
@@ -269,6 +271,7 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
   const tools = options.toolExecutor ?? createToolExecutor({
     store: options.store,
     ...(voiceVaultSearch ? { vaultSearch: voiceVaultSearch } : {}),
+    ...(options.localOperator ? { localOperator: options.localOperator } : {}),
   });
   const httpServer = createServer((request, response) => {
     void handleRequest(request, response).catch((error) => {
@@ -2767,6 +2770,7 @@ async function main(): Promise<void> {
     connectors,
     ...(execution ? { execution } : {}),
   });
+  const localOperator = new LocalOperator({ repositories: config.gitRepositories });
   const server = createJerichoServer({
     store,
     apiToken: config.apiToken,
@@ -2780,7 +2784,7 @@ async function main(): Promise<void> {
     personaAutoRevertMs: config.personaAutoRevertMs,
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
-    voicePreferencePath: join(homedir(), '.jericho', 'presentation-voice.json'),
+    localOperator,
     startupStatus,
     vaultReady: Boolean(config.obsidianVaultPath || config.vaultGatewayUrl),
     frontendDir: resolve(fileURLToPath(new URL('../../frontend/dist', import.meta.url))),

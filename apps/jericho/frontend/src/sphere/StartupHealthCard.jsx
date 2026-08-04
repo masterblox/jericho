@@ -6,6 +6,7 @@ export function StartupHealthCard({ health }) {
   const connectors = health.connectors ?? []
   const healthy = connectors.filter(item => item.status === 'healthy').length
   const recovery = health.startup?.recovery
+  if (health.ok && !recovery) return null
   const status = recovery ? 'RECOVERED' : health.ok ? 'READY' : 'DEGRADED'
   return <JerichoCard
     className="startup-health"

@@ -54,9 +54,9 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
   return (
     <section className="jericho-engage-overlay" role="dialog" aria-modal="true" aria-labelledby="jericho-engage-title">
       <div className="jericho-engage-panel">
-        <span className="jericho-eyebrow">LOCAL HARDWARE BOUNDARY</span>
-        <h2 id="jericho-engage-title">Enable voice + gestures</h2>
-        <p>Camera frames and standby clap analysis stay on this laptop. After wake, active-turn microphone audio is sent only to the configured Gemini Live session. The command center remains fully usable by keyboard.</p>
+        <span className="jericho-eyebrow">JERICHO</span>
+        <h2 id="jericho-engage-title">Wake Jericho</h2>
+        <p>One click enables voice and hand control. Camera processing stays on this Mac; microphone audio reaches Gemini only while Jericho is awake.</p>
         {error && <p className="jericho-engage-error" role="alert">{error}</p>}
         <div className="jericho-engage-actions">
           {state !== 'failed' && (
@@ -66,7 +66,7 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
               disabled={state === 'engaging'}
               onClick={() => void engage()}
             >
-              {state === 'engaging' ? 'Engaging…' : 'Engage local runtime'}
+              {state === 'engaging' ? 'Waking…' : 'Wake Jericho'}
             </button>
           )}
           <button
@@ -74,7 +74,7 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
             type="button"
             onClick={() => void continueWithKeyboard()}
           >
-            Continue with keyboard
+            Not now
           </button>
         </div>
       </div>

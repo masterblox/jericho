@@ -25,6 +25,41 @@ afterEach(() => {
 });
 
 describe('truth-backed voice tools', () => {
+  it('exposes bounded computer and repository actions through the shared voice tool executor', async () => {
+    const store = openStore();
+    const localReceipt = {
+      receiptId: 'local-1', action: 'open_browser', status: 'succeeded' as const,
+      occurredAt: T0, summary: 'Opened example.com in a new window.',
+      evidence: { browser: 'safari' },
+    };
+    const localOperator = {
+      openBrowser: vi.fn(async () => localReceipt),
+      openApplication: vi.fn(async () => localReceipt),
+      computerStatus: vi.fn(async () => localReceipt),
+      arrangeWindow: vi.fn(async () => localReceipt),
+      inspectRepository: vi.fn(async () => localReceipt),
+      openRepository: vi.fn(async () => localReceipt),
+      createCodingWorkspace: vi.fn(async () => localReceipt),
+    };
+    const tools = createToolExecutor({ store, localOperator });
+
+    expect(FUNCTION_DECLARATIONS.map(item => item.name)).toEqual(expect.arrayContaining([
+      'open_browser', 'open_application', 'computer_status', 'arrange_window',
+      'inspect_repository', 'open_repository', 'create_coding_workspace',
+    ]));
+    await expect(tools.execute('open_browser', {
+      url: 'https://example.com', browser: 'safari', newWindow: true,
+    })).resolves.toEqual({ available: true, ...localReceipt });
+    expect(localOperator.openBrowser).toHaveBeenCalledWith({
+      url: 'https://example.com', browser: 'safari', newWindow: true,
+    });
+
+    const unavailable = createToolExecutor({ store });
+    await expect(unavailable.execute('computer_status', {})).resolves.toEqual({
+      available: false, status: 'unavailable', error: 'local_operator_unavailable',
+    });
+  });
+
   it('declares and executes bounded vault search without mutation authority', async () => {
     const store = openStore();
     const search = vi.fn(async () => ({

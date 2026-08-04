@@ -93,6 +93,7 @@ export function GestureLab({ root }: { root: HTMLElement }) {
       registry: new GestureTargetRegistry(document),
       createVideo: () => camera,
       onGestureLabSnapshot: setSnapshot,
+      showAdvancedControls: true,
     });
     runtime.current = next;
     return next;

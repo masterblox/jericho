@@ -110,6 +110,8 @@ export interface JerichoRuntimeOptions {
   storage?: RuntimeStorage;
   diagnosticsExporter?: (contents: string) => void;
   onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
+  /** Exposes calibration and diagnostic chrome in the dedicated hardware lab only. */
+  showAdvancedControls?: boolean;
 }
 
 export interface GestureLabSnapshot extends SanitizedDiagnosticSnapshot {
@@ -204,13 +206,15 @@ export class JerichoRuntime {
       downloadDiagnostics(options.root.ownerDocument, contents));
     this.onGestureLabSnapshot = options.onGestureLabSnapshot;
     this.swapped = safeGet(this.storage, 'jericho.swap-hands') === 'true';
-    this.renderer.configureControls({
-      calibrate: (handedness) => this.startCalibration(handedness),
-      reset: () => this.resetCalibration(),
-      swap: () => this.toggleSwap(),
-      diagnostics: () => this.toggleDiagnostics(),
-      exportDiagnostics: () => this.diagnosticsExporter(this.recorder.export()),
-    });
+    if (options.showAdvancedControls) {
+      this.renderer.configureControls({
+        calibrate: (handedness) => this.startCalibration(handedness),
+        reset: () => this.resetCalibration(),
+        swap: () => this.toggleSwap(),
+        diagnostics: () => this.toggleDiagnostics(),
+        exportDiagnostics: () => this.diagnosticsExporter(this.recorder.export()),
+      });
+    }
     this.updateControlState();
   }
 
@@ -325,7 +329,12 @@ export class JerichoRuntime {
             detail: { voice, confirmedAt },
           }));
         },
-        onToolStart: (name) => this.setStatus(`agent action · ${name}`),
+        onToolStart: (name) => {
+          this.setStatus(`agent action · ${name}`);
+          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-start', {
+            detail: { name },
+          }));
+        },
         onToolResult: (name, result) => {
           this.setStatus(`agent action complete · ${name}`);
           this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-result', {

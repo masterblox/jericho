@@ -50,7 +50,7 @@ errors**.
 
 ## 1. Engage the runtime (once)
 
-On the sphere, click **Engage local runtime** and allow **camera** + **microphone**
+On the sphere, click **Wake Jericho** and allow **camera** + **microphone**
 (or **Continue with keyboard** to test without hardware).
 - Camera frames and hand landmarks never leave the browser; the mic feeds only the
   local clap detector until you wake it.
@@ -64,7 +64,7 @@ On the sphere, click **Engage local runtime** and allow **camera** + **microphon
 Voice = **wake, then talk**. There is no fixed phrase grammar — you wake it, it greets
 you, then whatever you say in the open turn becomes a captured signal in Core.
 
-Do this **on the sphere** (`/`), after Engage local runtime:
+Do this **on the sphere** (`/`), after Wake Jericho:
 
 | # | Do this | Expect |
 |---|---|---|
