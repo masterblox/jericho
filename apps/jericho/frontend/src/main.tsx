@@ -33,10 +33,11 @@ createRoot(rootElement).render(
       <Suspense fallback={<div className="jericho-loading">CONNECTING TO JERICHO CORE</div>}>
         <SphereShell store={store} client={client} />
       </Suspense>
-      <EngageGate createRuntime={() => new JerichoRuntime({
+      <EngageGate createRuntime={(onState) => new JerichoRuntime({
         root: rootElement,
         registry: gestureTargets,
         showAdvancedControls: false,
+        onEngagementState: onState,
       })} />
     </>}
   </StrictMode>,

@@ -398,10 +398,26 @@
   position: absolute; top: 22px; right: 26px; z-index: 6;
   border: 1px solid var(--stroke-dim);
   padding: 7px 11px;
+  min-height: 44px;
   color: var(--muted);
   letter-spacing: .12em;
   background: rgba(3, 6, 8, .5);
 }
+
+[data-gesture-target="recalibrate"] {
+  position: absolute; top: 22px; right: 102px; z-index: 6;
+  border: 1px solid var(--stroke-dim);
+  padding: 7px 11px;
+  min-height: 44px;
+  min-width: 44px;
+  color: var(--muted);
+  letter-spacing: .12em;
+  background: rgba(3, 6, 8, .5);
+  cursor: pointer;
+}
+[data-gesture-target="recalibrate"]:hover,
+[data-gesture-target="recalibrate"]:focus-visible { border-color: var(--stroke); color: var(--text); }
+
 .k-sound-toggle:hover, .k-sound-toggle:focus-visible { border-color: var(--stroke); color: var(--text); }
 .k-sound-toggle[aria-pressed="true"] { color: var(--cyan); border-color: var(--stroke); }
 

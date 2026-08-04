@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import type { EngagementState } from './jericho-runtime';
 
 export interface RuntimeLifecyclePort {
   engage(): Promise<void>;
@@ -6,12 +7,16 @@ export interface RuntimeLifecyclePort {
 }
 
 export interface EngageGateProps {
-  createRuntime: () => RuntimeLifecyclePort;
+  createRuntime: (onEngagementState: (state: EngagementState) => void) => RuntimeLifecyclePort;
 }
 
-type GateState = 'idle' | 'engaging' | 'engaged' | 'failed' | 'dismissed';
+type GateState = 'idle' | 'engaging' | 'calibrating_left' | 'calibrating_right' | 'engaged' | 'failed' | 'dismissed';
 
-/** Hardware is constructed only from the explicit button event, never an effect. */
+const CALIBRATION_LABELS: Record<string, string> = {
+  calibrating_left: 'Calibrating left hand — hold palm visible to camera',
+  calibrating_right: 'Calibrating right hand — hold palm visible to camera',
+};
+
 export function EngageGate({ createRuntime }: EngageGateProps) {
   const runtime = useRef<RuntimeLifecyclePort | null>(null);
   const engaging = useRef(false);
@@ -23,12 +28,20 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
     runtime.current = null;
   }, []);
 
+  const handleEngagementState = (next: EngagementState) => {
+    if (next === 'engaged') {
+      setState('engaged');
+    } else if (next === 'calibrating_left' || next === 'calibrating_right') {
+      setState(next);
+    }
+  };
+
   const engage = async () => {
     if (engaging.current || runtime.current) return;
     engaging.current = true;
     setState('engaging');
     setError(undefined);
-    const next = createRuntime();
+    const next = createRuntime(handleEngagementState);
     runtime.current = next;
     try {
       await next.engage();
@@ -51,32 +64,41 @@ export function EngageGate({ createRuntime }: EngageGateProps) {
   };
 
   if (state === 'engaged' || state === 'dismissed') return null;
+
+  const calibrating = state === 'calibrating_left' || state === 'calibrating_right';
+
   return (
     <section className="jericho-engage-overlay" role="dialog" aria-modal="true" aria-labelledby="jericho-engage-title">
       <div className="jericho-engage-panel">
         <span className="jericho-eyebrow">JERICHO</span>
         <h2 id="jericho-engage-title">Wake Jericho</h2>
-        <p>One click enables voice and hand control. Camera processing stays on this Mac; microphone audio reaches Gemini only while Jericho is awake.</p>
+        {calibrating ? (
+          <p className="jericho-engage-calibrating">{CALIBRATION_LABELS[state]}</p>
+        ) : (
+          <p>One click enables voice and hand control. Camera processing stays on this Mac; microphone audio reaches Gemini only while Jericho is awake.</p>
+        )}
         {error && <p className="jericho-engage-error" role="alert">{error}</p>}
-        <div className="jericho-engage-actions">
-          {state !== 'failed' && (
+        {!calibrating && (
+          <div className="jericho-engage-actions">
+            {state !== 'failed' && (
+              <button
+                className="jericho-engage-button"
+                type="button"
+                disabled={state === 'engaging'}
+                onClick={() => void engage()}
+              >
+                {state === 'engaging' ? 'Waking…' : 'Wake Jericho'}
+              </button>
+            )}
             <button
-              className="jericho-engage-button"
+              className="jericho-engage-button jericho-engage-button--secondary"
               type="button"
-              disabled={state === 'engaging'}
-              onClick={() => void engage()}
+              onClick={() => void continueWithKeyboard()}
             >
-              {state === 'engaging' ? 'Waking…' : 'Wake Jericho'}
+              Not now
             </button>
-          )}
-          <button
-            className="jericho-engage-button jericho-engage-button--secondary"
-            type="button"
-            onClick={() => void continueWithKeyboard()}
-          >
-            Not now
-          </button>
-        </div>
+          </div>
+        )}
       </div>
     </section>
   );

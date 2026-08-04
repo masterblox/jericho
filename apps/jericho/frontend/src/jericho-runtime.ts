@@ -96,6 +96,8 @@ export interface RuntimeStorage {
   removeItem(key: string): void;
 }
 
+export type EngagementState = 'idle' | 'engaging' | 'calibrating_left' | 'calibrating_right' | 'engaged';
+
 export interface JerichoRuntimeOptions {
   root: HTMLElement;
   registry: GestureTargetRegistry;
@@ -112,6 +114,7 @@ export interface JerichoRuntimeOptions {
   onGestureLabSnapshot?: (snapshot: GestureLabSnapshot) => void;
   /** Exposes calibration and diagnostic chrome in the dedicated hardware lab only. */
   showAdvancedControls?: boolean;
+  onEngagementState?: (state: EngagementState) => void;
 }
 
 export interface GestureLabSnapshot extends SanitizedDiagnosticSnapshot {
@@ -189,6 +192,11 @@ export class JerichoRuntime {
   private retryTargets: CalibrationTarget[] = [];
   private retryIndex = 0;
 
+  private readonly onEngagementState?: (state: EngagementState) => void;
+  private autoCalibrationQueue: Handedness[] = [];
+  private autoCalibrationMode = false;
+  private finishEngagementFn: (() => void) | null = null;
+
   constructor(options: JerichoRuntimeOptions) {
     this.root = options.root;
     this.registry = options.registry;
@@ -205,6 +213,7 @@ export class JerichoRuntime {
     this.diagnosticsExporter = options.diagnosticsExporter ?? ((contents) =>
       downloadDiagnostics(options.root.ownerDocument, contents));
     this.onGestureLabSnapshot = options.onGestureLabSnapshot;
+    this.onEngagementState = options.onEngagementState;
     this.swapped = safeGet(this.storage, 'jericho.swap-hands') === 'true';
     if (options.showAdvancedControls) {
       this.renderer.configureControls({
@@ -312,83 +321,21 @@ export class JerichoRuntime {
           releaseRatio: profile.pinchReleaseRatio,
         });
       }
-      this.bridge = this.createBridge({
-        onReady: () => this.setStatus('voice and gestures online'),
-        onStatus: (value) => this.setStatus(`voice ${value}`),
-        onWake: (source) => { this.lastWakeSource = source; },
-        onVoices: (voices, active, meta) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voices', {
-            detail: { voices, active, confirmed: meta?.confirmed, auditionSentence: meta?.auditionSentence },
-          }));
-        },
-        onVoicePreview: (state) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-preview', { detail: state }));
-        },
-        onVoiceConfirmed: (voice, confirmedAt) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-confirmed', {
-            detail: { voice, confirmedAt },
-          }));
-        },
-        onToolStart: (name) => {
-          this.setStatus(`agent action · ${name}`);
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-start', {
-            detail: { name },
-          }));
-        },
-        onToolResult: (name, result) => {
-          this.setStatus(`agent action complete · ${name}`);
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-result', {
-            detail: { name, result },
-          }));
-        },
-        onGuidedTestStart: (test, phase) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-start', {
-            detail: { test, phase },
-          }));
-        },
-        onGuidedTestResume: (test, phase) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-resume', {
-            detail: { test, phase },
-          }));
-        },
-        onGuidedTestEnd: (test) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-end', {
-            detail: { test },
-          }));
-        },
-        onGuidedTestPhase: (detail) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-phase', { detail }));
-        },
-        onGroundedResult: (result) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent(GROUNDED_RESULT_EVENT, {
-            detail: result,
-          }));
-        },
-        onSpeechPlaying: (playing) => {
-          this.root.ownerDocument.dispatchEvent(new CustomEvent(SPEECH_PLAYING_EVENT, {
-            detail: { playing },
-          }));
-        },
-        onModePending: (_mode, name) => {
-          this.root.classList.add('jericho-persona--pending');
-          this.setStatus(`persona pending · ${name}`);
-        },
-        onModeChange: (mode, name) => {
-          this.root.classList.remove('jericho-persona--pending');
-          this.root.classList.toggle('jericho-persona--megatron', mode === 'megatron');
-          this.setStatus(`persona active · ${name}`);
-        },
-        onError: (message) => this.setStatus(`voice unavailable · ${message}`),
-      });
-      this.assertNotDisposed();
       this.engine.start(this.onFrame);
-      await this.bridge.start();
       this.assertNotDisposed();
-      this.bindVoiceCalibrationEvents();
-      this.eventTarget.addEventListener('keydown', this.onKeyDown);
-      this.keyListenerAttached = true;
-      this.engaged = true;
-      this.setStatus('gestures online');
+
+      const missingHands = (['Left', 'Right'] as const).filter((h) => !this.profiles.has(h));
+      if (missingHands.length > 0 && this.onEngagementState) {
+        this.autoCalibrationMode = true;
+        this.autoCalibrationQueue = missingHands;
+        this.onEngagementState('calibrating_left');
+        this.startCalibration(missingHands[0]);
+        return new Promise<void>((resolve) => {
+          this.finishEngagementFn = resolve;
+        });
+      }
+
+      await this.initializeBridgeAndEngage();
     } catch (error) {
       this.stopObserving?.();
       this.stopObserving = null;
@@ -406,6 +353,86 @@ export class JerichoRuntime {
       if (!this.disposed) this.setStatus('camera unavailable · keyboard mode remains active');
       throw error;
     }
+  }
+
+  private async initializeBridgeAndEngage(): Promise<void> {
+    this.bridge = this.createBridge({
+      onReady: () => this.setStatus('voice and gestures online'),
+      onStatus: (value) => this.setStatus(`voice ${value}`),
+      onWake: (source) => { this.lastWakeSource = source; },
+      onVoices: (voices, active, meta) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voices', {
+          detail: { voices, active, confirmed: meta?.confirmed, auditionSentence: meta?.auditionSentence },
+        }));
+      },
+      onVoicePreview: (state) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-preview', { detail: state }));
+      },
+      onVoiceConfirmed: (voice, confirmedAt) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-confirmed', {
+          detail: { voice, confirmedAt },
+        }));
+      },
+      onToolStart: (name) => {
+        this.setStatus(`agent action · ${name}`);
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-start', {
+          detail: { name },
+        }));
+      },
+      onToolResult: (name, result) => {
+        this.setStatus(`agent action complete · ${name}`);
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voice-tool-result', {
+          detail: { name, result },
+        }));
+      },
+      onGuidedTestStart: (test, phase) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-start', {
+          detail: { test, phase },
+        }));
+      },
+      onGuidedTestResume: (test, phase) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-resume', {
+          detail: { test, phase },
+        }));
+      },
+      onGuidedTestEnd: (test) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-end', {
+          detail: { test },
+        }));
+      },
+      onGuidedTestPhase: (detail) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:guided-test-phase', { detail }));
+      },
+      onGroundedResult: (result) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(GROUNDED_RESULT_EVENT, {
+          detail: result,
+        }));
+      },
+      onSpeechPlaying: (playing) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(SPEECH_PLAYING_EVENT, {
+          detail: { playing },
+        }));
+      },
+      onModePending: (_mode, name) => {
+        this.root.classList.add('jericho-persona--pending');
+        this.setStatus(`persona pending · ${name}`);
+      },
+      onModeChange: (mode, name) => {
+        this.root.classList.remove('jericho-persona--pending');
+        this.root.classList.toggle('jericho-persona--megatron', mode === 'megatron');
+        this.setStatus(`persona active · ${name}`);
+      },
+      onError: (message) => this.setStatus(`voice unavailable · ${message}`),
+    });
+    this.assertNotDisposed();
+    await this.bridge.start();
+    this.assertNotDisposed();
+    this.bindVoiceCalibrationEvents();
+    this.eventTarget.addEventListener('keydown', this.onKeyDown);
+    this.keyListenerAttached = true;
+    this.engaged = true;
+    this.onEngagementState?.('engaged');
+    this.setStatus('gestures online');
   }
 
   private readonly onFrame = (frame: GestureFrame) => {
@@ -947,6 +974,22 @@ export class JerichoRuntime {
     this.renderer.showCalibration(null);
     this.updateControlState();
     this.setStatus(`${handedness.toLowerCase()} hand calibrated · residual ${(profile.residualError * 100).toFixed(1)}%`);
+
+    if (this.autoCalibrationMode) {
+      const remaining = this.autoCalibrationQueue.filter((h) => !this.profiles.has(h));
+      if (remaining.length > 0) {
+        const nextHand = remaining[0];
+        const nextState = nextHand === 'Left' ? 'calibrating_left' as const : 'calibrating_right' as const;
+        this.onEngagementState?.(nextState);
+        this.startCalibration(nextHand);
+      } else {
+        void this.initializeBridgeAndEngage().then(() => {
+          this.finishEngagementFn?.();
+          this.finishEngagementFn = null;
+          this.autoCalibrationMode = false;
+        });
+      }
+    }
   }
 
   private calibrationMessage(): string {

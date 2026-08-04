@@ -6,7 +6,7 @@ import { StartupHealthCard } from './StartupHealthCard'
 import { KnowledgeProjection } from './KnowledgeProjection'
 import { OperatorActivity } from './OperatorActivity'
 
-export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, onVaultSearch, onOpenCommand, knowledgeActions }) {
+export default function Scene({ coreState, mode, selectedAgent, activeView, setActiveView, liveData, health, healthStatus, onVaultSearch, onOpenCommand, onRecalibrate, knowledgeActions }) {
   const stage = React.useRef(null)
   const frame = React.useRef(0)
   const gestureOffset = React.useRef({ x: 0, y: 0 })
@@ -67,7 +67,16 @@ export default function Scene({ coreState, mode, selectedAgent, activeView, setA
         <CoreAssembly onOpenCommand={onOpenCommand} />
       </div>
       <div className="layer layer-near">
-        <StartupHealthCard health={health} />
+        <StartupHealthCard health={health} healthStatus={healthStatus} />
+        {onRecalibrate && (
+          <button
+            type="button"
+            className="k-sound-toggle micro"
+            data-gesture-target="recalibrate"
+            aria-label="Recalibrate hand tracking"
+            onClick={onRecalibrate}
+          >RCAL</button>
+        )}
         <KnowledgeProjection actions={knowledgeActions} />
         <OperatorActivity />
         {activeView === 'AGENTS' && <AgentsProjection fleet={liveData?.fleet} />}

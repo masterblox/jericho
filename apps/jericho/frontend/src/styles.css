@@ -68,6 +68,8 @@ textarea {
 
 button {
   color: inherit;
+  min-height: 44px;
+  min-width: 44px;
 }
 
 button:focus-visible,
@@ -1439,6 +1441,15 @@ a:focus-visible {
 
 .jericho-engage-error {
   color: var(--jericho-red) !important;
+}
+
+.jericho-engage-calibrating {
+  color: var(--jericho-amber) !important;
+  animation: engage-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes engage-pulse {
+  50% { opacity: 0.6; }
 }
 
 #app.gestures-frozen::after {

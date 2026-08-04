@@ -66,4 +66,12 @@ describe('EngageGate', () => {
     await Promise.resolve();
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+
+  it('calls createRuntime with the engagement state callback', async () => {
+    const runtime = { engage: vi.fn().mockResolvedValue(undefined), dispose: vi.fn().mockResolvedValue(undefined) };
+    const createRuntime = vi.fn(() => runtime);
+    render(<EngageGate createRuntime={createRuntime} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Wake Jericho' }));
+    expect(createRuntime).toHaveBeenCalledWith(expect.any(Function));
+  });
 });

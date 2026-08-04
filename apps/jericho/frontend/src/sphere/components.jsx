@@ -45,7 +45,10 @@ export function DispatchModal({ directive, onClose, onDispatch }) {
           ? <p className="risk-note high"><span>HIGH RISK</span> DESTRUCTIVE / EXTERNAL LANGUAGE DETECTED · HUMAN GATE MANDATORY</p>
           : <p className="risk-note"><span>LOW RISK</span> NOTHING EXECUTES WITHOUT EXPLICIT APPROVAL</p>}
       </div>
-      <footer><button className="ghost" onClick={onClose}>CANCEL</button><button className="confirm" onClick={onDispatch}>CONFIRM DISPATCH</button></footer>
+      <footer>
+        <button className="ghost" data-gesture-target="dispatch:cancel" onClick={onClose}>CANCEL</button>
+        <button className="confirm" data-gesture-target="dispatch:confirm" onClick={onDispatch}>CONFIRM DISPATCH</button>
+      </footer>
     </section>
   </div>
 }

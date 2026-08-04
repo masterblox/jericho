@@ -36,6 +36,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [fleet, setFleet] = useState<FleetSnapshot>(FLEET_OFFLINE);
   const [health, setHealth] = useState<CoreHealth | undefined>();
+  const [healthStatus, setHealthStatus] = useState<'loading' | 'ready' | 'locked' | 'unavailable' | 'degraded'>('loading');
   const liveData = useMemo(
     () => projectLiveData(state.snapshot, state.status === 'ready', fleet),
     [state, fleet],
@@ -43,7 +44,20 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
 
   useEffect(() => {
     void client.start();
-    void client.health().then(setHealth).catch(() => setHealth(undefined));
+    void client.health()
+      .then((result) => {
+        setHealth(result);
+        setHealthStatus(result.ok ? 'ready' : 'degraded');
+      })
+      .catch((err: unknown) => {
+        setHealth(undefined);
+        const message = err instanceof Error ? err.message : '';
+        if (message.includes('401') || message.includes('Unauthorized') || message.includes('unauthenticated')) {
+          setHealthStatus('locked');
+        } else {
+          setHealthStatus('unavailable');
+        }
+      });
     return () => client.stop();
   }, [client]);
 
@@ -127,7 +141,7 @@ export function SphereShell({ store, client }: { store: CommandCenterStore; clie
     };
   }, []);
 
-  return <SphereApp liveData={liveData} health={health} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
+  return <SphereApp liveData={liveData} health={health} healthStatus={healthStatus} onDirective={captureDirective} onVaultSearch={searchVault} commandActions={{
     searchMemory: (query: string) => client.searchVault(query, 8),
     openMemory: (relativePath: string) => client.openVaultNote(relativePath),
     proposeNoteReorganization: (input: { relativePath: string; title: string }) =>

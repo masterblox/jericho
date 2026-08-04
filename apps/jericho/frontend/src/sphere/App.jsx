@@ -6,7 +6,7 @@ import { CommandOverlay } from './CommandOverlay'
 
 const VIEW_KEYS = { '1': 'CORE', '2': 'AGENTS', '3': 'TASKS', '4': 'BRAIN' }
 
-export default function App({ liveData, health, onDirective, onVaultSearch, commandActions }) {
+export default function App({ liveData, health, healthStatus = 'loading', onDirective, onVaultSearch, commandActions, onRecalibrate }) {
   const state = React.useSyncExternalStore(store.subscribe, store.getSnapshot)
   const [commandOpen, setCommandOpen] = React.useState(false)
 
@@ -60,8 +60,10 @@ export default function App({ liveData, health, onDirective, onVaultSearch, comm
         setActiveView={api.summon}
         liveData={liveData}
         health={health}
+        healthStatus={healthStatus}
         onVaultSearch={onVaultSearch}
         onOpenCommand={() => setCommandOpen(true)}
+        onRecalibrate={onRecalibrate}
         knowledgeActions={commandActions}
       />
       <CommandOverlay open={commandOpen} onClose={() => setCommandOpen(false)} liveData={liveData} actions={{
