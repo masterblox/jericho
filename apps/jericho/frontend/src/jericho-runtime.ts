@@ -339,19 +339,10 @@ export class JerichoRuntime {
       this.engine.start(this.onFrame);
       this.assertNotDisposed();
 
-      const missingHands = (['Left', 'Right'] as const).filter((h) => !this.profiles.has(h));
-      if (missingHands.length > 0 && this.onEngagementState) {
-        this.autoCalibrationMode = true;
-        this.autoCalibrationCompletion = 'initialize';
-        this.autoCalibrationQueue = missingHands;
-        this.onEngagementState(missingHands[0] === 'Left' ? 'calibrating_left' : 'calibrating_right');
-        this.startCalibration(missingHands[0]);
-        return await new Promise<void>((resolve, reject) => {
-          this.finishEngagementResolve = resolve;
-          this.finishEngagementReject = reject;
-        });
-      }
-
+      // Calibration refines pointing, but it must never block startup. When a
+      // browser has no saved profile, the runtime already has bounded fallback
+      // mapping and default pinch thresholds. The explicit CALIBRATE HANDS
+      // action remains available for optional tuning after Jericho is awake.
       await this.initializeBridgeAndEngage();
     } catch (error) {
       this.stopObserving?.();

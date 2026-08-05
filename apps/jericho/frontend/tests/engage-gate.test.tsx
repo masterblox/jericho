@@ -15,6 +15,7 @@ describe('EngageGate', () => {
   it('constructs hardware runtime only inside the user gesture and disposes it on unmount', async () => {
     const runtime = {
       engage: vi.fn().mockResolvedValue(undefined),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -27,6 +28,7 @@ describe('EngageGate', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(createRuntime).toHaveBeenCalledTimes(1);
     expect(runtime.engage).toHaveBeenCalledTimes(1);
+    expect(runtime.wake).toHaveBeenCalledTimes(1);
 
     view.unmount();
     expect(runtime.dispose).toHaveBeenCalledTimes(1);
@@ -35,6 +37,7 @@ describe('EngageGate', () => {
   it('keeps keyboard mode available after permission failure', async () => {
     const runtime = {
       engage: vi.fn().mockRejectedValue(new Error('Camera permission denied')),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -59,6 +62,7 @@ describe('EngageGate', () => {
     let finishEngagement!: () => void;
     const runtime = {
       engage: vi.fn(() => new Promise<void>((resolve) => { finishEngagement = resolve; })),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -76,6 +80,7 @@ describe('EngageGate', () => {
   it('calls createRuntime with the engagement state callback', async () => {
     const runtime = {
       engage: vi.fn().mockResolvedValue(undefined),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -89,6 +94,7 @@ describe('EngageGate', () => {
     let reportState!: (state: import('../src/jericho-runtime').EngagementState) => void;
     const runtime = {
       engage: vi.fn(() => new Promise<void>(() => {})),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -107,11 +113,13 @@ describe('EngageGate', () => {
   it('releases a failed runtime so Retry Wake constructs a fresh one', async () => {
     const first = {
       engage: vi.fn().mockRejectedValue(new Error('Camera unavailable')),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
     const second = {
       engage: vi.fn().mockResolvedValue(undefined),
+      wake: vi.fn(),
       recalibrate: vi.fn(),
       dispose: vi.fn().mockResolvedValue(undefined),
     };
@@ -129,6 +137,7 @@ describe('EngageGate', () => {
     expect(createRuntime).toHaveBeenCalledTimes(2);
     expect(first.dispose).toHaveBeenCalledTimes(1);
     expect(second.engage).toHaveBeenCalledTimes(1);
+    expect(second.wake).toHaveBeenCalledTimes(1);
     expect(onRuntimeChange).toHaveBeenCalledWith(null);
     expect(onRuntimeChange).toHaveBeenLastCalledWith(second);
   });

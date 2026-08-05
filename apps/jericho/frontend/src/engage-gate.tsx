@@ -3,6 +3,7 @@ import type { EngagementState } from './jericho-runtime';
 
 export interface RuntimeLifecyclePort {
   engage(): Promise<void>;
+  wake(): void;
   recalibrate(): void;
   dispose(): void | Promise<void>;
 }
@@ -50,6 +51,10 @@ export function EngageGate({ createRuntime, onRuntimeChange }: EngageGateProps) 
     try {
       await next.engage();
       if (runtime.current !== next) return;
+      // The primary startup control promises to wake Jericho, not merely to
+      // initialize camera, microphone, and the voice socket. BridgeClient can
+      // safely queue this while the socket is connecting.
+      next.wake();
       setState('engaged');
     } catch (reason) {
       if (runtime.current !== next) return;

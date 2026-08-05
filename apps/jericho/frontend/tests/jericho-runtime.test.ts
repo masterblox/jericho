@@ -284,7 +284,7 @@ describe('JerichoRuntime lifecycle', () => {
     });
   });
 
-  it('calibrates both missing hands directly from Wake before starting voice', async () => {
+  it('starts voice immediately with fallback hand mapping when calibration is missing', async () => {
     const storage = new MemoryStorage();
     const onEngagementState = vi.fn();
     const harness = createHarness({
@@ -293,20 +293,14 @@ describe('JerichoRuntime lifecycle', () => {
       trackSettings: { deviceId: 'camera-a', width: 1_920, height: 1_080 },
     });
 
-    const engaging = harness.runtime.engage();
-    await vi.waitFor(() => expect(onEngagementState).toHaveBeenCalledWith('calibrating_left'));
-    expect(harness.createBridge).not.toHaveBeenCalled();
+    await harness.runtime.engage();
 
-    let timestamp = calibrateHand(harness.emit, 'Left', 0);
-    expect(onEngagementState).toHaveBeenCalledWith('calibrating_right');
-    expect(harness.createBridge).not.toHaveBeenCalled();
-    timestamp = calibrateHand(harness.emit, 'Right', timestamp);
-
-    await engaging;
-    expect(timestamp).toBeGreaterThan(0);
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Left')).not.toBeNull();
-    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).not.toBeNull();
+    expect(onEngagementState).not.toHaveBeenCalledWith('calibrating_left');
+    expect(onEngagementState).not.toHaveBeenCalledWith('calibrating_right');
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Left')).toBeNull();
+    expect(loadCalibration(storage, 'camera-a', 16 / 9, 'Right')).toBeNull();
     expect(harness.createBridge).toHaveBeenCalledTimes(1);
+    expect(harness.bridge.start).toHaveBeenCalledTimes(1);
     expect(onEngagementState).toHaveBeenLastCalledWith('engaged');
   });
 
