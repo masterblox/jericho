@@ -28,7 +28,9 @@ export function computeLogMelFbank(samples: Float32Array): Float32Array {
     const offset = frameIndex * FRAME_SHIFT;
     let previous = 0;
     for (let i = 0; i < FRAME_LENGTH; i += 1) {
-      const sample = samples[offset + i]!;
+      // torchaudio.compliance.kaldi expects PCM-scale samples. WeSpeaker's
+      // official ONNX example multiplies normalized waveform values by 2^15.
+      const sample = samples[offset + i]! * 32_768;
       const emphasized = i === 0 ? sample : sample - PRE_EMPHASIS * previous;
       previous = sample;
       frame[i] = emphasized * window[i]!;
@@ -48,6 +50,19 @@ export function computeLogMelFbank(samples: Float32Array): Float32Array {
         energy += filter[bin]! * power[bin]!;
       }
       feats[base + mel] = Math.log(Math.max(energy, 1e-10));
+    }
+  }
+
+  // WeSpeaker's official ONNX inference applies per-utterance cepstral mean
+  // normalization (CMN, without variance normalization) before model input.
+  for (let mel = 0; mel < NUM_MEL; mel += 1) {
+    let mean = 0;
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      mean += feats[frameIndex * NUM_MEL + mel]!;
+    }
+    mean /= frameCount;
+    for (let frameIndex = 0; frameIndex < frameCount; frameIndex += 1) {
+      feats[frameIndex * NUM_MEL + mel]! -= mean;
     }
   }
   frame.fill(0);

@@ -13,7 +13,11 @@ import {
   createSpeakerVerifier,
   isSpeakerVerified,
 } from '../src/voice/speaker-verifier.js';
-import { DeterministicEmbedder } from '../src/voice/speaker-embedding.js';
+import {
+  DeterministicEmbedder,
+  speakerExecutionProviders,
+} from '../src/voice/speaker-embedding.js';
+import { computeLogMelFbank } from '../src/voice/speaker-fbank.js';
 import { VoiceprintStore } from '../src/voice/voiceprint-store.js';
 import {
   SPEAKER_ACCEPT_THRESHOLD,
@@ -49,6 +53,21 @@ function tone(seconds: number, hz: number, phase = 0): Float32Array {
 }
 
 describe('SpeakerVerifier', () => {
+  it('uses onnxruntime-node provider identifiers and official CMN preprocessing', () => {
+    expect(speakerExecutionProviders('darwin')).toEqual(['coreml', 'cpu']);
+    expect(speakerExecutionProviders('linux')).toEqual(['cpu']);
+
+    const features = computeLogMelFbank(tone(1.2, 440));
+    const frames = features.length / 80;
+    for (let mel = 0; mel < 80; mel += 1) {
+      let mean = 0;
+      for (let frame = 0; frame < frames; frame += 1) {
+        mean += features[frame * 80 + mel]!;
+      }
+      expect(Math.abs(mean / frames)).toBeLessThan(1e-5);
+    }
+  });
+
   it('UnavailableSpeakerVerifier fails closed without claiming an owner match', async () => {
     const verifier = new UnavailableSpeakerVerifier();
     expect(verifier.status).toBe('unavailable');

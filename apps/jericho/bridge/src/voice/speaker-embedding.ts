@@ -99,16 +99,21 @@ export class OnnxSpeakerEmbedder implements SpeakerEmbedder {
 
 async function defaultCreateSession(modelPath: string): Promise<InferenceSession> {
   const ort = await loadOrt();
-  const providers = process.platform === 'darwin'
-    ? ['CoreMLExecutionProvider', 'CPUExecutionProvider']
-    : ['CPUExecutionProvider'];
+  const providers = speakerExecutionProviders();
   try {
     return await ort.InferenceSession.create(modelPath, { executionProviders: providers });
   } catch {
     return ort.InferenceSession.create(modelPath, {
-      executionProviders: ['CPUExecutionProvider'],
+      executionProviders: ['cpu'],
     });
   }
+}
+
+/** Provider identifiers accepted by onnxruntime-node (not native ORT class names). */
+export function speakerExecutionProviders(
+  platform: NodeJS.Platform = process.platform,
+): Array<'coreml' | 'cpu'> {
+  return platform === 'darwin' ? ['coreml', 'cpu'] : ['cpu'];
 }
 
 /** Deterministic, model-free embedder for tests — not a biometric of any person. */
