@@ -103,6 +103,20 @@ Without that verifier and Carlos's enrollment, conversation remains available
 but every tool fails closed with `speaker_verification_required`. Setting the
 flag to false is for isolated development and tests, not the Carlos-only setup.
 
+One-time local enrollment (WeSpeaker ResNet34-LM ONNX, encrypted voiceprint
+outside Git) is documented in
+[`bridge/SPEAKER-VERIFICATION.md`](bridge/SPEAKER-VERIFICATION.md):
+
+```bash
+pnpm --filter bridge download-speaker-model
+pnpm --filter bridge enroll-carlos-voice -- \
+  --i-am-carlos \
+  --confirm 'ENROLL CARLOS VOICEPRINT' \
+  --wav ~/jericho-enrollment/sample1.wav \
+  --wav ~/jericho-enrollment/sample2.wav \
+  --wav ~/jericho-enrollment/sample3.wav
+```
+
 The focused production-runtime test surface is available at
 `/?lab=gestures`. Frontend redesign work must preserve the wiring contracts in
 [`frontend/FRONTEND_HANDOFF.md`](frontend/FRONTEND_HANDOFF.md).

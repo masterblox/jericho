@@ -1497,9 +1497,7 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
   } | undefined;
   let retrievalInFlight = false;
   let pendingResultId: string | undefined;
-  let speakerResult: SpeakerVerificationResult = {
-    status: 'unverified', reason: 'speaker_verification_required',
-  };
+  let speakerResult: SpeakerVerificationResult = idleSpeakerResult(speakerVerifier);
   let speakerSamples: Float32Array[] = [];
   let speakerSampleCount = 0;
   let speakerVerificationPending = false;
@@ -1523,8 +1521,8 @@ function openVoiceSession(webSocket: WebSocket, options: JerichoServerOptions, t
     speakerVerificationPending = false;
     speakerVerificationPromise = undefined;
     speakerVerifiedAt = 0;
-    speakerResult = { status: 'unverified', reason: 'speaker_verification_required' };
     speakerVerifier.reset();
+    speakerResult = idleSpeakerResult(speakerVerifier);
   };
   const publishSpeakerResult = (result: SpeakerVerificationResult) => {
     send({
@@ -2304,8 +2302,25 @@ function boundedSpeakerReason(value: string): string {
     'speaker_verification_failed',
     'speaker_mismatch',
     'speaker_not_enrolled',
+    'speaker_model_unavailable',
+    'speaker_ambiguous',
   ]);
   return allowed.has(value) ? value : 'speaker_verification_failed';
+}
+
+function idleSpeakerResult(verifier: SpeakerVerifier): SpeakerVerificationResult {
+  if (verifier.status === 'unavailable') {
+    return { status: 'unavailable', enrolled: false, reason: 'speaker_model_unavailable' };
+  }
+  if (verifier.status === 'enrollment_required') {
+    return { status: 'enrollment_required', enrolled: false, reason: 'speaker_not_enrolled' };
+  }
+  // Enrolled (or injected) verifier: tools stay blocked until this turn verifies.
+  return {
+    status: 'rejected',
+    enrolled: true,
+    reason: 'speaker_verification_required',
+  };
 }
 
 /** Map UI completion events onto the next legal guided phase. */
@@ -2992,6 +3007,12 @@ async function main(): Promise<void> {
     systemInstruction: config.systemInstruction,
     voiceActiveTurnMs: config.voiceActiveTurnMs,
     requireSpeakerVerification: config.requireSpeakerVerification,
+    speakerVerifier: createSpeakerVerifier(undefined, {
+      modelPath: config.speakerModelPath,
+      voiceprintPath: config.speakerVoiceprintPath,
+      acceptThreshold: config.speakerAcceptThreshold,
+      rejectThreshold: config.speakerRejectThreshold,
+    }),
     localOperator,
     ...(codingAgent ? { codingAgent } : {}),
     wifiMapping,

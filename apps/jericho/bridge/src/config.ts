@@ -10,6 +10,12 @@ import type { PersonaMode } from './personas.js';
 import type { MCPServerConfig } from './mcp/types.js';
 import { migratePersonaMode } from './personas-migration.js';
 import { readKeychainSecret, writeKeychainSecret } from './platform/keychain.js';
+import {
+  SPEAKER_ACCEPT_THRESHOLD,
+  SPEAKER_REJECT_THRESHOLD,
+  defaultSpeakerModelPath,
+  defaultVoiceprintPath,
+} from './voice/speaker-model.js';
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 // Preserve the conventional precedence: explicit process environment first,
@@ -64,6 +70,10 @@ export interface JerichoConfig {
   reflectionIntervalMs: number;
   voiceActiveTurnMs: number;
   requireSpeakerVerification: boolean;
+  speakerModelPath: string;
+  speakerVoiceprintPath: string;
+  speakerAcceptThreshold: number;
+  speakerRejectThreshold: number;
   codingAgentModel: string;
   mcpServers: MCPServerConfig[];
   mcpAllowedTools: string[];
@@ -188,7 +198,7 @@ export function loadConfig(
   if (mcpAllowedTools.some((entry) => !mcpServerNames.has(entry.slice(0, entry.indexOf('/'))))) {
     throw new Error('JERICHO_MCP_ALLOWLIST references an unconfigured MCP server');
   }
-  return {
+  const config = {
     host: environment.JERICHO_HOST ?? '127.0.0.1',
     port,
     apiToken,
@@ -276,6 +286,18 @@ export function loadConfig(
       environment.JERICHO_REQUIRE_SPEAKER_VERIFICATION ?? 'true',
       'JERICHO_REQUIRE_SPEAKER_VERIFICATION',
     ),
+    speakerModelPath: optionalString(environment.JERICHO_SPEAKER_MODEL_PATH)
+      ?? defaultSpeakerModelPath(),
+    speakerVoiceprintPath: optionalString(environment.JERICHO_SPEAKER_VOICEPRINT_PATH)
+      ?? defaultVoiceprintPath(),
+    speakerAcceptThreshold: parseUnitInterval(
+      environment.JERICHO_SPEAKER_ACCEPT_THRESHOLD ?? String(SPEAKER_ACCEPT_THRESHOLD),
+      'JERICHO_SPEAKER_ACCEPT_THRESHOLD',
+    ),
+    speakerRejectThreshold: parseUnitInterval(
+      environment.JERICHO_SPEAKER_REJECT_THRESHOLD ?? String(SPEAKER_REJECT_THRESHOLD),
+      'JERICHO_SPEAKER_REJECT_THRESHOLD',
+    ),
     codingAgentModel: parseModel(
       environment.JERICHO_CODING_AGENT_MODEL ?? 'gpt-5.3-codex-spark',
       'JERICHO_CODING_AGENT_MODEL',
@@ -283,6 +305,11 @@ export function loadConfig(
     mcpServers,
     mcpAllowedTools,
   };
+
+  if (!(config.speakerRejectThreshold < config.speakerAcceptThreshold)) {
+    throw new Error('JERICHO_SPEAKER_REJECT_THRESHOLD must be below JERICHO_SPEAKER_ACCEPT_THRESHOLD');
+  }
+  return config;
 }
 
 function parsePersonaMode(value: string | undefined): PersonaMode {
@@ -574,6 +601,14 @@ function safeRepositoryPath(value: string): boolean {
   if (!normalized || normalized.startsWith('/') || normalized.includes('\\')) return false;
   if (normalized === '.') return true;
   return normalized.split('/').every((segment) => Boolean(segment) && segment !== '.' && segment !== '..');
+}
+
+function parseUnitInterval(value: string, variable: string): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0 || parsed > 1) {
+    throw new Error(`${variable} must be a number in (0, 1]`);
+  }
+  return parsed;
 }
 
 function parsePositiveInteger(value: string, variable: string): number {

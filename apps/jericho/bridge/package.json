@@ -10,14 +10,17 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "vault-gateway": "tsx src/vault/vault-gateway-main.ts",
+    "download-speaker-model": "tsx src/voice/download-speaker-model.ts",
+    "enroll-carlos-voice": "tsx src/voice/enroll-carlos.ts",
     "test": "node tests/run-tests.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@jericho/shared": "workspace:*",
     "@google/genai": "^1.0.0",
+    "@jericho/shared": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.30.0",
     "dotenv": "^16.4.5",
+    "onnxruntime-node": "^1.27.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
