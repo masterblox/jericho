@@ -127,6 +127,8 @@ export function createConnectorRuntime(
         vaultPath: config.obsidianVaultPath,
         maxNotes: 500,
         maxNoteBytes: 2 * 1024 * 1024,
+        maxSearchNotes: 20_000,
+        maxSearchBytes: 256 * 1024 * 1024,
         staleAfterMs: config.vaultSyncStaleMs,
         ...(vaultGateway ? { gateway: vaultGateway } : {}),
       })

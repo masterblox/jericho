@@ -29,6 +29,10 @@ export interface ObsidianConnectorOptions {
   vaultPath: string;
   maxNotes: number;
   maxNoteBytes: number;
+  /** Independent bound for an on-demand local search. Capture remains limited by maxNotes. */
+  maxSearchNotes?: number;
+  /** Aggregate bytes read by one local search, even when every note is individually valid. */
+  maxSearchBytes?: number;
   staleAfterMs?: number;
   gateway?: VaultGatewayPort;
 }
@@ -67,6 +71,14 @@ export class ObsidianConnector implements CaptureConnector {
   constructor(private readonly options: ObsidianConnectorOptions) {
     if (!Number.isInteger(options.maxNotes) || options.maxNotes < 1) throw new Error('Obsidian note bound is invalid');
     if (!Number.isInteger(options.maxNoteBytes) || options.maxNoteBytes < 1) throw new Error('Obsidian note size bound is invalid');
+    if (options.maxSearchNotes !== undefined
+      && (!Number.isInteger(options.maxSearchNotes) || options.maxSearchNotes < 1)) {
+      throw new Error('Obsidian search note bound is invalid');
+    }
+    if (options.maxSearchBytes !== undefined
+      && (!Number.isInteger(options.maxSearchBytes) || options.maxSearchBytes < 1)) {
+      throw new Error('Obsidian search byte bound is invalid');
+    }
     if (options.staleAfterMs !== undefined
       && (!Number.isInteger(options.staleAfterMs) || options.staleAfterMs < 1)) {
       throw new Error('Obsidian sync freshness bound is invalid');
@@ -76,8 +88,8 @@ export class ObsidianConnector implements CaptureConnector {
   async probe(signal: AbortSignal): Promise<ConnectorProbe> {
     if (!this.options.gateway) {
       return {
-        status: ConnectorHealthStatus.Unavailable,
-        details: { mode: 'vault_rag_gateway', reason: 'gateway_not_configured' },
+        status: ConnectorHealthStatus.Healthy,
+        details: { mode: 'local_read_only', reason: 'local_search_ready', search: 'bounded_scan' },
       };
     }
     try {
@@ -138,26 +150,39 @@ export class ObsidianConnector implements CaptureConnector {
       return response.results.map(({ path, title, excerpt }) => ({ path, title, excerpt }));
     }
     const terms = query.trim().toLocaleLowerCase().split(/\s+/u);
-    return this.scan().map((note) => {
+    const maxSearchNotes = this.options.maxSearchNotes ?? this.options.maxNotes;
+    const maxSearchBytes = this.options.maxSearchBytes
+      ?? maxSearchNotes * this.options.maxNoteBytes;
+    return this.scan(maxSearchNotes, maxSearchBytes).map((note) => {
+      const fallbackTitle = note.path.replace(/\.md$/iu, '');
+      const searchable = `${fallbackTitle}\n${note.content}`.toLocaleLowerCase();
+      const matches = terms.reduce((count, term) => count + searchable.split(term).length - 1, 0);
+      if (matches === 0) return undefined;
+      // Frontmatter parsing is materially more expensive than the substring
+      // filter across a large vault. Parse only the notes that can be returned.
       const parsed = parseMarkdown(note.content);
       const title = typeof parsed.frontmatter.title === 'string'
-        ? parsed.frontmatter.title : note.path.replace(/\.md$/iu, '');
-      const searchable = `${title}\n${note.content}`.toLocaleLowerCase();
-      const matches = terms.reduce((count, term) => count + searchable.split(term).length - 1, 0);
+        ? parsed.frontmatter.title : fallbackTitle;
       const first = Math.max(0, Math.min(...terms.map((term) => searchable.indexOf(term)).filter((index) => index >= 0)) - 120);
       return { path: note.path, title, excerpt: note.content.slice(first, first + 500).replace(/\s+/gu, ' ').trim(), matches };
-    }).filter((result) => result.matches > 0)
+    }).filter((result): result is NonNullable<typeof result> => result !== undefined)
       .sort((left, right) => right.matches - left.matches || left.path.localeCompare(right.path))
       .slice(0, limit)
       .map(({ matches: _matches, ...result }) => result);
   }
 
-  private scan(): NoteSnapshot[] {
+  private scan(
+    maxNotes = this.options.maxNotes,
+    maxTotalBytes = maxNotes * this.options.maxNoteBytes,
+  ): NoteSnapshot[] {
     const root = realpathSync(this.options.vaultPath);
-    const paths = markdownFiles(root, root).slice(0, this.options.maxNotes);
+    const paths = markdownFiles(root, root).slice(0, maxNotes);
+    let totalBytes = 0;
     return paths.flatMap((path) => {
       const stat = statSync(path);
       if (stat.size > this.options.maxNoteBytes) return [];
+      if (totalBytes + stat.size > maxTotalBytes) return [];
+      totalBytes += stat.size;
       const content = readFileSync(path, 'utf8');
       return [{
         path: relative(root, path).split(sep).join('/'),

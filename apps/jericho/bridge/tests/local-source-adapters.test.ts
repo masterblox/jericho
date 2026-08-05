@@ -318,14 +318,34 @@ describe('ObsidianConnector', () => {
       },
     });
 
-    const disabled = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
-    await expect(disabled.probe(new AbortController().signal)).resolves.toEqual({
-      status: ConnectorHealthStatus.Unavailable,
-      details: { mode: 'vault_rag_gateway', reason: 'gateway_not_configured' },
+    const local = new ObsidianConnector({ vaultPath: vault, maxNotes: 10, maxNoteBytes: 10_000 });
+    await expect(local.probe(new AbortController().signal)).resolves.toEqual({
+      status: ConnectorHealthStatus.Healthy,
+      details: { mode: 'local_read_only', reason: 'local_search_ready', search: 'bounded_scan' },
     });
     writeFileSync(join(vault, 'Local.md'), '# Local knowledge\nAnything Carlos needs.');
-    await expect(disabled.search('anything', 5)).resolves.toEqual([{
+    await expect(local.search('anything', 5)).resolves.toEqual([{
       path: 'Local.md', title: 'Local', excerpt: '# Local knowledge Anything Carlos needs.',
+    }]);
+  });
+
+  it('searches beyond the capture note bound while enforcing an aggregate byte bound', async () => {
+    const vault = tempDirectory('obsidian-search-bounds-');
+    writeFileSync(join(vault, 'A.md'), '# A\ncapture-only');
+    writeFileSync(join(vault, 'B.md'), '# B\nneedle beyond capture');
+    writeFileSync(join(vault, 'C.md'), '# C\nneedle beyond byte budget');
+    const adapter = new ObsidianConnector({
+      vaultPath: vault,
+      maxNotes: 1,
+      maxNoteBytes: 10_000,
+      maxSearchNotes: 3,
+      maxSearchBytes: 50,
+    });
+
+    const capture = await adapter.capture(request('vault'));
+    expect(capture.captures).toHaveLength(1);
+    await expect(adapter.search('needle', 5)).resolves.toEqual([{
+      path: 'B.md', title: 'B', excerpt: '# B needle beyond capture',
     }]);
   });
 
