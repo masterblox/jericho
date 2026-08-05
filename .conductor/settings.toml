@@ -8,7 +8,7 @@ setup = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm us
 run_mode = "nonconcurrent"
 
 [scripts.run.jericho]
-command = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm use 22 >/dev/null; fi && corepack pnpm --dir apps/jericho start"
+command = "if [ -s \"$HOME/.nvm/nvm.sh\" ]; then . \"$HOME/.nvm/nvm.sh\" && nvm use 22 >/dev/null; fi && corepack pnpm --dir apps/jericho start:dia"
 default = true
 icon = "monitor"
 available_in = [ "local" ]

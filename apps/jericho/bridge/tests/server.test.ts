@@ -374,6 +374,25 @@ describe('authenticated local Core HTTP/SSE server', () => {
     expect(response.headers.get('cache-control')).toBe('no-store');
   });
 
+  it('reports required speaker enrollment instead of claiming the verifier is configured', async () => {
+    const runtime = await startServer({
+      requireSpeakerVerification: true,
+      speakerVerifier: {
+        status: 'enrollment_required',
+        enroll: async () => undefined,
+        verify: async () => ({
+          status: 'enrollment_required', enrolled: false, reason: 'speaker_not_enrolled',
+        }),
+        reset: () => undefined,
+      },
+    });
+
+    const response = await api(runtime.url, '/api/v1/health');
+    expect(await response.json()).toMatchObject({
+      voice: { status: 'unavailable', speakerVerification: 'enrollment_required' },
+    });
+  });
+
   it('requires bearer bootstrap before issuing an HttpOnly strict browser session', async () => {
     const directory = mkdtempSync(join(tmpdir(), 'jericho-browser-session-'));
     directories.push(directory);
@@ -814,6 +833,8 @@ interface StartOverrides {
   startupStatus?: import('../src/core/recovery.js').CoreStartupStatus;
   vaultReady?: boolean;
   codingAgent?: import('../src/coding-agent/manager.js').CodingAgentManagerPort;
+  requireSpeakerVerification?: boolean;
+  speakerVerifier?: import('../src/voice/speaker-verifier.js').SpeakerVerifier;
 }
 
 function localEvent(index: number): EventEnvelope {

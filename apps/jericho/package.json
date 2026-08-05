@@ -13,6 +13,7 @@
     "dev": "concurrently -n bridge,web -c cyan,magenta \"pnpm --filter bridge dev\" \"pnpm --filter frontend dev\"",
     "build": "pnpm --filter @jericho/shared typecheck && pnpm --filter frontend build",
     "start": "pnpm build && pnpm --filter bridge start",
+    "start:dia": "pnpm build && pnpm --filter bridge start:dia",
     "test": "pnpm --filter bridge test && pnpm --filter frontend test",
     "typecheck": "pnpm --filter @jericho/shared typecheck && pnpm --filter frontend typecheck && pnpm --filter bridge typecheck",
     "preview": "pnpm --filter frontend preview",

@@ -101,7 +101,7 @@ export interface CoreHealth {
   vault: { ready: boolean };
   voice: {
     status: 'available' | 'unavailable';
-    speakerVerification?: 'configured' | 'required' | 'disabled';
+    speakerVerification?: 'ready' | 'enrollment_required' | 'unavailable' | 'required' | 'disabled';
   };
 }
 

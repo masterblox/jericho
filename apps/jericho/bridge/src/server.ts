@@ -408,9 +408,10 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
         ok: true,
         voice: {
           status: options.geminiApiKey ? 'available' : 'unavailable',
-          speakerVerification: options.requireSpeakerVerification
-            ? (options.speakerVerifier ? 'configured' : 'required')
-            : 'disabled',
+          speakerVerification: speakerVerificationReadiness(
+            options.requireSpeakerVerification ?? false,
+            options.speakerVerifier,
+          ),
         },
         connectors: options.store.listConnectorHealth().map(projectPublicConnectorHealth),
         startup: publicStartupStatus(options.startupStatus ?? normalStartupStatus()),
@@ -1393,6 +1394,17 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       });
     },
   };
+}
+
+function speakerVerificationReadiness(
+  required: boolean,
+  verifier: SpeakerVerifier | undefined,
+): 'ready' | 'enrollment_required' | 'unavailable' | 'required' | 'disabled' {
+  if (!required) return 'disabled';
+  if (!verifier) return 'required';
+  if (verifier.status === 'unavailable') return 'unavailable';
+  if (verifier.status === 'enrollment_required') return 'enrollment_required';
+  return 'ready';
 }
 
 function attachVoice(
