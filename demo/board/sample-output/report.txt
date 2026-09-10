@@ -1,0 +1,8 @@
+BOARD REPORT  board=board  run=69623aee165b  at=2026-09-10T18:21:54Z
+queued=5 done=3 failed=2 deferred=0 recovered=0
+---
+  [OK] job-001      exit=0                            36ms  "Greet the fleet from lane DEV"
+  [OK] job-002      exit=0                            38ms  "Hash the board at run time (self-evidence)"
+  [OK] job-003      exit=0                           434ms  "Wrapped sleep (shows duration tracking)"
+  [FAIL] job-004      exit=3                            31ms  "Fail loudly with stderr (shows failure captu"
+  [FAIL] job-005      executable not found: defini       0ms  "Missing executable (shows ENOENT capture)"

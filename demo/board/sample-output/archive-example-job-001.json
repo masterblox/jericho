@@ -1,0 +1,23 @@
+{
+  "id": "job-001",
+  "title": "Greet the fleet from lane DEV",
+  "argv": [
+    "/usr/bin/python3",
+    "-c",
+    "print('hello from lane DEV \u2014 task done')"
+  ],
+  "status": "done",
+  "timeout_seconds": 30,
+  "lease_owner": "69623aee165b",
+  "leased_at": "2026-09-10T18:21:54Z",
+  "started_at": "2026-09-10T18:21:54Z",
+  "lease_expires_at": 1789064574.4437504,
+  "exit_code": 0,
+  "reason": null,
+  "stdout_tail": "hello from lane DEV \u2014 task done",
+  "stderr_tail": "",
+  "finished_at": "2026-09-10T18:21:54Z",
+  "duration_ms": 36,
+  "runner": "69623aee165b",
+  "artifact": "/srv/hermes/data/repos/jericho/demo/board/_raw/artifacts/69623aee165b/job-001.json"
+}

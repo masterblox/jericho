@@ -1,0 +1,10 @@
+# Runtime artifacts — regenerated on every run, never commit
+tmp/
+__pycache__/
+*.pyc
+
+# Output channels land next to a board file; ignore them for the committed example
+examples/archive/
+examples/reports/
+examples/artifacts/
+examples/journal.log
