@@ -117,6 +117,75 @@ describe('HubDispatcher maestro lifecycle (dispatch -> verify -> archive)', () =
     dispatcher.enqueue(plan, 'idem-noconfirm');
     expect(dispatcher.dispatch('idem-noconfirm').plan.status).toBe('dispatched');
   });
+
+  it('rejects a verdict until the receipt is dispatched', () => {
+    const dispatcher = new HubDispatcher(createTokenDispatchGate('yes'), () => NOW);
+
+    const pending = dispatcher.enqueue(
+      planHubDispatch('cmd', classifyHubIntent('dispatch pumas to IRIS'), 'dispatch pumas to IRIS'),
+      'idem-noverify-yet',
+    );
+    expect(pending.plan.status).toBe('pending_approval');
+    expect(() =>
+      dispatcher.verify('idem-noverify-yet', { status: 'verified', evidence: 'PR merged', at: NOW }),
+    ).toThrow(/dispatched/);
+    expect(() =>
+      dispatcher.verify('idem-noverify-yet', { status: 'failed', evidence: 'lane died', at: NOW }),
+    ).toThrow(/dispatched/);
+
+    // a no-confirmation plan sits in `planned` before dispatch — also not verifiable
+    const planned = dispatcher.enqueue(
+      planHubDispatch('cmd2', classifyHubIntent('verify lane 8a7e713'), 'verify lane 8a7e713'),
+      'idem-noverify-planned',
+    );
+    expect(planned.plan.status).toBe('planned');
+    expect(() =>
+      dispatcher.verify('idem-noverify-planned', { status: 'verified', evidence: 'x', at: NOW }),
+    ).toThrow(/dispatched/);
+  });
+
+  it('keeps terminal receipts closed on confirmation retries', () => {
+    const dispatcher = new HubDispatcher(createTokenDispatchGate('yes'), () => NOW);
+
+    dispatcher.enqueue(
+      planHubDispatch('cmd', classifyHubIntent('dispatch pumas to IRIS'), 'dispatch pumas to IRIS'),
+      'idem-closed',
+    );
+    dispatcher.dispatch('idem-closed', 'yes');
+    dispatcher.verify('idem-closed', { status: 'verified', evidence: 'PR merged', at: NOW, verifier: 'maestro-verify' });
+    dispatcher.archive('idem-closed');
+
+    // replaying confirm() after archive must replay the stored terminal receipt,
+    // not rebuild it as `dispatched` and drop the verdict/archive metadata.
+    const replay = dispatcher.confirm('idem-closed', 'yes');
+    expect(replay.plan.status).toBe('archived');
+    expect(replay.archivedAt).toBe(NOW);
+    expect(replay.verdict?.evidence).toContain('PR merged');
+    expect(replay.replayed).toBe(true);
+
+    // verified-but-not-yet-archived receipts stay closed too
+    dispatcher.enqueue(
+      planHubDispatch('cmd2', classifyHubIntent('dispatch openbot to DEV'), 'dispatch openbot'),
+      'idem-verified',
+    );
+    dispatcher.dispatch('idem-verified', 'yes');
+    dispatcher.verify('idem-verified', { status: 'verified', evidence: 'PR merged', at: NOW });
+    const verifiedReplay = dispatcher.confirm('idem-verified', 'yes');
+    expect(verifiedReplay.plan.status).toBe('verified');
+    expect(verifiedReplay.verdict?.evidence).toContain('PR merged');
+    expect(verifiedReplay.replayed).toBe(true);
+
+    // a failed receipt also stays closed on confirm retries
+    dispatcher.enqueue(
+      planHubDispatch('cmd3', classifyHubIntent('dispatch solver to PA'), 'dispatch solver'),
+      'idem-failed',
+    );
+    dispatcher.dispatch('idem-failed', 'yes');
+    dispatcher.verify('idem-failed', { status: 'failed', evidence: 'timeout', at: NOW });
+    const failedReplay = dispatcher.confirm('idem-failed', 'yes');
+    expect(failedReplay.plan.status).toBe('failed');
+    expect(failedReplay.replayed).toBe(true);
+  });
 });
 
 describe('HubCommandPlane maestro hooks end to end', () => {

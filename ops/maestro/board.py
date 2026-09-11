@@ -335,16 +335,45 @@ def dispatch_card(
         return {"card": card_id, "action": "none", "reason": f"card {card['status']}"}
 
     runs = runs_for(conn, card_id)
-    if runs and latest_run(runs)["status"] in RUN_LIVE:
+    latest = latest_run(runs)
+    if latest is not None and latest["status"] in RUN_LIVE:
         return {"card": card_id, "action": "none", "reason": "already in flight"}
+    if latest is not None and latest["status"] in RUN_TERMINAL:
+        # A lane already finished this card (terminal task_runs row) but the
+        # pass has not flipped the still-open card yet. Never start another
+        # attempt: it would re-execute completed work and hide the terminal
+        # result from flip_terminal_cards(), which only reads the newest run.
+        return {
+            "card": card_id,
+            "action": "none",
+            "reason": (
+                f"latest run #{latest['id']} is terminal ({latest['status']}); "
+                "awaiting flip"
+            ),
+        }
 
     attempts = sum(1 for r in runs if r["status"] != "running")  # released/terminal
     if attempts >= max_attempts:
-        return {
-            "card": card_id,
-            "action": "parked",
-            "reason": f"max dispatch attempts ({max_attempts}) reached",
-        }
+        reason = f"max dispatch attempts ({max_attempts}) reached"
+        # Make the parked state durable: flip the card to a needs-human blocked
+        # state and record the reason once (one parked event + comment). A later
+        # pass sees an already-blocked card and does not re-record.
+        if card["status"] != "blocked":
+            conn.execute(
+                "UPDATE tasks SET status = 'blocked', last_failure_error = ?"
+                " WHERE id = ?",
+                (reason, card_id),
+            )
+            event(
+                conn, card_id, "parked",
+                payload={
+                    "reason": reason,
+                    "attempts": attempts,
+                    "max_attempts": max_attempts,
+                },
+            )
+            comment(conn, card_id, BOARD_NAME, f"parked: {reason}")
+        return {"card": card_id, "action": "parked", "reason": reason}
 
     now = now_epoch()
     cur = conn.execute(
@@ -415,7 +444,16 @@ def verify_card(
     if run_id is None:
         runs = runs_for(conn, card_id)
         run_id = runs[-1]["id"] if runs else None
-    evidence = evidence or _verify_default_evidence(run_id, status)
+    evidence = (evidence or "").strip()
+    if not evidence:
+        # Never fabricate a verdict: derive evidence ONLY from a validated
+        # terminal run of this card, otherwise require explicit --evidence.
+        evidence = _verified_run_evidence(conn, card_id, run_id)
+    if not evidence:
+        raise SystemExit(
+            f"verify requires --evidence for card {card_id} "
+            "(no validated terminal run to derive it from)"
+        )
     if status == "done":
         conn.execute(
             "UPDATE tasks SET status = 'done', completed_at = ?, result = ?"
@@ -444,10 +482,21 @@ def verify_card(
     return {"card": card_id, "status": card["status"], "card_status": status}
 
 
-def _verify_default_evidence(run_id: int | None, status: str) -> str:
-    if run_id is not None:
-        return f"verified via hub hook (run #{run_id}) -> {status}"
-    return f"verified via hub hook -> {status}"
+def _verified_run_evidence(conn: sqlite3.Connection, card_id: str,
+                           run_id: int | None) -> str | None:
+    """Derive verification evidence only from a validated terminal run that
+    belongs to the card. Returns None when no such run exists, so the caller
+    must require explicit --evidence — a bare worker claim is never fabricated.
+    """
+    if run_id is None:
+        return None
+    run = conn.execute(
+        "SELECT * FROM task_runs WHERE id = ? AND task_id = ?",
+        (run_id, card_id),
+    ).fetchone()
+    if run is None or run["status"] not in RUN_TERMINAL:
+        return None
+    return _evidence(run)
 
 
 def archive_card(conn: sqlite3.Connection, card_id: str) -> dict:
@@ -873,6 +922,49 @@ class BoardTest(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(runs, 0)
 
+    def test_dispatch_refuses_to_redispatch_a_terminal_latest_run(self):
+        self._card("d1")
+        self._run("d1", status="done", outcome="completed", summary="merged")
+        # standalone hook: lane finished, board has not flipped the open card yet
+        result = dispatch_card(self.conn, "d1")
+        self.assertEqual(result["action"], "none")
+        self.assertIn("awaiting flip", result["reason"])
+        running = self.conn.execute(
+            "SELECT COUNT(*) FROM task_runs WHERE status='running'"
+        ).fetchone()[0]
+        self.assertEqual(running, 0)  # completed work is never re-executed
+
+    def test_max_attempts_park_is_persisted_and_recorded_once(self):
+        self._card("p1")
+        for _ in range(MAX_DISPATCH_ATTEMPTS_DEFAULT):
+            self._run("p1", status="released", outcome="reclaimed")
+        first = dispatch_card(
+            self.conn, "p1", max_attempts=MAX_DISPATCH_ATTEMPTS_DEFAULT
+        )
+        self.assertEqual(first["action"], "parked")
+        card = self.conn.execute("SELECT * FROM tasks WHERE id='p1'").fetchone()
+        self.assertEqual(card["status"], "blocked")  # durable needs-human state
+        self.assertIn("max dispatch attempts", card["last_failure_error"])
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE kind='parked'"
+            ).fetchone()[0],
+            1,
+        )
+        # the parked card is now a durable blocked state: further dispatch
+        # attempts are refused and the park reason is recorded exactly once.
+        second = dispatch_card(
+            self.conn, "p1", max_attempts=MAX_DISPATCH_ATTEMPTS_DEFAULT
+        )
+        self.assertEqual(second["action"], "none")
+        self.assertEqual(second["reason"], "card blocked")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT COUNT(*) FROM task_events WHERE kind='parked'"
+            ).fetchone()[0],
+            1,  # recorded once, never duplicated
+        )
+
     # --- end-to-end pass + idempotency -----------------------------------
 
     def test_run_board_end_to_end_flip_and_dispatch_and_idempotent_rerun(self):
@@ -915,6 +1007,36 @@ class BoardTest(unittest.TestCase):
             ).fetchone()[0],
             1,  # re-verify never re-emits a trigger
         )
+
+    def test_verify_requires_evidence_without_a_validated_terminal_run(self):
+        self._card("v3")
+        # brand-new card with no run: verify without --evidence must not fabricate
+        with self.assertRaises(SystemExit):
+            verify_card(self.conn, "v3", status="done")
+        self.assertEqual(
+            self.conn.execute(
+                "SELECT status FROM tasks WHERE id='v3'"
+            ).fetchone()[0],
+            "new",
+        )
+        # a live (non-terminal) run is not evidence either
+        live = self._run("v3", status="running", claim_expires=now_epoch() + 3600)
+        with self.assertRaises(SystemExit):
+            verify_card(self.conn, "v3", status="done", run_id=live["id"])
+        # a run that is not on this card cannot provide evidence either
+        with self.assertRaises(SystemExit):
+            verify_card(self.conn, "v3", status="done", run_id=live["id"] + 999)
+
+    def test_verify_derives_evidence_from_validated_terminal_run(self):
+        self._card("v4")
+        self._run("v4", status="done", outcome="completed",
+                  summary="MERGED to main e1e01b1")
+        result = verify_card(self.conn, "v4", status="done")  # no --evidence flag
+        self.assertEqual(result["card_status"], "done")
+        card = self.conn.execute("SELECT * FROM tasks WHERE id='v4'").fetchone()
+        self.assertEqual(card["status"], "done")
+        # evidence is the lane's real summary, never a fabricated string
+        self.assertIn("MERGED to main e1e01b1", card["result"])
 
     def test_archive_moves_terminal_card_only(self):
         self._card("a1", status="done")

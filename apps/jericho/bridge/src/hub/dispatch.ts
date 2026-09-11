@@ -51,10 +51,14 @@ export class HubDispatcher {
   confirm(idempotencyKey: string, confirmationToken?: string): HubDispatchReceipt {
     const existing = this.#receipts.get(idempotencyKey);
     if (!existing) throw new Error(`Unknown Hub dispatch key: ${idempotencyKey}`);
-    if (existing.plan.status === 'dispatched') {
-      return { ...structuredClone(existing), replayed: true };
-    }
-    if (existing.plan.status === 'failed') {
+    if (
+      existing.plan.status === 'dispatched' ||
+      existing.plan.status === 'failed' ||
+      existing.plan.status === 'verified' ||
+      existing.plan.status === 'archived'
+    ) {
+      // Terminal/closed receipts never reopen on a confirmation retry — replay
+      // the stored receipt (verdict + archive metadata intact) instead.
       return { ...structuredClone(existing), replayed: true };
     }
     if (existing.plan.requiresConfirmation && !this.#gate.isConfirmed(idempotencyKey, confirmationToken)) {
@@ -122,6 +126,15 @@ export class HubDispatcher {
       existing.plan.status === 'archived'
     ) {
       return { ...structuredClone(existing), replayed: true };
+    }
+    // An independent verdict only binds to a receipt that actually went through
+    // the dispatch gate. planned / pending_approval / approved receipts must be
+    // dispatched (confirmed) first — they never fall through to verification.
+    if (existing.plan.status !== 'dispatched') {
+      throw new Error(
+        `Cannot verify receipt in status ${existing.plan.status}; ` +
+          'verify requires dispatched (confirmation-gated plans must pass the gate)',
+      );
     }
     if (verdict.status !== 'verified' && verdict.status !== 'failed') {
       throw new Error(`Unsupported verdict status: ${verdict.status}`);
