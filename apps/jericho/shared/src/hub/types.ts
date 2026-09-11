@@ -195,3 +195,41 @@ export type HubEvent =
   | { type: 'command_log'; sequence: number; entry: HubCommandLogEntry }
   | { type: 'alert'; sequence: number; alert: HubAlert }
   | { type: 'mode'; sequence: number; mode: HubMode };
+
+/** Durable desktop text-chat turn. Transcripts live only in encrypted Core records. */
+export type ChatTurnRole = 'user' | 'assistant';
+export type ChatTurnState = 'thinking' | 'speaking' | 'answer';
+
+export const CHAT_TURN_SCHEMA_VERSION = 1 as const;
+export const DEFAULT_CHAT_CONVERSATION_ID = 'desktop';
+
+export interface ChatTurn {
+  schemaVersion: typeof CHAT_TURN_SCHEMA_VERSION;
+  id: string;
+  conversationId: string;
+  role: ChatTurnRole;
+  state: ChatTurnState;
+  text: string;
+  createdAt: HubIsoTimestamp;
+  commandId: string;
+  idempotencyKey: string;
+  source: 'desktop_text';
+  intent?: HubIntentKind;
+  targetAgent?: HubAgentId | null;
+  dispatchStatus?: HubDispatchStatus;
+}
+
+export interface ChatTurnAccepted {
+  schemaVersion: typeof CHAT_TURN_SCHEMA_VERSION;
+  conversationId: string;
+  userTurn: ChatTurn;
+  replyTurn: ChatTurn;
+  receipt: HubDispatchReceipt;
+  replayed: boolean;
+}
+
+export interface ChatHistoryPage {
+  schemaVersion: typeof CHAT_TURN_SCHEMA_VERSION;
+  turns: ChatTurn[];
+  nextBefore?: HubIsoTimestamp;
+}

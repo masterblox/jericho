@@ -17,6 +17,9 @@ import {
   type HubSnapshot,
   type HubWalkthroughEvent,
   type HubWhisperProbeResult,
+  type ChatHistoryPage,
+  type ChatTurn,
+  type ChatTurnAccepted,
 } from './types.js';
 
 const INTENT_KINDS = new Set(['TASK', 'QUERY', 'CREATE', 'BRIEF', 'DEMO']);
@@ -44,6 +47,8 @@ const MODES = new Set(['live', 'demo']);
 const CONNECTIONS = new Set(['connected', 'degraded', 'reconnecting', 'offline']);
 const WHISPER = new Set(['local', 'api_fallback', 'unavailable']);
 const DEMO_STREAMS = new Set(['competitor', 'deploy_fix', 'morning_brief']);
+const CHAT_ROLES = new Set(['user', 'assistant']);
+const CHAT_STATES = new Set(['thinking', 'speaking', 'answer']);
 const CONTEXT_CATEGORIES = new Set([
   'transcript',
   'repo',
@@ -252,6 +257,47 @@ export function assertHubSnapshot(value: unknown): asserts value is HubSnapshot 
       events.forEach((event) => assertHubWalkthroughEvent(event));
     }
   }
+}
+
+export function assertChatTurn(value: unknown): asserts value is ChatTurn {
+  assertRecord(value, 'ChatTurn');
+  if (value.schemaVersion !== 1) throw new TypeError('ChatTurn.schemaVersion must be 1');
+  assertNonEmptyString(value.id, 'ChatTurn.id');
+  assertNonEmptyString(value.conversationId, 'ChatTurn.conversationId');
+  assertOneOf(value.role, CHAT_ROLES, 'ChatTurn.role');
+  assertOneOf(value.state, CHAT_STATES, 'ChatTurn.state');
+  if (typeof value.text !== 'string') throw new TypeError('ChatTurn.text must be a string');
+  assertTimestamp(value.createdAt, 'ChatTurn.createdAt');
+  assertNonEmptyString(value.commandId, 'ChatTurn.commandId');
+  assertNonEmptyString(value.idempotencyKey, 'ChatTurn.idempotencyKey');
+  if (value.source !== 'desktop_text') throw new TypeError('ChatTurn.source must be desktop_text');
+  if ('intent' in value) assertOneOf(value.intent, INTENT_KINDS, 'ChatTurn.intent');
+  if ('targetAgent' in value && value.targetAgent !== null) {
+    assertAgentId(value.targetAgent, 'ChatTurn.targetAgent');
+  }
+  if ('dispatchStatus' in value) {
+    assertOneOf(value.dispatchStatus, DISPATCH_STATUSES, 'ChatTurn.dispatchStatus');
+  }
+}
+
+export function assertChatTurnAccepted(value: unknown): asserts value is ChatTurnAccepted {
+  assertRecord(value, 'ChatTurnAccepted');
+  if (value.schemaVersion !== 1) throw new TypeError('ChatTurnAccepted.schemaVersion must be 1');
+  assertNonEmptyString(value.conversationId, 'ChatTurnAccepted.conversationId');
+  assertChatTurn(value.userTurn);
+  assertChatTurn(value.replyTurn);
+  assertHubDispatchReceipt(value.receipt);
+  if (typeof value.replayed !== 'boolean') {
+    throw new TypeError('ChatTurnAccepted.replayed must be boolean');
+  }
+}
+
+export function assertChatHistoryPage(value: unknown): asserts value is ChatHistoryPage {
+  assertRecord(value, 'ChatHistoryPage');
+  if (value.schemaVersion !== 1) throw new TypeError('ChatHistoryPage.schemaVersion must be 1');
+  if (!Array.isArray(value.turns)) throw new TypeError('ChatHistoryPage.turns must be an array');
+  value.turns.forEach((turn) => assertChatTurn(turn));
+  if ('nextBefore' in value) assertTimestamp(value.nextBefore, 'ChatHistoryPage.nextBefore');
 }
 
 export function assertHubEvent(value: unknown): asserts value is HubEvent {

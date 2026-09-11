@@ -30,3 +30,13 @@ export {
 } from './demo.js';
 export { buildHubSnapshot } from './snapshot.js';
 export { HubCommandPlane, type HubCommandPlaneOptions } from './command-plane.js';
+export {
+  processDesktopTextTurn,
+  listChatTurns,
+  ChatTurnRequestError,
+  CHAT_CAPTURE_SOURCE,
+  CHAT_CAPTURE_TYPE,
+  type ChatLiveEvent,
+  type ChatTurnProcessorOptions,
+  type ProcessChatTurnInput,
+} from './chat-turns.js';

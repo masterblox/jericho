@@ -22,6 +22,8 @@ import {
   RiskLevel,
   SourceType,
   RouteType,
+  assertChatHistoryPage,
+  assertChatTurnAccepted,
   assertGroundedResultEvent,
   type CorrectionConfirmRequest,
   type CorrectionConfirmResponse,
@@ -80,6 +82,11 @@ import { KnowledgeRuntime } from './retention/knowledge-runtime.js';
 import type { FleetKnowledgeService } from './knowledge/fleet-knowledge.js';
 import { FederatedRetrievalService } from './retrieval/federated-retrieval.js';
 import { HttpPaperclipPort, PaperclipExecutor } from './connectors/paperclip-executor.js';
+import {
+  ChatTurnRequestError,
+  listChatTurns,
+  processDesktopTextTurn,
+} from './hub/chat-turns.js';
 import { CanonicalNoteWriter } from './correction/note-writer.js';
 import { ObsidianNoteOpener } from './connectors/obsidian-open.js';
 import { createPersonas, type PersonaMode } from './personas.js';
@@ -1290,6 +1297,45 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
       }
       return;
     }
+    if (request.method === 'POST' && url.pathname === '/api/v1/chat/turns') {
+      const body = await readJsonBody(request, 64 * 1024);
+      try {
+        const accepted = await processDesktopTextTurn(body, {
+          store: options.store,
+          now,
+          ...(options.vaultSearch ? { vaultSearch: options.vaultSearch } : {}),
+          onLiveEvent: (live) => broadcastSse(live.event, live.data),
+        });
+        assertChatTurnAccepted(accepted);
+        sendJson(response, accepted.replayed ? 200 : 201, accepted);
+      } catch (error) {
+        if (error instanceof ChatTurnRequestError) throw new HttpError(400, error.code);
+        if (error instanceof Error && /empty text/i.test(error.message)) {
+          throw new HttpError(400, 'invalid_chat_text');
+        }
+        throw error;
+      }
+      return;
+    }
+    if (request.method === 'GET' && url.pathname === '/api/v1/chat/turns') {
+      const limit = boundedInteger(url.searchParams.get('limit'), 50, 1, 200);
+      const before = url.searchParams.get('before') ?? undefined;
+      const conversationId = url.searchParams.get('conversationId') ?? undefined;
+      if (before !== undefined && !Number.isFinite(Date.parse(before))) {
+        throw new HttpError(400, 'invalid_chat_before');
+      }
+      if (conversationId !== undefined && (!conversationId.trim() || conversationId.length > 128)) {
+        throw new HttpError(400, 'invalid_conversation_id');
+      }
+      const page = listChatTurns(options.store, {
+        limit,
+        ...(before ? { before } : {}),
+        ...(conversationId ? { conversationId } : {}),
+      });
+      assertChatHistoryPage(page);
+      sendJson(response, 200, page);
+      return;
+    }
     if (request.method === 'GET' && url.pathname === '/api/v1/events') {
       openEventStream(request, response);
       return;
@@ -1350,6 +1396,12 @@ export function createJerichoServer(options: JerichoServerOptions): JerichoServe
     }
     for (const change of changes) writeSse(response, 'change', change.sequence, change);
     return changes.at(-1)?.sequence ?? after;
+  }
+
+  function broadcastSse(event: string, data: unknown): void {
+    for (const client of sseClients) {
+      if (!client.response.destroyed) writeSse(client.response, event, undefined, data);
+    }
   }
 
   return {
@@ -2530,6 +2582,7 @@ class HttpError extends Error {
 
 function httpFailure(error: unknown): { status: number; code: string } {
   if (error instanceof HttpError) return error;
+  if (error instanceof ChatTurnRequestError) return { status: 400, code: error.code };
   if (error instanceof EventConflictError) return { status: 409, code: 'event_conflict' };
   if (error instanceof MissionDecisionConflictError) {
     return { status: 409, code: 'mission_decision_conflict' };
