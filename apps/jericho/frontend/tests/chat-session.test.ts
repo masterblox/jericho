@@ -64,6 +64,19 @@ describe('ChatSessionStore', () => {
     expect(store.getSnapshot().agentState).toBe('idle');
   });
 
+  it('hydrates Core history in memory and startNewChat clears the thread without storage', () => {
+    const store = new ChatSessionStore();
+    store.hydrateFromCore('brief-2', [
+      { id: 'u1', kind: 'user', channel: 'text', text: 'Queue the fleet review', at: '2026-09-11T21:00:00.000Z' },
+    ]);
+    expect(store.getSnapshot().conversationId).toBe('brief-2');
+    expect(store.getSnapshot().turns).toHaveLength(1);
+    store.startNewChat();
+    expect(store.getSnapshot().turns).toHaveLength(0);
+    expect(store.getSnapshot().conversationId).not.toBe('brief-2');
+    expect(Object.keys(localStorage)).toHaveLength(0);
+  });
+
   it('replaces an in-flight grounded result with the same resultId', () => {
     const store = new ChatSessionStore();
     store.appendGroundedResult(grounded({ phase: 'retrieving', confidence: 'none', retrievalCount: 0 }));

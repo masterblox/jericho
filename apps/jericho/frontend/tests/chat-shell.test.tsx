@@ -68,7 +68,7 @@ describe('ChatShell', () => {
       fetchPort.mock.calls.find((call) => call[0] === '/api/v1/chat/turns')?.[1]?.body,
     )) as { text?: string };
     expect(body.text).toBe('Prepare the Isabella brief');
-    expect(await screen.findByText('Understood, sir.')).toBeTruthy();
+    expect((await screen.findAllByText('Understood, sir.')).length).toBeGreaterThan(0);
     const state = session.getSnapshot();
     expect(state.turns.some((turn) => turn.kind === 'user' && turn.text === 'Prepare the Isabella brief')).toBe(true);
     expect(state.turns.some((turn) => turn.kind === 'jericho' && turn.text === 'Understood, sir.')).toBe(true);
@@ -94,7 +94,7 @@ describe('ChatShell', () => {
       document.dispatchEvent(new CustomEvent(SPEECH_PLAYING_EVENT, { detail: { playing: true } }));
       document.dispatchEvent(new CustomEvent(VOICE_TEXT_EVENT, { detail: { text: 'The window is arranged.' } }));
     });
-    expect(screen.getByText('The window is arranged.')).toBeTruthy();
+    expect(screen.getAllByText('The window is arranged.').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Speaking').length).toBeGreaterThan(0);
 
     act(() => {
@@ -185,6 +185,52 @@ describe('ChatShell', () => {
     unmount();
   });
 
+  it('renders the Efferd sidebar, usage meter, and conversation list from Core data', async () => {
+    const store = new CommandCenterStore();
+    store.replace(snapshot({
+      connectors: [{
+        connectorId: 'obsidian',
+        status: 'healthy' as never,
+        checkedAt: '2026-09-11T00:00:00.000Z',
+        consecutiveFailures: 0,
+        freshness: 'fresh' as never,
+        capabilities: [],
+        details: {},
+        provenance: [],
+      }],
+    }));
+    const { unmount } = mountChat({
+      store,
+      history: {
+        schemaVersion: 1,
+        turns: [{
+          id: 'hist-1',
+          conversationId: 'desktop',
+          role: 'user',
+          text: 'Prepare the Isabella brief',
+          createdAt: '2026-09-11T20:00:00.000Z',
+        }],
+      },
+    });
+    expect(await screen.findByRole('complementary', { name: 'Workspace' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'New chat' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Chats/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Projects/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Artifacts/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Images/ })).toBeTruthy();
+    expect(await screen.findByLabelText('Core usage')).toBeTruthy();
+    expect(screen.getAllByText('$0.00').length).toBeGreaterThan(0);
+    expect(screen.getByText('1/1 connectors healthy')).toBeTruthy();
+    expect(await screen.findByRole('list', { name: 'Conversation list' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Prepare the Isabella brief/ })).toBeTruthy();
+    expect(document.querySelector('[data-gesture-target="chat:new"]')).toBeTruthy();
+    expect(document.querySelector('[data-gesture-target="usage:meter"]')).toBeTruthy();
+    expect(document.querySelector('[data-gesture-target="user:menu"]')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(screen.getByText('Talk with Jericho. Text stays on this Mac; voice greets first, then listens.')).toBeTruthy();
+    unmount();
+  });
+
   it('wakes the engaged runtime from the composer mic and keeps keyboard send complete', async () => {
     const runtime = { engage: vi.fn(), wake: vi.fn(), recalibrate: vi.fn(), dispose: vi.fn() };
     const { unmount } = mountChat({ runtime });
@@ -192,7 +238,7 @@ describe('ChatShell', () => {
     expect(runtime.wake).toHaveBeenCalledTimes(1);
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Jericho' }), { target: { value: 'Keyboard path' } });
     fireEvent.keyDown(screen.getByRole('textbox', { name: 'Message Jericho' }), { key: 'Enter' });
-    await waitFor(() => expect(screen.getByText('Keyboard path')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText('Keyboard path').length).toBeGreaterThan(0));
     unmount();
   });
 });
@@ -200,33 +246,38 @@ describe('ChatShell', () => {
 function mountChat(options: {
   store?: CommandCenterStore;
   runtime?: { engage: () => void; wake: () => void; recalibrate: () => void; dispose: () => void };
+  history?: { schemaVersion: 1; turns: Array<Record<string, unknown>> };
 } = {}) {
   const store = options.store ?? new CommandCenterStore();
-  const fetchPort = vi.fn(async (url: string) => {
-    if (url === '/api/v1/health') {
+  const fetchPort = vi.fn(async (url: string, init?: RequestInit) => {
+    const path = String(url);
+    if (path === '/api/v1/health') {
       return new Response(JSON.stringify({
         ok: true,
         startup: { storage: 'persistent', database: '~/.jericho/jericho.db', initializedNewCore: false },
-        connectors: [],
+        connectors: [{ connectorId: 'obsidian', status: 'healthy' }],
         vault: { ready: true },
         voice: { status: 'available' },
       }), { status: 200 });
     }
-    if (url === '/api/v1/command-center') {
+    if (path === '/api/v1/command-center') {
       return new Response(JSON.stringify(store.getSnapshot().snapshot ?? snapshot()), { status: 200 });
     }
-    if (url === '/api/v1/captures') {
+    if (path === '/api/v1/captures') {
       return new Response(JSON.stringify({ ok: true }), { status: 201 });
     }
-    if (url === '/api/v1/chat/turns') {
-      return new Response(JSON.stringify({
-        schemaVersion: 1,
-        conversationId: 'local',
-        userTurn: { id: 'u1', role: 'user', state: 'answer', text: 'Prepare the Isabella brief' },
-        replyTurn: { id: 'r1', role: 'assistant', state: 'answer', text: 'Understood, sir.' },
-        receipt: { replayed: false },
-        replayed: false,
-      }), { status: 201 });
+    if (path.startsWith('/api/v1/chat/turns')) {
+      if (init?.method === 'POST') {
+        return new Response(JSON.stringify({
+          schemaVersion: 1,
+          conversationId: 'local',
+          userTurn: { id: 'u1', role: 'user', state: 'answer', text: 'Prepare the Isabella brief' },
+          replyTurn: { id: 'r1', role: 'assistant', state: 'answer', text: 'Understood, sir.' },
+          receipt: { replayed: false },
+          replayed: false,
+        }), { status: 201 });
+      }
+      return new Response(JSON.stringify(options.history ?? { schemaVersion: 1, turns: [] }), { status: 200 });
     }
     return new Response('not found', { status: 404 });
   });

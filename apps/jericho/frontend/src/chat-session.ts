@@ -1,3 +1,4 @@
+import { DEFAULT_CHAT_CONVERSATION_ID } from '@jericho/shared';
 import type { GroundedResultPayload } from './grounded-result';
 
 export type AgentState = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -39,6 +40,7 @@ export interface ToolActivity {
 }
 
 export interface ChatSessionState {
+  conversationId: string;
   turns: ChatTurn[];
   agentState: AgentState;
   speechPlaying: boolean;
@@ -48,6 +50,7 @@ export interface ChatSessionState {
 }
 
 const INITIAL_STATE: ChatSessionState = {
+  conversationId: DEFAULT_CHAT_CONVERSATION_ID,
   turns: [],
   agentState: 'idle',
   speechPlaying: false,
@@ -183,6 +186,26 @@ export class ChatSessionStore {
 
   setComposerError(error: string | undefined): void {
     this.#set({ ...this.#state, composerError: error });
+  }
+
+  startNewChat(): string {
+    const conversationId = nextId();
+    this.#set({
+      ...this.#state,
+      conversationId,
+      turns: [],
+      composerError: undefined,
+    });
+    return conversationId;
+  }
+
+  hydrateFromCore(conversationId: string, turns: ChatTurn[]): void {
+    this.#set({
+      ...this.#state,
+      conversationId,
+      turns,
+      composerError: undefined,
+    });
   }
 
   #set(state: ChatSessionState): void {

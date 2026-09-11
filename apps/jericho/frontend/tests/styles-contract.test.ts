@@ -21,4 +21,19 @@ describe('command-center layout contract', () => {
     expect(styles).toContain('.jericho-runtime-calibration');
     expect(styles).toContain('.jericho-runtime-diagnostics');
   });
+
+  it('keeps Efferd tokens and Geist on the chat shell without dropping operator-bay fallback', () => {
+    expect(styles).toContain('--background: oklch(0.145 0 0)');
+    expect(styles).toContain('--foreground: oklch(0.985 0 0)');
+    expect(styles).toContain('--muted: oklch(0.269 0 0)');
+    expect(styles).toContain('--muted-foreground: oklch(0.708 0 0)');
+    expect(styles).toContain('--border: oklch(0.269 0 0)');
+    expect(styles).toContain('--primary: oklch(0.922 0 0)');
+    expect(styles).toContain('--radius: 0.625rem');
+    expect(styles).toContain('--background: oklch(1 0 0)');
+    expect(styles).toContain('"Geist Variable"');
+    expect(styles).toContain('.cn-card');
+    expect(styles).toContain('.jericho-sidebar');
+    expect(styles).toContain('.jericho-usage-meter');
+  });
 });

@@ -1,21 +1,53 @@
 :root {
   color-scheme: dark;
-  --jericho-ink: #05090c;
-  --jericho-plate: #0a1115;
-  --jericho-panel: rgba(8, 16, 20, 0.94);
-  --jericho-panel-raised: rgba(13, 24, 28, 0.97);
-  --jericho-rule: rgba(142, 188, 193, 0.22);
-  --jericho-rule-strong: rgba(135, 211, 216, 0.48);
-  --jericho-cyan: #77d7dc;
-  --jericho-cyan-hot: #c7fbff;
-  --jericho-amber: #e4b36a;
-  --jericho-red: #df796f;
-  --jericho-green: #80c7a1;
-  --jericho-text: #d6e0df;
-  --jericho-muted: #7f9292;
-  --jericho-faint: #4e6061;
-  --jericho-display: "Arial Narrow", "Avenir Next Condensed", "Helvetica Neue", sans-serif;
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.205 0 0);
+  --border: oklch(0.269 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --primary: oklch(0.922 0 0);
+  --radius: 0.625rem;
+  --chart-1: oklch(0.87 0 0);
+  --chart-2: oklch(0.556 0 0);
+  --chart-3: oklch(0.439 0 0);
+  --chart-4: oklch(0.371 0 0);
+  --chart-5: oklch(0.269 0 0);
+  --jericho-ink: var(--background);
+  --jericho-plate: var(--card);
+  --jericho-panel: var(--card);
+  --jericho-panel-raised: var(--card);
+  --jericho-rule: var(--border);
+  --jericho-rule-strong: color-mix(in oklch, var(--border) 80%, var(--foreground));
+  --jericho-cyan: oklch(0.78 0 0);
+  --jericho-cyan-hot: var(--foreground);
+  --jericho-amber: oklch(0.78 0.04 75);
+  --jericho-red: oklch(0.63 0.12 25);
+  --jericho-green: oklch(0.72 0.08 155);
+  --jericho-text: var(--foreground);
+  --jericho-muted: var(--muted-foreground);
+  --jericho-faint: var(--muted-foreground);
+  --jericho-sans: "Geist Variable", Geist, ui-sans-serif, system-ui, sans-serif;
+  --jericho-display: var(--jericho-sans);
   --jericho-mono: "SFMono-Regular", "SF Mono", Menlo, Consolas, monospace;
+}
+
+html[data-theme="light"],
+#app[data-theme="light"],
+.jericho-chat-shell[data-theme="light"] {
+  color-scheme: light;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.145 0 0);
+  --card: oklch(1 0 0);
+  --border: oklch(0.922 0 0);
+  --muted: oklch(0.97 0 0);
+  --muted-foreground: oklch(0.556 0 0);
+  --primary: oklch(0.205 0 0);
+  --jericho-cyan: oklch(0.37 0 0);
+  --jericho-cyan-hot: oklch(0.205 0 0);
+  --jericho-amber: oklch(0.55 0.08 75);
+  --jericho-red: oklch(0.5 0.14 25);
+  --jericho-green: oklch(0.45 0.08 155);
 }
 
 #app.jericho-persona--megatron {
@@ -55,8 +87,9 @@ body {
     linear-gradient(rgba(5, 9, 12, 0.95), rgba(5, 9, 12, 0.96)),
     url('/plates/operator-bay.jpg') center / cover fixed;
   color: var(--jericho-text);
-  font-family: var(--jericho-mono);
-  font-size: 13px;
+  font-family: var(--jericho-sans);
+  font-size: 14px;
+  line-height: 20px;
 }
 
 button,
@@ -1668,11 +1701,230 @@ a:focus-visible {
   text-transform: uppercase;
 }
 
+.cn-card,
+.jericho-chat-card,
+.jericho-chat-turn {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
+  box-shadow: 0 0 0 1px color-mix(in oklch, var(--foreground) 10%, transparent);
+}
+
 .jericho-chat-shell {
   display: grid;
-  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   min-height: 100dvh;
+  gap: 0;
+  padding: 0;
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--jericho-sans);
+}
+
+.jericho-chat-shell::before {
+  content: none;
+}
+
+.jericho-chat-main {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto;
+  min-width: 0;
+  min-height: 100dvh;
+  gap: 12px;
+  padding: 16px 20px 20px;
+}
+
+.jericho-sidebar {
+  display: grid;
+  grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+  gap: 16px;
+  width: 240px;
+  min-height: 100dvh;
+  padding: 16px 12px;
+  border-right: 1px solid var(--border);
+  border-radius: 0;
+  background: var(--card);
+}
+
+.jericho-sidebar[data-collapsed="true"] {
+  width: 64px;
+  padding-inline: 8px;
+}
+
+.jericho-sidebar[data-collapsed="true"] .jericho-sidebar__new,
+.jericho-sidebar[data-collapsed="true"] .jericho-sidebar__nav button span:last-child,
+.jericho-sidebar[data-collapsed="true"] .jericho-usage-meter p,
+.jericho-sidebar[data-collapsed="true"] .jericho-user-menu small {
+  display: none;
+}
+
+.jericho-sidebar__brand {
+  display: flex;
+  align-items: center;
   gap: 8px;
+}
+
+.jericho-sidebar__brand strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.jericho-sidebar button {
+  min-height: 44px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--foreground);
+  cursor: pointer;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: left;
+}
+
+.jericho-sidebar__new {
+  border: 1px solid var(--border) !important;
+  background: var(--muted) !important;
+}
+
+.jericho-sidebar__nav {
+  display: grid;
+  gap: 4px;
+}
+
+.jericho-sidebar__nav button {
+  display: flex;
+  justify-content: space-between;
+  color: var(--foreground);
+}
+
+.jericho-sidebar__nav button[aria-current="page"] {
+  background: var(--muted);
+  font-weight: 500;
+}
+
+.jericho-sidebar__nav button span:last-child {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.jericho-sidebar__list {
+  min-height: 0;
+  overflow: auto;
+}
+
+.jericho-sidebar__list ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.jericho-sidebar__list button,
+.jericho-sidebar__list p {
+  display: grid;
+  gap: 2px;
+  width: 100%;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+}
+
+.jericho-sidebar__list button[aria-current="true"] {
+  background: var(--muted);
+}
+
+.jericho-sidebar__list span,
+.jericho-sidebar__list time,
+.jericho-sidebar__empty {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 16px;
+}
+
+.jericho-sidebar__list strong {
+  font-size: 14px;
+  font-weight: 500;
+}
+
+.jericho-usage-meter {
+  padding: 12px;
+  border-radius: var(--radius);
+}
+
+.jericho-usage-meter p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.jericho-usage-meter span {
+  color: var(--muted-foreground);
+}
+
+.jericho-usage-meter__bar {
+  height: 6px;
+  margin: 8px 0;
+  overflow: hidden;
+  border-radius: 999px;
+  background: var(--muted);
+}
+
+.jericho-usage-meter__bar span {
+  display: block;
+  height: 100%;
+  background: var(--primary);
+}
+
+.jericho-usage-meter__connectors {
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.jericho-user-menu {
+  position: relative;
+}
+
+.jericho-user-menu button {
+  display: grid;
+}
+
+.jericho-user-menu small {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 12.5px;
+}
+
+.jericho-user-menu__panel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  left: 0;
+  z-index: 4;
+  padding: 8px;
+}
+
+.jericho-chat-masthead {
+  margin-bottom: 0;
+  padding: 8px 0 12px;
+  border-block: 0;
+  border-bottom: 1px solid var(--border);
+  background: none;
+}
+
+.jericho-chat-masthead h1 {
+  color: var(--foreground);
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 32px;
 }
 
 .jericho-chat-masthead__meta {
@@ -1691,18 +1943,18 @@ a:focus-visible {
 .jericho-chat-surfaces button {
   min-height: 44px;
   padding: 0 14px;
-  border: 1px solid var(--jericho-rule);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
   background: transparent;
-  color: var(--jericho-muted);
+  color: var(--muted-foreground);
   cursor: pointer;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 500;
 }
 
 .jericho-chat-surfaces button[aria-pressed="true"] {
-  border-color: var(--jericho-cyan);
-  color: var(--jericho-cyan-hot);
-  background: rgba(119, 215, 220, 0.1);
+  border-color: var(--foreground);
+  color: var(--foreground);
+  background: var(--muted);
 }
 
 .jericho-chat-state {
@@ -1838,36 +2090,38 @@ a:focus-visible {
 
 .jericho-chat-composer {
   display: grid;
-  gap: 6px;
-  padding: 10px;
-  border: 1px solid var(--jericho-rule-strong);
-  background: var(--jericho-panel-raised);
+  gap: 8px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--card);
 }
 
 .jericho-chat-composer__row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 6px;
+  gap: 8px;
 }
 
 .jericho-chat-composer textarea {
   min-height: 52px;
   resize: vertical;
-  padding: 10px;
-  border: 1px solid var(--jericho-rule);
-  background: rgba(2, 8, 11, 0.82);
-  color: var(--jericho-text);
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--muted);
+  color: var(--foreground);
 }
 
 .jericho-chat-composer button {
   min-height: 52px;
   padding: 0 14px;
-  border: 1px solid var(--jericho-rule-strong);
-  background: rgba(119, 215, 220, 0.08);
-  color: var(--jericho-cyan-hot);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--primary);
+  color: var(--background);
   cursor: pointer;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  font-weight: 500;
 }
 
 .jericho-chat-composer button:disabled {
@@ -1876,6 +2130,21 @@ a:focus-visible {
 }
 
 @media (max-width: 900px) {
+  .jericho-chat-shell {
+    grid-template-columns: 1fr;
+  }
+
+  .jericho-sidebar {
+    width: 100%;
+    min-height: 0;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .jericho-sidebar[data-collapsed="true"] {
+    width: 100%;
+  }
+
   .jericho-chat-layout {
     grid-template-columns: 1fr;
   }

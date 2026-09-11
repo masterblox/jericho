@@ -24,7 +24,15 @@ import {
   VOICE_TOOL_START_EVENT,
   VOICE_WAKE_EVENT,
 } from './chat-events';
+import {
+  conversationsFromHistory,
+  fetchChatHistory,
+  mapHistoryTurns,
+  type ConversationListItem,
+} from './chat-history';
 import { ChatSessionStore, type AgentState, type ChatSurface, type ChatTurn } from './chat-session';
+import { ChatSidebar, type SidebarSection } from './chat-sidebar';
+import { coreUsageMeter } from './chat-usage';
 import { CoreClient, CoreRequestError, type CoreHealth } from './core-client';
 import { CommandCenterStore } from './command-center-store';
 import type { RuntimeLifecyclePort } from './engage-gate';
@@ -83,6 +91,11 @@ export function ChatShell({
   const [sending, setSending] = useState(false);
   const [health, setHealth] = useState<CoreHealth | undefined>();
   const [healthStatus, setHealthStatus] = useState<'loading' | 'ready' | 'locked' | 'unavailable' | 'degraded'>('loading');
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarSection, setSidebarSection] = useState<SidebarSection>('chats');
+  const [historyConversations, setHistoryConversations] = useState<ConversationListItem[]>([]);
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [theme, setTheme] = useState<'light' | 'dark'>('dark');
   const threadRef = useRef<HTMLDivElement>(null);
   const standalone = useRef<BridgeClient | null>(null);
   const startingVoice = useRef(false);
@@ -189,6 +202,21 @@ export function ChatShell({
     node.scrollTop = node.scrollHeight;
   }, [chat.turns.length, chat.agentState, chat.tool]);
 
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.colorScheme = theme;
+  }, [theme]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetchChatHistory({ limit: 50, signal: controller.signal })
+      .then((page) => {
+        if (page) setHistoryConversations(conversationsFromHistory(page.turns));
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, []);
+
   useEffect(() => () => {
     void standalone.current?.dispose();
     standalone.current = null;
@@ -210,7 +238,7 @@ export function ChatShell({
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify({ text, conversationId: session.getSnapshot().conversationId }),
     });
     if (!response.ok) throw new Error('Chat turn failed');
     const accepted = await response.json() as {
@@ -238,6 +266,22 @@ export function ChatShell({
       setSending(false);
     }
   };
+
+  const startNewChat = () => {
+    session.startNewChat();
+    setDraft('');
+    setSidebarSection('chats');
+  };
+
+  const selectConversation = useCallback(async (conversationId: string) => {
+    if (conversationId === session.getSnapshot().conversationId) return;
+    try {
+      const page = await fetchChatHistory({ conversationId, limit: 50 });
+      session.hydrateFromCore(conversationId, page ? mapHistoryTurns(page.turns) : []);
+    } catch {
+      session.hydrateFromCore(conversationId, []);
+    }
+  }, [session]);
 
   const wakeVoice = async () => {
     if (runtime) {
@@ -270,177 +314,210 @@ export function ChatShell({
         ? 'unavailable'
         : 'loading';
 
+  const missions = snapshot?.missions ?? [];
+  const outcomes = snapshot?.outcomes ?? [];
+  const packages = snapshot?.knowledge?.packages ?? [];
+  const groundedCount = chat.turns.filter((turn) => turn.kind === 'grounded').length;
+  const usage = coreUsageMeter(snapshot, health);
+  const conversations = mergeLiveConversations(historyConversations, chat.conversationId, chat.turns);
+  const operatorLabel = 'Operator';
+  const operatorMeta = connection === 'ready' ? 'Core live' : connection === 'locked' ? 'Core locked' : connection === 'unavailable' ? 'Core unavailable' : 'Connecting';
+
   return (
-    <div className="jericho-shell jericho-chat-shell" data-surface={surface}>
+    <div className="jericho-shell jericho-chat-shell" data-surface={surface} data-theme={theme}>
       <a className="jericho-skip-link" href="#jericho-composer">Skip to composer</a>
-      <header className="jericho-masthead jericho-chat-masthead">
-        <div>
-          <span className="jericho-eyebrow">Private local intelligence</span>
-          <h1>JERICHO</h1>
-        </div>
-        <div className="jericho-chat-masthead__meta">
-          <p className="jericho-core-status" role="status">
-            <span className={`jericho-status-light ${connection === 'ready' ? 'jericho-status-light--ready' : connection === 'unavailable' || connection === 'locked' ? 'jericho-status-light--unavailable' : ''}`} />
-            <span>{connection === 'ready' ? 'Core live' : connection === 'locked' ? 'Core locked' : connection === 'unavailable' ? 'Core unavailable' : 'Connecting'}</span>
-            <span>{health?.voice.status === 'available' ? 'Voice ready' : 'Voice gated'}</span>
-          </p>
-          <AgentStatusBadge state={chat.agentState} />
-          <nav className="jericho-chat-surfaces" aria-label="Interface">
-            <button
-              type="button"
-              data-gesture-target="view:chat"
-              aria-pressed={surface === 'chat'}
-              onClick={() => setSurface('chat')}
-            >
-              Chat
-            </button>
-            <button
-              type="button"
-              data-gesture-target="view:sphere"
-              aria-pressed={surface === 'sphere'}
-              onClick={() => setSurface('sphere')}
-            >
-              Sphere
-            </button>
-          </nav>
-        </div>
-      </header>
+      <ChatSidebar
+        collapsed={sidebarCollapsed}
+        section={sidebarSection}
+        conversations={conversations}
+        activeConversationId={chat.conversationId}
+        missions={missions}
+        outcomes={outcomes}
+        packages={packages}
+        artifactCount={packages.length + outcomes.length + groundedCount}
+        imageCount={0}
+        usage={usage}
+        operatorLabel={operatorLabel}
+        operatorMeta={`${operatorMeta} · ${health?.voice.status === 'available' ? 'Voice ready' : 'Voice gated'}`}
+        theme={theme}
+        userMenuOpen={userMenuOpen}
+        onToggle={() => setSidebarCollapsed((value) => !value)}
+        onNewChat={startNewChat}
+        onSelectConversation={(id) => void selectConversation(id)}
+        onSection={setSidebarSection}
+        onToggleUserMenu={() => setUserMenuOpen((value) => !value)}
+        onToggleTheme={() => setTheme((value) => value === 'dark' ? 'light' : 'dark')}
+      />
+      <div className="jericho-chat-main">
+        <header className="jericho-masthead jericho-chat-masthead">
+          <div>
+            <span className="jericho-eyebrow">Private local intelligence</span>
+            <h1>JERICHO</h1>
+          </div>
+          <div className="jericho-chat-masthead__meta">
+            <p className="jericho-core-status" role="status">
+              <span className={`jericho-status-light ${connection === 'ready' ? 'jericho-status-light--ready' : connection === 'unavailable' || connection === 'locked' ? 'jericho-status-light--unavailable' : ''}`} />
+              <span>{connection === 'ready' ? 'Core live' : connection === 'locked' ? 'Core locked' : connection === 'unavailable' ? 'Core unavailable' : 'Connecting'}</span>
+              <span>{health?.voice.status === 'available' ? 'Voice ready' : 'Voice gated'}</span>
+            </p>
+            <AgentStatusBadge state={chat.agentState} />
+            <nav className="jericho-chat-surfaces" aria-label="Interface">
+              <button
+                type="button"
+                data-gesture-target="view:chat"
+                aria-pressed={surface === 'chat'}
+                onClick={() => setSurface('chat')}
+              >
+                Chat
+              </button>
+              <button
+                type="button"
+                data-gesture-target="view:sphere"
+                aria-pressed={surface === 'sphere'}
+                onClick={() => setSurface('sphere')}
+              >
+                Sphere
+              </button>
+            </nav>
+          </div>
+        </header>
 
-      {(core.status === 'disconnected' || core.status === 'unavailable') && (
-        <p className="jericho-connection-banner" role="status">{core.error ?? 'Live updates disconnected'}</p>
-      )}
+        {(core.status === 'disconnected' || core.status === 'unavailable') && (
+          <p className="jericho-connection-banner" role="status">{core.error ?? 'Live updates disconnected'}</p>
+        )}
 
-      <div className="jericho-chat-toolstrip" aria-live="polite">
-        {chat.tool && (
-          <p className="jericho-chat-tool" data-state={chat.tool.state} role="status">
-            {chat.tool.message}
-          </p>
+        <div className="jericho-chat-toolstrip" aria-live="polite">
+          {chat.tool && (
+            <p className="jericho-chat-tool" data-state={chat.tool.state} role="status">
+              {chat.tool.message}
+            </p>
+          )}
+        </div>
+
+        {surface === 'sphere' ? (
+          <Suspense fallback={<div className="jericho-loading">CONNECTING TO JERICHO CORE</div>}>
+            <SphereShell store={store} client={client} manageClient={false} onRecalibrate={runtime ? () => runtime.recalibrate() : undefined} />
+          </Suspense>
+        ) : (
+          <div className="jericho-chat-layout">
+            <section
+              ref={threadRef}
+              className="jericho-bay jericho-bay--left jericho-chat-thread"
+              aria-label="Conversation with Jericho"
+            >
+              {chat.turns.length === 0 && approvals.length === 0 && reviews.length === 0 && (
+                <p className="jericho-empty">Talk with Jericho. Text stays on this Mac; voice greets first, then listens.</p>
+              )}
+              {chat.turns.map((turn) => <ChatTurnView key={turn.id} turn={turn} />)}
+              {chat.agentState !== 'idle' && (
+                <p className="jericho-chat-agent" data-state={chat.agentState} role="status">
+                  Jericho is {AGENT_LABEL[chat.agentState].toLowerCase()}
+                </p>
+              )}
+            </section>
+
+            <aside className="jericho-chat-rail" aria-label="Pending review">
+              {approvals.map((approval, index) => (
+                <ApprovalCard
+                  key={approval.id}
+                  approval={approval}
+                  active={index === 0}
+                  onDecide={(outcome) => void client.decideMission({
+                    missionId: approval.missionId,
+                    planHash: approval.planHash,
+                    version: approval.version,
+                    outcome,
+                    reason: `${outcome === DecisionOutcome.Approved ? 'Approved' : 'Rejected'} from chat`,
+                  })}
+                  onCancel={() => void client.cancelMission({
+                    missionId: approval.missionId,
+                    planHash: approval.planHash,
+                    version: approval.version,
+                    reason: 'Cancelled from chat',
+                  })}
+                />
+              ))}
+              {reviews.map((intent) => (
+                <ReviewCard
+                  key={intent.id}
+                  intent={intent}
+                  onDecide={(disposition) => {
+                    if (!intent.integrityHash) return;
+                    void client.decideReviewIntent({
+                      intentId: intent.id,
+                      intentHash: intent.integrityHash,
+                      disposition,
+                      reason: 'Reviewed from chat',
+                    });
+                  }}
+                />
+              ))}
+              {proposals.map((proposal) => (
+                <ProposalCard
+                  key={proposal.id}
+                  proposal={proposal}
+                  onDecide={(outcome) => {
+                    if (!proposal.integrityHash || proposal.version === undefined) return;
+                    void client.decideProposal({
+                      proposalId: proposal.id,
+                      proposalHash: proposal.integrityHash,
+                      version: proposal.version,
+                      outcome,
+                      reason: 'Reviewed from chat',
+                    });
+                  }}
+                />
+              ))}
+              {approvals[0] && <p className="jericho-chat-hint">Thumb up or down holds the exact visible plan.</p>}
+            </aside>
+          </div>
+        )}
+
+        {surface === 'chat' && (
+          <form
+            id="jericho-composer"
+            className="jericho-chat-composer cn-card"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void sendText();
+            }}
+          >
+            <label className="jericho-eyebrow" htmlFor="jericho-composer-input">Message Jericho</label>
+            <div className="jericho-chat-composer__row">
+              <textarea
+                id="jericho-composer-input"
+                value={draft}
+                rows={2}
+                placeholder="Ask Jericho…"
+                onChange={(event) => setDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' && !event.shiftKey) {
+                    event.preventDefault();
+                    void sendText();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                data-gesture-target="chat:mic"
+                aria-pressed={chat.agentState === 'listening' || chat.agentState === 'speaking'}
+                aria-label="Wake Jericho voice"
+                onClick={() => void wakeVoice()}
+              >
+                Mic
+              </button>
+              <button
+                type="submit"
+                data-gesture-target="chat:send"
+                disabled={!draft.trim() || sending}
+              >
+                Send
+              </button>
+            </div>
+            {chat.composerError && <p className="jericho-error" role="alert">{chat.composerError}</p>}
+          </form>
         )}
       </div>
-
-      {surface === 'sphere' ? (
-        <Suspense fallback={<div className="jericho-loading">CONNECTING TO JERICHO CORE</div>}>
-          <SphereShell store={store} client={client} manageClient={false} onRecalibrate={runtime ? () => runtime.recalibrate() : undefined} />
-        </Suspense>
-      ) : (
-        <div className="jericho-chat-layout">
-          <section
-            ref={threadRef}
-            className="jericho-bay jericho-bay--left jericho-chat-thread"
-            aria-label="Conversation with Jericho"
-          >
-            {chat.turns.length === 0 && approvals.length === 0 && reviews.length === 0 && (
-              <p className="jericho-empty">Talk with Jericho. Text stays on this Mac; voice greets first, then listens.</p>
-            )}
-            {chat.turns.map((turn) => <ChatTurnView key={turn.id} turn={turn} />)}
-            {chat.agentState !== 'idle' && (
-              <p className="jericho-chat-agent" data-state={chat.agentState} role="status">
-                Jericho is {AGENT_LABEL[chat.agentState].toLowerCase()}
-              </p>
-            )}
-          </section>
-
-          <aside className="jericho-chat-rail" aria-label="Pending review">
-            {approvals.map((approval, index) => (
-              <ApprovalCard
-                key={approval.id}
-                approval={approval}
-                active={index === 0}
-                onDecide={(outcome) => void client.decideMission({
-                  missionId: approval.missionId,
-                  planHash: approval.planHash,
-                  version: approval.version,
-                  outcome,
-                  reason: `${outcome === DecisionOutcome.Approved ? 'Approved' : 'Rejected'} from chat`,
-                })}
-                onCancel={() => void client.cancelMission({
-                  missionId: approval.missionId,
-                  planHash: approval.planHash,
-                  version: approval.version,
-                  reason: 'Cancelled from chat',
-                })}
-              />
-            ))}
-            {reviews.map((intent) => (
-              <ReviewCard
-                key={intent.id}
-                intent={intent}
-                onDecide={(disposition) => {
-                  if (!intent.integrityHash) return;
-                  void client.decideReviewIntent({
-                    intentId: intent.id,
-                    intentHash: intent.integrityHash,
-                    disposition,
-                    reason: 'Reviewed from chat',
-                  });
-                }}
-              />
-            ))}
-            {proposals.map((proposal) => (
-              <ProposalCard
-                key={proposal.id}
-                proposal={proposal}
-                onDecide={(outcome) => {
-                  if (!proposal.integrityHash || proposal.version === undefined) return;
-                  void client.decideProposal({
-                    proposalId: proposal.id,
-                    proposalHash: proposal.integrityHash,
-                    version: proposal.version,
-                    outcome,
-                    reason: 'Reviewed from chat',
-                  });
-                }}
-              />
-            ))}
-            {approvals[0] && <p className="jericho-chat-hint">Thumb up or down holds the exact visible plan.</p>}
-          </aside>
-        </div>
-      )}
-
-      {surface === 'chat' && (
-        <form
-          id="jericho-composer"
-          className="jericho-chat-composer"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void sendText();
-          }}
-        >
-          <label className="jericho-eyebrow" htmlFor="jericho-composer-input">Message Jericho</label>
-          <div className="jericho-chat-composer__row">
-            <textarea
-              id="jericho-composer-input"
-              value={draft}
-              rows={2}
-              placeholder="Ask Jericho…"
-              onChange={(event) => setDraft(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter' && !event.shiftKey) {
-                  event.preventDefault();
-                  void sendText();
-                }
-              }}
-            />
-            <button
-              type="button"
-              data-gesture-target="chat:mic"
-              aria-pressed={chat.agentState === 'listening' || chat.agentState === 'speaking'}
-              aria-label="Wake Jericho voice"
-              onClick={() => void wakeVoice()}
-            >
-              Mic
-            </button>
-            <button
-              type="submit"
-              data-gesture-target="chat:send"
-              disabled={!draft.trim() || sending}
-            >
-              Send
-            </button>
-          </div>
-          {chat.composerError && <p className="jericho-error" role="alert">{chat.composerError}</p>}
-        </form>
-      )}
     </div>
   );
 }
@@ -492,7 +569,7 @@ function ChatTurnView({ turn }: { turn: ChatTurn }) {
   }
   return (
     <article
-      className={`jericho-chat-turn jericho-chat-turn--${turn.kind}`}
+      className={`jericho-chat-turn jericho-chat-turn--${turn.kind} cn-card`}
       data-channel={turn.channel}
       data-gesture-target={`turn:${turn.id}`}
     >
@@ -508,7 +585,7 @@ function ChatTurnView({ turn }: { turn: ChatTurn }) {
 function GroundedResultCard({ result }: { result: GroundedResultPayload }) {
   return (
     <article
-      className="jericho-chat-card jericho-chat-card--grounded"
+      className="jericho-chat-card jericho-chat-card--grounded cn-card"
       data-gesture-target={`knowledge:${result.resultId}`}
       data-gesture-draggable="true"
     >
@@ -544,7 +621,7 @@ function ApprovalCard({
 }) {
   return (
     <article
-      className="jericho-approval-card jericho-chat-card"
+      className="jericho-approval-card jericho-chat-card cn-card"
       data-gesture-target={`approval:${approval.missionId}`}
       data-jericho-active-approval={active ? 'true' : undefined}
       data-jericho-approval-mission-id={approval.missionId}
@@ -577,7 +654,7 @@ function ReviewCard({
   onDecide: (disposition: ReviewIntentDisposition) => void;
 }) {
   return (
-    <article className="jericho-review-card jericho-chat-card" data-gesture-target={`review:${intent.id}`}>
+    <article className="jericho-review-card jericho-chat-card cn-card" data-gesture-target={`review:${intent.id}`}>
       <div className="jericho-review-title">
         <strong>Review</strong>
         <span className="jericho-status jericho-status--pending">{intent.risk}</span>
@@ -602,7 +679,7 @@ function ProposalCard({
 }) {
   const ready = Boolean(proposal.integrityHash && proposal.version !== undefined);
   return (
-    <article className="jericho-proposal-row jericho-chat-card" data-gesture-target={`proposal:${proposal.id}`}>
+    <article className="jericho-proposal-row jericho-chat-card cn-card" data-gesture-target={`proposal:${proposal.id}`}>
       <div>
         <strong>{String(proposal.kind).replaceAll('_', ' ')}</strong>
         <span>{proposal.risk}</span>
@@ -622,4 +699,33 @@ function formatTime(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return '';
   return date.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit' });
+}
+
+function mergeLiveConversations(
+  history: ConversationListItem[],
+  conversationId: string,
+  turns: ChatTurn[],
+): ConversationListItem[] {
+  const rest = history.filter((item) => item.id !== conversationId);
+  const fromHistory = history.find((item) => item.id === conversationId);
+  if (turns.length === 0) {
+    if (fromHistory) return [fromHistory, ...rest];
+    return [{
+      id: conversationId,
+      preview: 'Current chat',
+      at: new Date().toISOString(),
+      turnCount: 0,
+    }, ...rest];
+  }
+  const last = [...turns].reverse().find((turn) => turn.kind === 'user' || turn.kind === 'jericho');
+  const previewText = last && 'text' in last ? last.text.trim().replace(/\s+/g, ' ') : '';
+  const preview = previewText
+    ? (previewText.length > 72 ? `${previewText.slice(0, 72)}…` : previewText)
+    : 'Current chat';
+  return [{
+    id: conversationId,
+    preview,
+    at: last?.at ?? new Date().toISOString(),
+    turnCount: turns.length,
+  }, ...rest];
 }
