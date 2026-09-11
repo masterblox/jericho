@@ -1,0 +1,6 @@
+# Jericho OS flows — junk / local-only artifacts (never commit)
+__pycache__/
+*.pyc
+*.log
+*.bak*
+*.tmp

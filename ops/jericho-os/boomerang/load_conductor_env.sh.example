@@ -1,0 +1,16 @@
+#!/bin/bash
+# load_conductor_env.sh.example — CONDUCTOR_API_KEY loader (template only)
+#
+# The real file lives at /srv/hermes/data/scripts/load_conductor_env.sh and is
+# NEVER committed to this PUBLIC repo. It exports a single variable the
+# conductor poller sources at runtime so no key sits in a file readable by the
+# cron line or any script in plaintext.
+#
+# Create the real file on the host with this shape (0600 root):
+#
+#     #!/bin/bash
+#     export CONDUCTOR_API_KEY="<your-conductor-api-key>"
+#
+# The installer does NOT create secrets; it only refuses to run the poller
+# install until ENV_LOADER exists or CONDUCTOR_API_KEY is provided another way.
+export CONDUCTOR_API_KEY="__REPLACE_ME_CONDUCTOR_API_KEY__"

@@ -1,0 +1,46 @@
+{
+  "jobs": [
+    {
+      "id": "jericho-os-continuation",
+      "name": "Jericho OS — continuation engine",
+      "prompt": "You are DEV's tier-1 CONTINUATION module — part of JERICHO OS (the fleet orchestration umbrella: boomerang transport + continuation engine). A paseo tab finished and/or new boomerang bus events arrived — that change woke you. Context above: (a) UNPROCESSED FINISHED PASEO AGENTS `shortId|status|name`, (b) UNPROCESSED BUS EVENTS `id | source | event | title`.\n\nA) For EACH unprocessed paseo agent:\n1. Pull its outcome: `ssh host \"paseo logs <shortId> | tail -150\"` + `ssh host \"paseo inspect <shortId>\"`; read referenced reports (check /srv/hermes/data/pi-runs/reports/ and its cwd under /srv/hermes/data/...).\n2. Judge claims vs receipts (anti-fake-out): no claim without artifact (HTTP 200, merged SHA, test pass, file path). Else UNVERIFIED.\n3. CONTINUE — act, don't summarize:\n   - Green PR/branch? repo-bound gate then merge-on-green (github-pr-workflow doctrine).\n   - Verified fix / next step? Dispatch it now: brief to /srv/hermes/data/pi-runs/briefs/ + fire `ssh host \"cd /srv/hermes/data && paseo run --background --title '<short title>' --provider pi --model hyperfusion/deepseek-ai/DeepSeek-V4-Flash-0731:max --thinking max --cwd <dir> 'Execute the brief at <path> exactly; report with receipts.'\"`.\n   - Failed/errored? Diagnose briefly; re-dispatch ONE corrected attempt if clear; else escalate in the one-liner.\n   - Child of a still-running parent (ParentAgentId)? Leave to parent; just mark processed.\n   - Tab titled with Carlos's own raw message (his personal test tabs): do NOT re-dispatch; note only if clearly broken.\n   - shortId `9bfbb182` (Michael-AI laguna wiring): mark processed, reply NOOP (dedicated gate-ping handles it).\n4. Mark: `python3 %SCRIPTS_DIR%/paseo-mark-processed.py <shortId>`.\n\nB) For EACH unprocessed bus event:\n1. Types: pr_merged / ci_completed (success) → check why the PR mattered; if a deploy/next-step exists, continue it; if an open PR just went green, merge-on-green. ci_completed (failure) → quick diagnosis, note if not trivially fixable. workspace_state (conductor) → note; act only if clearly actionable. push_main → note.\n2. Test/example events (titles like 'test', 'smoke', build artifacts from the boomerang build itself) → mark processed, no action.\n3. Mark: `python3 %SCRIPTS_DIR%/boomerang-mark-event.py <id>`.\n\nFINAL RESPONSE: exactly ONE short plain-English line: \"⚡ JERICHO OS: <what came in> → <what you did>\". Max 2 lines, no headers, phone-readable. If nothing actionable: reply exactly NOOP.\n\nConstraints: DEV lane only (code/infra/deploys). Never restart other lanes; no fleet-wide docker/compose lifecycle; never touch other agents' profiles. Telegram quiet rules apply.",
+      "skills": ["maestro-mode"],
+      "skill": "maestro-mode",
+      "model": null,
+      "provider": null,
+      "provider_snapshot": "nous",
+      "model_snapshot": "deepseek/deepseek-v4.1-flash",
+      "base_url": null,
+      "script": "boomerang-pending-completions.py",
+      "no_agent": false,
+      "monitor_script": "boomerang-finished-digest.py",
+      "monitor_url": null,
+      "monitor_state": null,
+      "context_from": ["self"],
+      "schedule": {
+        "kind": "interval",
+        "minutes": 2,
+        "display": "every 2m"
+      },
+      "schedule_display": "every 2m",
+      "repeat": { "times": null, "completed": 0 },
+      "enabled": true,
+      "state": "scheduled",
+      "paused_at": null,
+      "paused_reason": null,
+      "created_at": null,
+      "next_run_at": null,
+      "last_run_at": null,
+      "last_status": null,
+      "last_error": null,
+      "last_delivery_error": null,
+      "failure_streak": 0,
+      "deliver": "telegram:-1003940809134:4",
+      "origin": null,
+      "enabled_toolsets": ["terminal"],
+      "workdir": null,
+      "fire_claim": null
+    }
+  ],
+  "updated_at": null
+}

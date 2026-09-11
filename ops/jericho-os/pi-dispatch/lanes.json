@@ -1,0 +1,54 @@
+{
+  "spool_root": "/srv/hermes/data/pi-requests",
+  "max_concurrent_tabs": 5,
+  "stale_hours": 6,
+  "provider": "pi/hyperfusion/deepseek-ai/DeepSeek-V4-Flash-0731",
+  "thinking": "high",
+
+  "lanes": {
+    "jericho": {
+      "display": "Jericho",
+      "home": "/srv/hermes/jericho-data",
+      "mirror": "/srv/hermes/data/profiles/jericho",
+      "remote": false
+    },
+    "pa": {
+      "display": "Angela (PA)",
+      "home": "/srv/hermes/pa-data",
+      "mirror": "/srv/hermes/data/profiles/angela",
+      "remote": false
+    },
+    "donald": {
+      "display": "Donald",
+      "home": "/srv/hermes/donald-data",
+      "mirror": "/srv/hermes/data/profiles/donald",
+      "remote": false
+    },
+    "iris": {
+      "display": "Iris",
+      "home": "/srv/hermes/designer-data",
+      "mirror": "/srv/hermes/data/profiles/iris",
+      "remote": false
+    },
+    "dev": {
+      "display": "DEV",
+      "home": "/srv/hermes/data",
+      "mirror": "/srv/hermes/data/profiles/dev",
+      "remote": false
+    },
+    "buzz": {
+      "display": "Buzz",
+      "home": null,
+      "mirror": null,
+      "remote": true,
+      "note": "remote lane - no VPS data root; needs the dispatcher files on its own host"
+    },
+    "paperclip": {
+      "display": "Paperclip (analyst/researcher/intelligence)",
+      "home": null,
+      "mirror": null,
+      "remote": true,
+      "note": "remote lane - runs from the paperclip client; needs the dispatcher files on that host"
+    }
+  }
+}

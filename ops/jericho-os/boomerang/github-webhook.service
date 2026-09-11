@@ -1,0 +1,22 @@
+# Jericho OS — boomerang Github webhook receiver (systemd unit template)
+#
+# INSTALLS AS: /etc/systemd/system/github-webhook.service
+# The installer rewrites paths if BOOMERANG_ROOT differs from the canonical
+# /srv/hermes/data/boomerang. Never place a real secret in this file — the
+# receiver reads it at runtime from BOOMERANG_SECRET_FILE (0600 root).
+[Unit]
+Description=Jericho OS boomerang: GitHub webhook receiver (caddy -> 127.0.0.1:9124 -> boomerang event bus)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 %BOOMERANG_ROOT%/github-webhook.py
+WorkingDirectory=%BOOMERANG_ROOT%
+User=root
+Restart=always
+RestartSec=3
+StandardOutput=append:%BOOMERANG_ROOT%/github-webhook.log
+StandardError=append:%BOOMERANG_ROOT%/github-webhook.log
+
+[Install]
+WantedBy=multi-user.target
