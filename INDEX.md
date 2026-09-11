@@ -16,6 +16,7 @@
 | Root | Status | Authority / purpose |
 |---|---|---|
 | `apps/jericho/` | **Active, canonical runtime** | Local Core, shared contracts, connectors, bounded orchestration, React command center, voice, and gestures. |
+| `ops/maestro/`, `ops/jericho-os/` | **Active fleet orchestration** | Maestro board loop (flip/verify/archive over `kanban.db`) + Jericho OS flows (boomerang bus, continuation engine, pi-dispatch, hub digest) with installers; see [`ops/jericho-os/README.md`](ops/jericho-os/README.md). Note: `ops/maestro/` currently ships on branch `masterblox/maestro-wiring`. |
 | `ARCHITECTURE.md` | **Active, canonical design** | Source-of-truth boundaries and implemented lifecycle. |
 | `docs/` | **Mixed; indexed** | Current operating notes plus superseded build explorations. Consult `docs/INDEX.md`. |
 | `specs/`, `scripts/`, `paperclip/`, `inbox/`, `outbox/`, `reports/` | **Legacy fleet surfaces** | Reconciled inputs or historical automation; never authoritative over direct source APIs, Git, or Jericho Core. |
