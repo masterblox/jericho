@@ -46,11 +46,15 @@ describe('production sphere wiring', () => {
     expect(peripherals).toContain('Fleet delivery lifecycle');
   });
 
-  it('serves the sphere as the only product surface, with the Gesture Lab as the hardware harness', () => {
+  it('serves chat as the product surface, with Sphere optional and the Gesture Lab as the hardware harness', () => {
     const entry = source('main.tsx');
+    const chat = source('chat-shell.tsx');
     expect(entry).not.toContain("get('view')");
     expect(entry).toContain("get('lab') === 'gestures'");
-    expect(entry).toContain("import('./sphere-shell')");
+    expect(entry).toContain("import('./chat-shell')");
+    expect(chat).toContain("import('./sphere-shell')");
+    expect(chat).toContain('data-gesture-target="view:sphere"');
+    expect(chat).toContain('jericho-bay--left');
   });
 
   it('renders the agent halo from live missions only, never a fixture roster', () => {

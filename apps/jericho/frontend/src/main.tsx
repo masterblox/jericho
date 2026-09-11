@@ -1,22 +1,22 @@
-import { lazy, StrictMode, Suspense, useCallback, useState } from 'react';
+import { lazy, StrictMode, Suspense, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import './styles.css';
+import { ChatSessionStore } from './chat-session';
 import { CommandCenterStore } from './command-center-store';
 import { CoreClient } from './core-client';
-import { EngageGate } from './engage-gate';
-import type { RuntimeLifecyclePort } from './engage-gate';
+import { EngageGate, type RuntimeLifecyclePort } from './engage-gate';
 import { GestureTargetRegistry } from './gesture-target-registry';
 import { GestureLab } from './gesture-lab';
 import { startInterfaceSoundEngine } from './interface-sound';
 import { JerichoRuntime } from './jericho-runtime';
 
-const discoveredRoot = document.getElementById('app');
-if (!discoveredRoot) throw new Error('Jericho root is unavailable');
-const rootElement: HTMLElement = discoveredRoot;
+const rootElement = document.getElementById('app');
+if (!rootElement) throw new Error('Jericho root is unavailable');
 
 const store = new CommandCenterStore();
 const client = new CoreClient(store);
+const session = new ChatSessionStore();
 const gestureTargets = new GestureTargetRegistry(document);
 const interfaceSounds = startInterfaceSoundEngine({
   eventTarget: document,
@@ -24,39 +24,34 @@ const interfaceSounds = startInterfaceSoundEngine({
 });
 
 const gestureLab = new URLSearchParams(window.location.search).get('lab') === 'gestures';
-const SphereShell = lazy(async () => {
-  const module = await import('./sphere-shell');
-  return { default: module.SphereShell };
+const ChatShell = lazy(async () => {
+  const module = await import('./chat-shell');
+  return { default: module.ChatShell };
 });
 
-function JerichoExperience() {
-  const [activeRuntime, setActiveRuntime] = useState<RuntimeLifecyclePort | null>(null);
-  const runtimeChanged = useCallback((runtime: RuntimeLifecyclePort | null) => {
-    setActiveRuntime(runtime);
-  }, []);
-  const recalibrate = useCallback(() => activeRuntime?.recalibrate(), [activeRuntime]);
-
-  return gestureLab ? <GestureLab root={rootElement} /> : (
+function ProductRoot() {
+  const [runtime, setRuntime] = useState<RuntimeLifecyclePort | null>(null);
+  return (
     <>
       <Suspense fallback={<div className="jericho-loading">CONNECTING TO JERICHO CORE</div>}>
-        <SphereShell
-          store={store}
-          client={client}
-          onRecalibrate={activeRuntime ? recalibrate : undefined}
-        />
+        <ChatShell store={store} client={client} session={session} runtime={runtime} />
       </Suspense>
-      <EngageGate createRuntime={(onState) => new JerichoRuntime({
-        root: rootElement,
-        registry: gestureTargets,
-        showAdvancedControls: false,
-        onEngagementState: onState,
-      })} onRuntimeChange={runtimeChanged} />
+      <EngageGate
+        createRuntime={(onEngagementState) => new JerichoRuntime({
+          root: rootElement!,
+          registry: gestureTargets,
+          onEngagementState,
+        })}
+        onRuntimeChange={setRuntime}
+      />
     </>
   );
 }
 
 createRoot(rootElement).render(
-  <StrictMode><JerichoExperience /></StrictMode>,
+  <StrictMode>
+    {gestureLab ? <GestureLab root={rootElement} /> : <ProductRoot />}
+  </StrictMode>,
 );
 
 window.addEventListener('pagehide', () => {

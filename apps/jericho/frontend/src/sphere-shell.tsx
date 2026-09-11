@@ -53,10 +53,12 @@ export function SphereShell({
   store,
   client,
   onRecalibrate,
+  manageClient = true,
 }: {
   store: CommandCenterStore;
   client: CoreClient;
   onRecalibrate?: () => void;
+  manageClient?: boolean;
 }) {
   const state = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const [fleet, setFleet] = useState<FleetSnapshot>(FLEET_OFFLINE);
@@ -69,7 +71,6 @@ export function SphereShell({
   );
 
   useEffect(() => {
-    void client.start();
     void client.health()
       .then((result) => {
         setHealth(result);
@@ -83,8 +84,10 @@ export function SphereShell({
           setHealthStatus('unavailable');
         }
       });
+    if (!manageClient) return;
+    void client.start();
     return () => client.stop();
-  }, [client]);
+  }, [client, manageClient]);
 
   // Fleet projection: the bridge proxies the Paperclip board read-only and
   // fails closed, so a 503 here is an honest "fleet offline", not an error.
@@ -127,6 +130,7 @@ export function SphereShell({
   }, []);
 
   useEffect(() => {
+    if (!manageClient) return;
     const decide = (event: Event) => {
       const detail = (event as CustomEvent<ApprovalGestureDetail>).detail;
       if (!detail) return;
@@ -152,7 +156,7 @@ export function SphereShell({
       document.removeEventListener(JERICHO_APPROVAL_GESTURE_EVENT, decide);
       document.removeEventListener(JERICHO_CANCEL_PENDING_EVENT, cancel);
     };
-  }, [client]);
+  }, [client, manageClient]);
 
   const captureDirective = useCallback(async (directive: string) => {
     const occurredAt = new Date().toISOString();

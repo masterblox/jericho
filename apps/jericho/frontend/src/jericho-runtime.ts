@@ -43,6 +43,11 @@ import {
 } from './gesture-target-registry';
 import { GestureEngine, type GestureFrame } from './gestures';
 import {
+  VOICE_STATUS_EVENT,
+  VOICE_TEXT_EVENT,
+  VOICE_WAKE_EVENT,
+} from './chat-events';
+import {
   GROUNDED_RESULT_EVENT,
   SPEECH_PLAYING_EVENT,
 } from './grounded-result';
@@ -369,8 +374,23 @@ export class JerichoRuntime {
   private async initializeBridgeAndEngage(): Promise<void> {
     this.bridge = this.createBridge({
       onReady: () => this.setStatus('voice and gestures online'),
-      onStatus: (value) => this.setStatus(`voice ${value}`),
-      onWake: (source) => { this.lastWakeSource = source; },
+      onStatus: (value) => {
+        this.setStatus(`voice ${value}`);
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(VOICE_STATUS_EVENT, {
+          detail: { status: value },
+        }));
+      },
+      onWake: (source) => {
+        this.lastWakeSource = source;
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(VOICE_WAKE_EVENT, {
+          detail: { source },
+        }));
+      },
+      onText: (text) => {
+        this.root.ownerDocument.dispatchEvent(new CustomEvent(VOICE_TEXT_EVENT, {
+          detail: { text },
+        }));
+      },
       onVoices: (voices, active, meta) => {
         this.root.ownerDocument.dispatchEvent(new CustomEvent('jericho:voices', {
           detail: { voices, active, confirmed: meta?.confirmed, auditionSentence: meta?.auditionSentence },

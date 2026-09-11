@@ -7,16 +7,18 @@
 The visual pass may freely change layout, typography, animation, and component
 composition. Keep the contracts below intact so the finished UI can be wired to
 the already-tested production gesture and voice runtime without reimplementing
-recognition. The sphere at `/` is the only product surface; the legacy
-`?view=command` operator view is deleted. The sphere renders persisted Core
-truth only — no fixture roster, tasks, signals, or gauges.
+recognition. Chat at `/` is the primary product surface; the Sphere is a
+secondary operator view toggled from chat. `?lab=gestures` remains the hardware
+lab. The UI projects persisted Core truth only — no fixture roster, tasks,
+signals, or gauges. Conversation turns are in-memory only.
 
 ## Test before and after the visual pass
 
-- Product (sphere): `http://localhost:5173/`
+- Product (chat): `http://localhost:5173/`
+- Secondary sphere view: toggle **Sphere** from the chat masthead
 - Hardware lab: `http://localhost:5173/?lab=gestures`
-- Click **Engage local runtime** before testing camera, clap, or hand input.
-- Press **V** (or clap) for manual voice wake.
+- Click **Wake Jericho** before testing camera, clap, or hand input.
+- Press **V** (or clap) for manual voice wake, or use the composer mic.
 
 The lab is intentionally independent of the sphere design. Do not copy
 gesture thresholds or recognition logic into React components. It must continue
