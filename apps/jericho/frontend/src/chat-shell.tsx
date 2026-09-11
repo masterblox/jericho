@@ -36,6 +36,7 @@ import {
 import {
   GROUNDED_RESULT_EVENT,
   SPEECH_PLAYING_EVENT,
+  parseGroundedResultMessage,
   type GroundedResultPayload,
 } from './grounded-result';
 const SphereShell = lazy(async () => {
@@ -204,21 +205,24 @@ export function ChatShell({
   const reviews = snapshot?.reviewIntents ?? [];
   const proposals = (snapshot?.proposals ?? []).filter((proposal) => proposal.status === LifecycleStatus.PendingApproval);
 
-  const captureDirective = useCallback(async (directive: string) => {
-    const occurredAt = new Date().toISOString();
-    const response = await fetch('/api/v1/captures', {
+  const sendChatTurn = useCallback(async (text: string) => {
+    const response = await fetch('/api/v1/chat/turns', {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'content-type': 'application/json', accept: 'application/json' },
-      body: JSON.stringify({
-        kind: 'manual',
-        sourceEventId: `chat:${crypto.randomUUID()}`,
-        occurredAt,
-        payload: { text: directive },
-      }),
+      body: JSON.stringify({ text }),
     });
-    if (!response.ok) throw new Error('Directive capture failed');
-  }, []);
+    if (!response.ok) throw new Error('Chat turn failed');
+    const accepted = await response.json() as {
+      replyTurn?: { text?: string };
+      groundedResult?: unknown;
+    };
+    if (typeof accepted.replyTurn?.text === 'string' && accepted.replyTurn.text.trim()) {
+      session.appendJerichoReply(accepted.replyTurn.text);
+    }
+    const grounded = parseGroundedResultMessage(accepted.groundedResult);
+    if (grounded) session.appendGroundedResult(grounded);
+  }, [session]);
 
   const sendText = async () => {
     const text = draft.trim();
@@ -227,9 +231,9 @@ export function ChatShell({
     session.appendUserText(text);
     setDraft('');
     try {
-      await captureDirective(text);
+      await sendChatTurn(text);
     } catch (error) {
-      session.setComposerError(error instanceof Error ? error.message : 'Capture failed');
+      session.setComposerError(error instanceof Error ? error.message : 'Chat turn failed');
     } finally {
       setSending(false);
     }

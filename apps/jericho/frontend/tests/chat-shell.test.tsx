@@ -53,7 +53,7 @@ describe('ChatShell', () => {
     view.unmount();
   });
 
-  it('captures typed turns over the existing Core path without persisting transcripts', async () => {
+  it('sends typed turns to the chat API and projects the reply without persisting transcripts', async () => {
     const { session, fetchPort, unmount } = mountChat();
     fireEvent.change(screen.getByRole('textbox', { name: 'Message Jericho' }), {
       target: { value: 'Prepare the Isabella brief' },
@@ -61,16 +61,18 @@ describe('ChatShell', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Send' }));
 
     await waitFor(() => expect(fetchPort).toHaveBeenCalledWith(
-      '/api/v1/captures',
+      '/api/v1/chat/turns',
       expect.objectContaining({ method: 'POST', credentials: 'same-origin' }),
     ));
     const body = JSON.parse(String(
-      fetchPort.mock.calls.find((call) => call[0] === '/api/v1/captures')?.[1]?.body,
-    )) as { payload?: { text?: string } };
-    expect(body.payload?.text).toBe('Prepare the Isabella brief');
-    expect(session.getSnapshot().turns.some((turn) => turn.kind === 'user' && turn.text === 'Prepare the Isabella brief')).toBe(true);
+      fetchPort.mock.calls.find((call) => call[0] === '/api/v1/chat/turns')?.[1]?.body,
+    )) as { text?: string };
+    expect(body.text).toBe('Prepare the Isabella brief');
+    expect(await screen.findByText('Understood, sir.')).toBeTruthy();
+    const state = session.getSnapshot();
+    expect(state.turns.some((turn) => turn.kind === 'user' && turn.text === 'Prepare the Isabella brief')).toBe(true);
+    expect(state.turns.some((turn) => turn.kind === 'jericho' && turn.text === 'Understood, sir.')).toBe(true);
     expect(localStorage.length).toBe(0);
-    expect(JSON.stringify(session.getSnapshot().turns)).not.toMatch(/localStorage/);
     unmount();
   });
 
@@ -215,6 +217,16 @@ function mountChat(options: {
     }
     if (url === '/api/v1/captures') {
       return new Response(JSON.stringify({ ok: true }), { status: 201 });
+    }
+    if (url === '/api/v1/chat/turns') {
+      return new Response(JSON.stringify({
+        schemaVersion: 1,
+        conversationId: 'local',
+        userTurn: { id: 'u1', role: 'user', state: 'answer', text: 'Prepare the Isabella brief' },
+        replyTurn: { id: 'r1', role: 'assistant', state: 'answer', text: 'Understood, sir.' },
+        receipt: { replayed: false },
+        replayed: false,
+      }), { status: 201 });
     }
     return new Response('not found', { status: 404 });
   });

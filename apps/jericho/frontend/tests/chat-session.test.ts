@@ -39,6 +39,17 @@ describe('ChatSessionStore', () => {
     expect(turns[1]).toMatchObject({ kind: 'jericho', text: 'Hello, sir.' });
   });
 
+  it('appends discrete text replies as separate text-channel Jericho turns', () => {
+    const store = new ChatSessionStore();
+    store.appendUserText('Prepare the Isabella brief');
+    store.appendJerichoReply('Understood, sir.');
+    store.appendJerichoReply('And the rest.');
+    const turns = store.getSnapshot().turns;
+    expect(turns).toHaveLength(3);
+    expect(turns[1]).toMatchObject({ kind: 'jericho', channel: 'text', text: 'Understood, sir.' });
+    expect(turns[2]).toMatchObject({ kind: 'jericho', channel: 'text', text: 'And the rest.' });
+  });
+
   it('maps listening, thinking, and speaking from voice status, tools, and playback', () => {
     const store = new ChatSessionStore();
     store.setVoiceStatus('listening');

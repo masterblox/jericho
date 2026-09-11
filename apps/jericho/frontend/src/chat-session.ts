@@ -134,6 +134,20 @@ export class ChatSessionStore {
     });
   }
 
+  appendJerichoReply(text: string): void {
+    if (typeof text !== 'string' || !text.trim()) return;
+    this.#set({
+      ...this.#state,
+      turns: [...this.#state.turns, {
+        id: nextId(),
+        kind: 'jericho',
+        channel: 'text',
+        text,
+        at: now(),
+      }],
+    });
+  }
+
   appendGroundedResult(result: GroundedResultPayload): void {
     const last = this.#state.turns.at(-1);
     if (last?.kind === 'grounded' && last.result.resultId === result.resultId) {
