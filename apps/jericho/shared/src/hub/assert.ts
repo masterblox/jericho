@@ -11,6 +11,7 @@ import {
   type HubContextItem,
   type HubDispatchPlan,
   type HubDispatchReceipt,
+  type HubDispatchVerdict,
   type HubEvent,
   type HubIntentClassification,
   type HubSealedDemoSnapshot,
@@ -19,14 +20,16 @@ import {
   type HubWhisperProbeResult,
 } from './types.js';
 
-const INTENT_KINDS = new Set(['TASK', 'QUERY', 'CREATE', 'BRIEF', 'DEMO']);
+const INTENT_KINDS = new Set(['TASK', 'QUERY', 'CREATE', 'BRIEF', 'DEMO', 'DISPATCH', 'VERIFY', 'ARCHIVE', 'ACK']);
 const SOURCES = new Set(['telegram_voice', 'telegram_text', 'qr_text', 'desktop_text']);
 const DISPATCH_STATUSES = new Set([
   'planned',
   'pending_approval',
   'approved',
   'dispatched',
+  'verified',
   'failed',
+  'archived',
 ]);
 const PHASES = new Set([
   'received',
@@ -34,7 +37,10 @@ const PHASES = new Set([
   'planned',
   'approved',
   'dispatched',
+  'verified',
+  'archived',
   'completed',
+  'acknowledged',
   'failed',
 ]);
 const PRIORITIES = new Set(['critical', 'high', 'normal', 'low']);
@@ -104,6 +110,22 @@ export function assertHubDispatchReceipt(value: unknown): asserts value is HubDi
     throw new TypeError('HubDispatchReceipt.replayed must be boolean');
   }
   assertTimestamp(value.updatedAt, 'HubDispatchReceipt.updatedAt');
+  if ('targetId' in value) assertNonEmptyString(value.targetId, 'HubDispatchReceipt.targetId');
+  if ('verdict' in value) assertHubDispatchVerdict(value.verdict);
+  if ('failureReason' in value) {
+    assertNonEmptyString(value.failureReason, 'HubDispatchReceipt.failureReason');
+  }
+  if ('archivedAt' in value) assertTimestamp(value.archivedAt, 'HubDispatchReceipt.archivedAt');
+}
+
+export function assertHubDispatchVerdict(value: unknown): asserts value is HubDispatchVerdict {
+  assertRecord(value, 'HubDispatchVerdict');
+  if (value.status !== 'verified' && value.status !== 'failed') {
+    throw new TypeError('HubDispatchVerdict.status must be verified | failed');
+  }
+  assertNonEmptyString(value.evidence, 'HubDispatchVerdict.evidence');
+  assertTimestamp(value.at, 'HubDispatchVerdict.at');
+  if ('verifier' in value) assertNonEmptyString(value.verifier, 'HubDispatchVerdict.verifier');
 }
 
 export function assertHubAgentStatus(value: unknown): asserts value is HubAgentStatus {
@@ -141,6 +163,9 @@ export function assertHubAlert(value: unknown): asserts value is HubAlert {
   assertNonEmptyString(value.summary, 'HubAlert.summary');
   if (typeof value.acknowledged !== 'boolean') {
     throw new TypeError('HubAlert.acknowledged must be boolean');
+  }
+  if ('acknowledgedAt' in value) {
+    assertTimestamp(value.acknowledgedAt, 'HubAlert.acknowledgedAt');
   }
 }
 
@@ -271,6 +296,13 @@ export function assertHubEvent(value: unknown): asserts value is HubEvent {
       break;
     case 'alert':
       assertHubAlert(value.alert);
+      break;
+    case 'dispatch':
+      assertHubDispatchReceipt(value.receipt);
+      break;
+    case 'ack':
+      assertNonEmptyString(value.alertId, 'HubEvent.alertId');
+      assertTimestamp(value.acknowledgedAt, 'HubEvent.acknowledgedAt');
       break;
     case 'mode':
       assertOneOf(value.mode, MODES, 'HubEvent.mode');

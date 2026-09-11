@@ -20,7 +20,8 @@
 | `docs/` | **Mixed; indexed** | Current operating notes plus superseded build explorations. Consult `docs/INDEX.md`. |
 | `specs/`, `scripts/`, `paperclip/`, `inbox/`, `outbox/`, `reports/` | **Legacy fleet surfaces** | Reconciled inputs or historical automation; never authoritative over direct source APIs, Git, or Jericho Core. |
 | `course/`, `training/`, `review/` | **Reference/archive** | Non-runtime material. |
-| `demo/board/` | **Demo prototype** | Standalone maestro-mode board slice (see its README); repo-only, never fleet-connected. |
+| `demo/board/` | **Demo prototype** | Standalone maestro-mode board slice (see its README); repo-only, never fleet-connected. Superseded by the real service in `ops/maestro/`. |
+| `ops/maestro/` | **Active maestro board service** | Self-running board over the fleet kanban kernel (`kanban.db`): flips done cards with evidence, auto-dispatches open cards, writes lane-done triggers, Hub dispatch/verify/archive hooks; see [`docs/maestro/README.md`](docs/maestro/README.md). |
 | `state/` | **Legacy local runtime state** | Not a Jericho Core contract. New durable private state belongs in encrypted Core storage. |
 
 ## Authority rule

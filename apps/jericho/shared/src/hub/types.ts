@@ -3,7 +3,17 @@
 export type HubIsoTimestamp = string;
 
 export type HubAgentId = 'DEV' | 'DONALD' | 'PA' | 'IRIS' | 'JERICHO';
-export type HubIntentKind = 'TASK' | 'QUERY' | 'CREATE' | 'BRIEF' | 'DEMO';
+export type HubIntentKind =
+  | 'TASK'
+  | 'QUERY'
+  | 'CREATE'
+  | 'BRIEF'
+  | 'DEMO'
+  // Maestro dispatch hooks (dispatch/verify/archive/ack) — see docs/maestro.
+  | 'DISPATCH'
+  | 'VERIFY'
+  | 'ARCHIVE'
+  | 'ACK';
 export type HubPriority = 'critical' | 'high' | 'normal' | 'low';
 export type HubHealth = 'green' | 'yellow' | 'red' | 'offline';
 export type HubMode = 'live' | 'demo';
@@ -18,14 +28,21 @@ export type HubDispatchStatus =
   | 'pending_approval'
   | 'approved'
   | 'dispatched'
-  | 'failed';
+  // Maestro lifecycle: -verified- means an independent verdict bound evidence,
+  // -archived- means the receipt was closed and removed from the open ledger.
+  | 'verified'
+  | 'failed'
+  | 'archived';
 export type HubCommandPhase =
   | 'received'
   | 'classified'
   | 'planned'
   | 'approved'
   | 'dispatched'
+  | 'verified'
+  | 'archived'
   | 'completed'
+  | 'acknowledged'
   | 'failed';
 export type HubAlertCategory =
   | 'money'
@@ -81,6 +98,24 @@ export interface HubDispatchReceipt {
   plan: HubDispatchPlan;
   replayed: boolean;
   updatedAt: HubIsoTimestamp;
+  /** Board card / task id the dispatch targets (maestro dispatch hook). */
+  targetId?: string;
+  /** Independent verdict bound by the maestro verify hook. */
+  verdict?: HubDispatchVerdict;
+  /** Reason a dispatch was marked failed (failure disposition). */
+  failureReason?: string;
+  /** When the receipt was archived and removed from the open ledger. */
+  archivedAt?: HubIsoTimestamp;
+}
+
+/** Independent lane-done verdict: evidence, never a bare worker claim. */
+export interface HubDispatchVerdict {
+  status: 'verified' | 'failed';
+  /** Independent proof the lane finished (git sha, artifact, report path). */
+  evidence: string;
+  at: HubIsoTimestamp;
+  /** Lane/agent that verified — independent of the worker that did the work. */
+  verifier?: string;
 }
 
 export interface HubAgentStatus {
@@ -108,6 +143,7 @@ export interface HubAlert {
   title: string;
   summary: string;
   acknowledged: boolean;
+  acknowledgedAt?: HubIsoTimestamp;
 }
 
 export interface HubWhisperProbeResult {
@@ -194,4 +230,6 @@ export type HubEvent =
   | { type: 'agent_status'; sequence: number; status: HubAgentStatus }
   | { type: 'command_log'; sequence: number; entry: HubCommandLogEntry }
   | { type: 'alert'; sequence: number; alert: HubAlert }
+  | { type: 'dispatch'; sequence: number; receipt: HubDispatchReceipt }
+  | { type: 'ack'; sequence: number; alertId: string; acknowledgedAt: HubIsoTimestamp }
   | { type: 'mode'; sequence: number; mode: HubMode };

@@ -120,6 +120,34 @@ export class HubTelemetry {
     return { ...full };
   }
 
+  /**
+   * Maestro `ack` hook: acknowledge an alert, stamp it with the ack time,
+   * and publish an ack event. Idempotent — a second ack is a no-op.
+   */
+  acknowledgeAlert(alertId: string): HubAlert | undefined {
+    const alert = this.#alerts.find((item) => item.id === alertId);
+    if (!alert) return undefined;
+    if (!alert.acknowledged) {
+      alert.acknowledged = true;
+      alert.acknowledgedAt = this.#now();
+      const agent = this.#agents.get(alert.agentId);
+      if (agent) {
+        agent.unreadAlerts = this.#alerts.filter(
+          (item) => item.agentId === alert.agentId && !item.acknowledged,
+        ).length;
+        this.#agents.set(alert.agentId, agent);
+      }
+    }
+    const clone = { ...alert };
+    this.#bus.publish({
+      type: 'ack',
+      sequence: 0,
+      alertId: alert.id,
+      acknowledgedAt: alert.acknowledgedAt ?? this.#now(),
+    });
+    return clone;
+  }
+
   listAgents(): HubAgentStatus[] {
     return HUB_AGENT_IDS.map((id) => ({ ...this.#agents.get(id)! }));
   }
