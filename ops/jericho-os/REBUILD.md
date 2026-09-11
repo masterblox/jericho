@@ -62,6 +62,12 @@ WITH_CADDY=1 bash ops/jericho-os/install/install-boomerang.sh   # backup + add r
 GitHub: Payload `https://crm.mechanica.one/webhooks/dev/github`, secret = the
 value in `.github_secret`, events `pull_request`, `workflow_run`, `push`.
 
+Register the hook on **every repo whose events must reach the bus — including
+`masterblox/jericho` itself.** The existing hooks on `masterblox/hermes`,
+`Mechanica-Labs/mechanica-openbot`, and `Mechanica-Labs/architect-ai` do NOT
+cover this repo's own PR/CI/push events; until a hook is registered here,
+jericho-repo activity will not hit `events.jsonl`.
+
 ## 3. Wire the continuation cron job
 
 The scripts are installed; the **job** (which the cron system owns) is merged
@@ -73,6 +79,14 @@ python3 ops/jericho-os/install/add-continuation-job.py \
   --jobs /srv/hermes/data/profiles/dev/cron/jobs.json \
   --scripts-dir /srv/hermes/data/profiles/dev/scripts
 ```
+
+> **Warning (double-fire trap).** The helper's template id
+> (`jericho-os-continuation`) is not the id of an older live copy of this
+> same job (live id `aad03cdd19f5`). Against a **live** `jobs.json` that
+> still holds the old job, the helper now **refuses** (exit 3) instead of
+> stacking a second, concurrently-firing copy — remove or migrate the old job
+> first. `--force` proceeds anyway, but never use it on a live, firing file
+> unless the old job is deliberately dead.
 
 The job runs every 2 min, uses `boomerang-finished-digest.py` as its
 change-gated monitor and `boomerang-pending-completions.py` as its context

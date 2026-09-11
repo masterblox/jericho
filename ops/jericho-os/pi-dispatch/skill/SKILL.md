@@ -80,4 +80,6 @@ file instead of silently disappearing — re-request if you still need it.
   `/srv/hermes/data/pi-requests/` (`dispatch.py`, `_system/dispatch.log`,
   `<lane>/{inbox,answers,work}/`).
 - Host cron: `/etc/cron.d/pi-dispatch` (every 2 min).
-- Source + runbook: `ops/jericho-os/pi-dispatch/` in the hermes fleet repo.
+- Source + runbook: `ops/jericho-os/pi-dispatch/` in the `masterblox/jericho`
+  repo (this repo is the canonical home; the hermes fleet repo's copy is a
+  consumer and points back here).
