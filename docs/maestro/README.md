@@ -51,6 +51,11 @@ or `--interval N` for watch/daemon mode):
   `--max-attempts` (default 3) times **parks** instead of spinning forever. A
   card is only dispatched while `status='new'`; live leases are never touched
   and terminal cards are never re-dispatched.
+- Dispatch also **consults the kernel circuit breaker**: a card whose
+  `consecutive_failures` has reached the effective failure limit (`max_retries`
+  if set, else `--failure-limit`, else the kernel `DEFAULT_FAILURE_LIMIT` of 2)
+  is parked with a reason, never given another `running` attempt. The board
+  leases the kernel's eligibility state; it does not reimplement the breaker.
 - Lifecycle of the claim: if the lane silently dies, the lease expires and the
   next pass recovers it (`running -> released`), then re-dispatches. The board
   never trusts memory — **idle is re-triggered, never assumed** (doctrine 6).
@@ -71,11 +76,20 @@ a bare worker claim is never trusted:
 
 - Success (`run.status=done` / `outcome=completed`) → the card's `result`
   column is bound from the lane's `summary` (git sha, artifact path, report
-  line).
+  line). A lane writing its own `done` run is only a **claim**: the board
+  flips the card to `done`/`verified` strictly on a distinct `verified`
+  verdict event recorded by an independent verifier (the Hub `verify` hook /
+  `board.py verify`), never on the worker's own summary alone.
 - Failure (`blocked|crashed|timed_out|failed|gave_up`) → the card goes
   `blocked` and the failure text lands in `last_failure_error`.
 - Every verdict is written as a `task_events` row `kind='lane-done'` with the
-  evidence payload, plus a dated comment on the card.
+  evidence payload, plus a dated comment on the card. An independently
+  verified `done` also records a `verified` verdict event (`verifier` +
+  evidence) in the same stream, so the audit trail always shows who verified.
+- `verify` without `--evidence` derives evidence only from a validated
+  terminal run **whose outcome agrees** with the requested status — a `failed`
+  run can never be used as evidence for a `done` request, and a `done` run
+  never for a `blocked` request.
 
 ### 4. Flip
 The board's `flip_terminal_cards` moves the open card to `done` (with
