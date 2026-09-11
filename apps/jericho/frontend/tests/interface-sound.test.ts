@@ -13,6 +13,7 @@ import {
   parseGroundedResultMessage,
   type InterfaceSoundCue,
 } from '../src/grounded-result';
+import { VOICE_STATUS_EVENT, VOICE_TEXT_EVENT, VOICE_WAKE_EVENT } from '../src/chat-events';
 import {
   INTERFACE_SOUND_DUCK_GAIN,
   INTERFACE_SOUND_MASTER_GAIN,
@@ -263,6 +264,25 @@ describe('JerichoRuntime grounded-result projection', () => {
     const events = harness.createBridge.mock.calls[0][0] as BridgeEvents;
     events.onSpeechPlaying?.(true);
     expect(listener.mock.calls[0][0]).toMatchObject({ detail: { playing: true } });
+    await harness.runtime.dispose();
+  });
+
+  it('republishes voice text, status, and wake for the chat surface', async () => {
+    const harness = createRuntimeHarness();
+    const text = vi.fn();
+    const status = vi.fn();
+    const wake = vi.fn();
+    document.addEventListener(VOICE_TEXT_EVENT, text);
+    document.addEventListener(VOICE_STATUS_EVENT, status);
+    document.addEventListener(VOICE_WAKE_EVENT, wake);
+    await harness.runtime.engage();
+    const events = harness.createBridge.mock.calls[0][0] as BridgeEvents;
+    events.onText?.('Hello, sir.');
+    events.onStatus?.('listening');
+    events.onWake?.('manual');
+    expect(text.mock.calls[0][0]).toMatchObject({ detail: { text: 'Hello, sir.' } });
+    expect(status.mock.calls[0][0]).toMatchObject({ detail: { status: 'listening' } });
+    expect(wake.mock.calls[0][0]).toMatchObject({ detail: { source: 'manual' } });
     await harness.runtime.dispose();
   });
 });
