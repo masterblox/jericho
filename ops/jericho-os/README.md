@@ -50,6 +50,17 @@ Conductor API ──> conductor-poller.py (root cron */3) ──▶ ┴─> /srv
 - Consumers track a processed-set (append-only id list), never rewrite the bus.
 - Details: `boomerang/README.md`, `boomerang/caddy-route.md`.
 
+> **Operator step — register the hook on THIS repo.** `masterblox/jericho`
+> itself still has **no** GitHub webhook to the bus. The live receiver is fed
+> only by hooks on `masterblox/hermes`, `Mechanica-Labs/mechanica-openbot`,
+> and `Mechanica-Labs/architect-ai`, all posting to
+> `https://crm.mechanica.one/webhooks/dev/github`. Until a hook is registered
+> on `masterblox/jericho` (same payload URL, same pattern; events
+> `pull_request`, `workflow_run`, `push`), PR / CI / push events on **this**
+> repo will NOT reach `events.jsonl` and the continuation engine will not
+> react to them. Register it by hand (Repo → Settings → Webhooks — steps in
+> `boomerang/caddy-route.md`). Nothing in this repo registers it automatically.
+
 ### 2. Continuation engine — tier-1 trigger
 
 A change-gated DEV cron ("Jericho OS — continuation engine", every 2 min):
