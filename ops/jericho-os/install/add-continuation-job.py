@@ -17,13 +17,19 @@ Usage:
                      (only when the old job is deliberately dead)
 
 Behaviour:
-  * skips if a job with the same id already exists (idempotent)
-  * REFUSES (exit 3) if a job with the same name exists under a different id:
-    the template id (`jericho-os-continuation`) differs from the older live id
-    of this same job (`aad03cdd19f5`), and stacking a second copy on a live
-    jobs.json would DOUBLE-FIRE the continuation cron. Remove or migrate the
-    old job first (cron admin / jobs.json), or pass --force only when the old
-    job is deliberately dead.
+  * skips (exit 0, idempotent) if a job with the same id already exists and
+    there are NO same-name/different-id entries
+  * FATAL (exit 3) if the file is ALREADY duplicated — both the new id AND a
+    legacy same-name id are present (e.g. `jericho-os-continuation` +
+    `aad03cdd19f5`): both jobs can DOUBLE-FIRE every 2 min. This is never a
+    silent no-op; remove the legacy entry first (cron admin / jobs.json).
+    --force does NOT clear this — there is nothing for it to add.
+  * REFUSES (exit 3) if a job with the same name exists under a different id
+    and the new id is not present: the template id (`jericho-os-continuation`)
+    differs from the older live id of this same job (`aad03cdd19f5`), and
+    stacking a second copy on a live jobs.json would DOUBLE-FIRE the
+    continuation cron. Remove or migrate the old job first (cron admin /
+    jobs.json), or pass --force only when the old job is deliberately dead.
   * backs up jobs.json to jobs.json.bak-jericho-os-<UTC> before any write
   * renders %SCRIPTS_DIR% into the prompt
   * --dry-run prints the plan, changes nothing
@@ -79,17 +85,40 @@ def main() -> int:
 
     job_name = job.get("name", "")
 
-    # Idempotency by id: a job already under the new id is a no-op.
+    # Same-name / different-id entries — detected FIRST, regardless of the
+    # same-id no-op. Codex P1: a live file can hold BOTH the legacy id
+    # (`aad03cdd19f5`) AND the template id (`jericho-os-continuation`) — the
+    # old same-id early return reported "nothing to do" (exit 0) while both
+    # enabled jobs kept double-firing every 2 minutes. Same-id presence does
+    # NOT mean the file is clean; only a check with no collisions does.
+    collisions = [j for j in jobs if j.get("name") == job_name and j.get("id") != job_id]
     same_id = [j for j in jobs if j.get("id") == job_id]
+
+    if collisions and same_id:
+        # File is ALREADY duplicated: the new id AND a legacy same-name id are
+        # both present and enabled, so the continuation cron can double-fire
+        # right now. This is an error, never a no-op. There is nothing for
+        # --force to ADD (the new id is already there), and writing another
+        # copy would make it worse — resolution is manual.
+        old_ids = ", ".join(repr(j.get("id")) for j in collisions)
+        print(
+            "FATAL — jobs.json is ALREADY duplicated for "
+            f"job {job_name!r}: both {job_id!r} and {old_ids} are present\n"
+            f"  and can double-fire the continuation cron every 2 min on the same box.\n"
+            "  Remove or migrate the legacy entry (cron admin / jobs.json), then re-run.\n"
+            "  --force does not apply: nothing needs to be added.",
+            file=sys.stderr,
+        )
+        return 3
+
+    # Idempotency by id: the new id is present with no collisions — clean no-op.
     if same_id:
         print(f"job '{job_id}' already present ({len(same_id)} entry) — nothing to do")
         return 0
 
-    # Same-name / different-id collision — the double-fire trap the REBUILD
-    # runbook warns about. The template id (`jericho-os-continuation`) differs
-    # from the older live id of this same job (`aad03cdd19f5`), so the id-only
-    # check above would not stop us from stacking a second, also-firing copy.
-    collisions = [j for j in jobs if j.get("name") == job_name and j.get("id") != job_id]
+    # Same-name / different-id collision WITHOUT the new id present — the
+    # double-fire trap the REBUILD runbook warns about: stacking a second copy
+    # would fire both every 2 minutes. Refuse unless --force.
     if collisions:
         old_ids = ", ".join(repr(j.get("id")) for j in collisions)
         warning = (
