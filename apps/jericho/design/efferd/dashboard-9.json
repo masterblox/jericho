@@ -1,0 +1,505 @@
+{
+ "vars": {
+  "--background": "oklch(1 0 0)",
+  "--foreground": "oklch(0.145 0 0)",
+  "--card": "oklch(1 0 0)",
+  "--border": "oklch(0.922 0 0)",
+  "--muted": "oklch(0.97 0 0)",
+  "--muted-foreground": "oklch(0.556 0 0)",
+  "--radius": "0.625rem",
+  "--chart-1": "oklch(0.87 0 0)",
+  "--chart-2": "oklch(0.556 0 0)",
+  "--chart-3": "oklch(0.439 0 0)",
+  "--chart-4": "oklch(0.371 0 0)",
+  "--chart-5": "oklch(0.269 0 0)",
+  "--primary": "oklch(0.205 0 0)"
+ },
+ "body": {
+  "bg": "oklch(1 0 0)",
+  "color": "oklch(0.145 0 0)",
+  "ff": "Geist, \"Geist Fallback\"",
+  "fs": "16px"
+ },
+ "cards": [
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 gap-2 overflow-hidden border bg-backgr",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 324,
+   "h": 106
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 gap-2 overflow-hidden border bg-backgr",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 324,
+   "h": 106
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 gap-2 overflow-hidden border bg-backgr",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 324,
+   "h": 106
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 gap-2 overflow-hidden border bg-backgr",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 324,
+   "h": 106
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col gap-2 overflow-hidden border ",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 888,
+   "h": 438
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col gap-2 overflow-hidden border ",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 432,
+   "h": 438
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col overflow-hidden border bg-bac",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "0px",
+   "w": 660,
+   "h": 407
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col overflow-hidden border bg-bac",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "0px",
+   "w": 660,
+   "h": 407
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col overflow-hidden border bg-bac",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 318,
+   "h": 354
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col gap-2 overflow-hidden border ",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 318,
+   "h": 354
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col overflow-hidden border bg-bac",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 318,
+   "h": 354
+  },
+  {
+   "tag": "DIV",
+   "cls": "relative flex min-h-0 flex-col overflow-hidden border bg-bac",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "1px",
+   "radius": "0px",
+   "shadow": "none",
+   "pad": "16px",
+   "w": 318,
+   "h": 354
+  }
+ ],
+ "type": [
+  {
+   "t": "Efferd",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Overview",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.205 0 0)"
+  },
+  {
+   "t": "Sales",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Analytics",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Storage",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Orders",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Products",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Customers",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Marketing",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Integrations",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "API Keys",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Activity",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Logs",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Resources",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Resources",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Support",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Settings",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Overview",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "/",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Search",
+   "fs": "16px",
+   "fw": "500",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Search for pages, resour",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Welcome back, Shaban! \ud83d\udc4b",
+   "fs": "24px",
+   "fw": "600",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "New Product",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Total revenue",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "$284,920",
+   "fs": "24px",
+   "fw": "500",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "8.2%",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "vs prior 30 days",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  }
+ ],
+ "svgs": [
+  {
+   "w": 16,
+   "h": 16,
+   "cls": ""
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-layout-grid"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-trending-up"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chart-column"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-database"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-shopping-cart"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-file-text"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-users"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-megaphone"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-plug"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-key-round"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-activity"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-terminal"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-layers"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chevron-right ml-auto transition-tra"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-circle-question-mark"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-settings"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": "lucide lucide-panel-left"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-layout-grid"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-search"
+  }
+ ]
+}

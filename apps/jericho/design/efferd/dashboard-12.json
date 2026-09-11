@@ -1,0 +1,593 @@
+{
+ "vars": {
+  "--background": "oklch(1 0 0)",
+  "--foreground": "oklch(0.145 0 0)",
+  "--card": "oklch(1 0 0)",
+  "--border": "oklch(0.922 0 0)",
+  "--muted": "oklch(0.97 0 0)",
+  "--muted-foreground": "oklch(0.556 0 0)",
+  "--radius": "0.625rem",
+  "--chart-1": "oklch(0.87 0 0)",
+  "--chart-2": "oklch(0.556 0 0)",
+  "--chart-3": "oklch(0.439 0 0)",
+  "--chart-4": "oklch(0.371 0 0)",
+  "--chart-5": "oklch(0.269 0 0)",
+  "--primary": "oklch(0.205 0 0)"
+ },
+ "body": {
+  "bg": "oklch(1 0 0)",
+  "color": "oklch(0.145 0 0)",
+  "ff": "Geist, \"Geist Fallback\"",
+  "fs": "16px"
+ },
+ "cards": [
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 242,
+   "h": 97
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 242,
+   "h": 97
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 242,
+   "h": 97
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px 8px",
+   "w": 757,
+   "h": 341
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 371,
+   "h": 453
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px 0px",
+   "w": 508,
+   "h": 328
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 620,
+   "h": 328
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col bg-secondary shadow-none ri",
+   "bg": "oklch(0.97 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 1144,
+   "h": 458
+  }
+ ],
+ "type": [
+  {
+   "t": "Efferd",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Search...\u2318K",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Search...",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Search",
+   "fs": "16px",
+   "fw": "500",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Search...",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Dashboard",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.205 0 0)"
+  },
+  {
+   "t": "Contacts",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Deals",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Calendar",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Analytics & Reports",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Workflows",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Settings",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Settings",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "What's new?",
+   "fs": "12px",
+   "fw": "300",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Deal pipelines",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Deal pipelines",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Contact sync",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Contact sync",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Full changelog",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Full changelog",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Help Center",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Documentation",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Shaban Haider",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Shaban Haider",
+   "fs": "12px",
+   "fw": "500",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Efferd",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Dashboard",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Dashboard",
+   "fs": "18px",
+   "fw": "500",
+   "lh": "28px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Ask AI",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.205 0 0)"
+  },
+  {
+   "t": "8.0%",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "129",
+   "fs": "24px",
+   "fw": "600",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "+24 vs last week",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "24",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "2.0%",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "24%",
+   "fs": "24px",
+   "fw": "600",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "+8 vs last week",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "8",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "4.0%",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(49.1882 81.577 36.0311)"
+  },
+  {
+   "t": "14d",
+   "fs": "24px",
+   "fw": "600",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "+1d vs last week",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "1d",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  },
+  {
+   "t": "$30,240",
+   "fs": "24px",
+   "fw": "600",
+   "lh": "32px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "7.5%",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "lab(55.0481 -49.9246 15.93)"
+  }
+ ],
+ "svgs": [
+  {
+   "w": 16,
+   "h": 16,
+   "cls": ""
+  },
+  {
+   "w": 20,
+   "h": 20,
+   "cls": "size-5 text-muted-foreground"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-search"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-layout-grid"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-users"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-handshake"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-calendar-days"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chart-column"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-git-branch"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-settings"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chevron-right ml-auto transition-tra"
+  },
+  {
+   "w": 12,
+   "h": 12,
+   "cls": "lucide lucide-sparkles size-3 stroke-1 text-muted-"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": "lucide lucide-external-link hidden size-3 text-mut"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": "lucide lucide-external-link hidden size-3 text-mut"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": "lucide lucide-external-link hidden size-3 text-mut"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-x size-3.5 text-muted-foreground"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-circle-question-mark"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-book-open"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-chevrons-up-down ms-auto size-3.5! t"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": ""
+  }
+ ]
+}

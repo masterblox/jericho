@@ -1,0 +1,429 @@
+{
+ "vars": {
+  "--background": "oklch(1 0 0)",
+  "--foreground": "oklch(0.145 0 0)",
+  "--card": "oklch(1 0 0)",
+  "--border": "oklch(0.922 0 0)",
+  "--muted": "oklch(0.97 0 0)",
+  "--muted-foreground": "oklch(0.556 0 0)",
+  "--radius": "0.625rem",
+  "--chart-1": "oklch(0.87 0 0)",
+  "--chart-2": "oklch(0.556 0 0)",
+  "--chart-3": "oklch(0.439 0 0)",
+  "--chart-4": "oklch(0.371 0 0)",
+  "--chart-5": "oklch(0.269 0 0)",
+  "--primary": "oklch(0.205 0 0)"
+ },
+ "body": {
+  "bg": "oklch(1 0 0)",
+  "color": "oklch(0.145 0 0)",
+  "ff": "Geist, \"Geist Fallback\"",
+  "fs": "16px"
+ },
+ "cards": [
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0 gap-6",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 240,
+   "h": 152
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0 gap-6",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 240,
+   "h": 152
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0 gap-6",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 240,
+   "h": 152
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0 min-w-0 max-w-f",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 752,
+   "h": 249
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 368,
+   "h": 343
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 368,
+   "h": 343
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 752,
+   "h": 95
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 368,
+   "h": 241
+  },
+  {
+   "tag": "DIV",
+   "cls": "cn-card group/card flex flex-col dark:ring-0",
+   "bg": "oklch(1 0 0)",
+   "border": "oklch(0.922 0 0)",
+   "bw": "0px",
+   "radius": "14px",
+   "shadow": "rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.145 0 0 / 0.1) 0px 0px 0px 1px, rgba(0, 0, 0, 0) 0px 0px 0px 0px",
+   "pad": "16px 0px",
+   "w": 368,
+   "h": 241
+  }
+ ],
+ "type": [
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Toggle Sidebar",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "New Brand",
+   "fs": "12.8px",
+   "fw": "500",
+   "lh": "18.2857px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "New chat",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "New chat",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Chats",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Projects",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Artifacts",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Images",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Overview",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.205 0 0)"
+  },
+  {
+   "t": "Billing",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "What's New",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "2",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Docs",
+   "fs": "12px",
+   "fw": "400",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Shaban Haidershaban@effe",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Shaban Haidershaban@effe",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "17.5px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Shaban Haider",
+   "fs": "12px",
+   "fw": "500",
+   "lh": "16px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "shaban@efferd.com",
+   "fs": "10px",
+   "fw": "400",
+   "lh": "12.5px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Overview",
+   "fs": "18px",
+   "fw": "500",
+   "lh": "28px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "Last 12 months",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "Last 12 months",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  },
+  {
+   "t": "$48.20 / $100.00 (1.2M t",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "$48.20",
+   "fs": "14px",
+   "fw": "500",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.145 0 0)"
+  },
+  {
+   "t": "/ $100.00 (1.2M tokens)",
+   "fs": "14px",
+   "fw": "400",
+   "lh": "20px",
+   "ff": "Geist",
+   "color": "oklch(0.556 0 0)"
+  }
+ ],
+ "svgs": [
+  {
+   "w": 20,
+   "h": 20,
+   "cls": "size-5 text-muted-foreground"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chevrons-up-down"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-sun dark:hidden"
+  },
+  {
+   "w": 0,
+   "h": 0,
+   "cls": "lucide lucide-moon-star hidden dark:block"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-square-pen"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-message-square"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-folder"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-box"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-image"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-layout-grid"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-credit-card"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-bell"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-book-open"
+  },
+  {
+   "w": 12,
+   "h": 12,
+   "cls": "lucide lucide-external-link size-3!"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chevrons-up-down ms-auto text-muted-"
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-chevron-down cn-select-trigger-icon "
+  },
+  {
+   "w": 16,
+   "h": 16,
+   "cls": "lucide lucide-ellipsis"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-dollar-sign"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-chevron-right size-3.5 text-muted-fo"
+  },
+  {
+   "w": 14,
+   "h": 14,
+   "cls": "lucide lucide-box"
+  }
+ ]
+}
