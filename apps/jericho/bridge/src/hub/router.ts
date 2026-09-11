@@ -39,7 +39,8 @@ export const HUB_CAPABILITY_REGISTRY: readonly HubCapabilityDefinition[] = [
   },
 ];
 
-const MUTATING_INTENTS = new Set<HubIntentKind>(['TASK', 'CREATE']);
+const MUTATING_INTENTS = new Set<HubIntentKind>(['TASK', 'CREATE', 'DISPATCH']);
+const OPERATOR_BOOKKEEPING = new Set<HubIntentKind>(['VERIFY', 'ARCHIVE', 'ACK']);
 
 /** Route a classification to a capability lane without performing agent work. */
 export function planHubDispatch(
@@ -75,6 +76,23 @@ export function planHubDispatch(
       summary: classification.summary,
       requiresConfirmation: false,
       status: 'planned',
+    };
+  }
+
+  // Maestro dispatch hooks: verify/archive/ack are idempotent bookkeeping,
+  // planned for the operator lane with no confirmation (they never mutate a
+  // repo/send externally by themselves). dispatch() behaves like TASK below.
+  if (OPERATOR_BOOKKEEPING.has(classification.intent)) {
+    return {
+      schemaVersion: 1,
+      commandId,
+      intent: classification.intent,
+      targetAgent: 'JERICHO',
+      confidence: classification.confidence,
+      summary: classification.summary,
+      requiresConfirmation: false,
+      status: 'planned',
+      reason: `${classification.intent} hook (idempotent bookkeeping)`,
     };
   }
 
@@ -120,5 +138,8 @@ function selectAgent(
     }
   }
   if (classification.intent === 'DEMO' || classification.intent === 'BRIEF') return 'JERICHO';
+  if (classification.intent === 'VERIFY' || classification.intent === 'ARCHIVE' || classification.intent === 'ACK') {
+    return 'JERICHO';
+  }
   return best?.agentId ?? (classification.intent === 'QUERY' ? 'JERICHO' : 'DEV');
 }

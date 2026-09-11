@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "board": "board",
+  "created_at": "2026-09-10T18:22:00Z",
+  "jobs": [
+    {
+      "id": "job-001",
+      "title": "Greet the fleet from lane DEV",
+      "argv": [
+        "/usr/bin/python3",
+        "-c",
+        "print('hello from lane DEV \u2014 task done')"
+      ]
+    },
+    {
+      "id": "job-002",
+      "title": "Hash the board at run time (self-evidence)",
+      "argv": [
+        "/usr/bin/python3",
+        "-c",
+        "import hashlib, sys\nprint('board sha256:', hashlib.sha256(open(sys.argv[1], 'rb').read()).hexdigest())",
+        "/srv/hermes/data/repos/jericho/demo/board/_raw/board.json"
+      ]
+    },
+    {
+      "id": "job-003",
+      "title": "Wrapped sleep (shows duration tracking)",
+      "argv": [
+        "/usr/bin/python3",
+        "-c",
+        "import time; time.sleep(0.4); print('slept 0.4s')"
+      ]
+    },
+    {
+      "id": "job-004",
+      "title": "Fail loudly with stderr (shows failure capture)",
+      "argv": [
+        "/usr/bin/python3",
+        "-c",
+        "import sys; print('ouch: demo error', file=sys.stderr); sys.exit(3)"
+      ]
+    },
+    {
+      "id": "job-005",
+      "title": "Missing executable (shows ENOENT capture)",
+      "argv": [
+        "definitely-not-a-real-binary-xyz"
+      ]
+    }
+  ]
+}

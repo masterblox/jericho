@@ -16,6 +16,8 @@
 | [`VAULT-RAG-GATEWAY.md`](VAULT-RAG-GATEWAY.md) | Narrow vault search/index/health boundary, deployment, cache, and sync-freshness policy. | Any Obsidian RAG, vault health, cache, or maintenance scheduling change. |
 | [`../ops/jericho-os/README.md`](../ops/jericho-os/README.md) | Jericho OS fleet orchestration flows (boomerang bus, continuation engine, pi-dispatch, hub digest) + idempotent installers + rebuild runbook. | Any fleet flow, installer, or rebuild doc change. |
 | [`FLEET-DELIVERY-KNOWLEDGE.md`](FLEET-DELIVERY-KNOWLEDGE.md) | Five-stage Fleet projection, Paperclip reconciliation, knowledge packages, curated Notion projection, and guarded retrieval optimization. | Any Fleet learning, projection, or retrieval-evaluation change. |
+| [`maestro/README.md`](maestro/README.md) | How the fleet runs 24/7: dispatch → lane → verdict → flip → report, the night sweep, and the paseo-100% rule (board service `ops/maestro/board.py` + Hub dispatch hooks). | Any board-loop, dispatch, verify, archive, or reporting change. |
+| [`maestro/relay-comms-v2.md`](maestro/relay-comms-v2.md) | Agent-chat relay v2 event protocol (`HERMES_AGENT_CHAT_RELAY`, `relay-<src>-<dst>-<slug>.json`); all inter-agent messages route through it; the conductor-bridge outbox is dead. | Any lane comms / relay routing change. |
 
 ## Historical or superseded material
 

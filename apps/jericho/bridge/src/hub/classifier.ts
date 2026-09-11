@@ -8,6 +8,8 @@ export interface HubModelClassifierPort {
 /**
  * Pure deterministic Hub intent classifier.
  * Ambiguous/low-signal text falls through as TASK with reduced confidence.
+ * Maestro dispatch hooks (dispatch/verify/archive/ack) are recognized as
+ * first-class command intents so the hub can drive the board loop.
  */
 export function classifyHubIntent(
   text: string,
@@ -36,6 +38,22 @@ export function classifyHubIntent(
   if (/\b(create workspace|spin up|new conductor|open workspace)\b/.test(normalized)) {
     signals.push('create-keyword');
     return result('CREATE', text, 0.9, signals);
+  }
+  if (/\b(dispatch|assign to lane|send to lane|hand to lane)\b/.test(normalized)) {
+    signals.push('dispatch-command');
+    return result('DISPATCH', text, 0.9, signals);
+  }
+  if (/\b(verify|verified|verdict)\b/.test(normalized)) {
+    signals.push('verify-command');
+    return result('VERIFY', text, 0.9, signals);
+  }
+  if (/\b(archive|close out)\b/.test(normalized)) {
+    signals.push('archive-command');
+    return result('ARCHIVE', text, 0.9, signals);
+  }
+  if (/\b(a(?:ck|cknowledge))\b/.test(normalized)) {
+    signals.push('ack-command');
+    return result('ACK', text, 0.9, signals);
   }
   if (
     /\?$/.test(normalized) ||

@@ -1,8 +1,10 @@
 import {
   HUB_AGENT_IDS,
+  type HubAlert,
   type HubCommand,
   type HubDemoStream,
   type HubDispatchReceipt,
+  type HubDispatchVerdict,
   type HubEvent,
   type HubMode,
   type HubSealedDemoSnapshot,
@@ -184,6 +186,81 @@ export class HubCommandPlane {
       });
     }
     return receipt;
+  }
+
+  /**
+   * Maestro `dispatch` hook: explicitly move a planned receipt to dispatched
+   * (confirmation-gated plans still need a confirmed token).
+   */
+  dispatch(idempotencyKey: string, confirmationToken?: string): HubDispatchReceipt {
+    this.#ensureBooted();
+    const receipt = this.#dispatcher.dispatch(idempotencyKey, confirmationToken);
+    if (receipt.plan.status === 'dispatched' && !receipt.replayed) {
+      this.#telemetry.appendCommandLog({
+        id: `log:${receipt.commandId}:dispatched`,
+        agentId: receipt.plan.targetAgent ?? 'JERICHO',
+        phase: 'dispatched',
+        summary: receipt.plan.summary,
+      });
+      this.#bus.publish({ type: 'dispatch', sequence: 0, receipt });
+    }
+    return receipt;
+  }
+
+  /**
+   * Maestro `verify` hook: bind an independent verdict (evidence, never a
+   * bare worker claim) and move the receipt to `verified` or `failed`.
+   */
+  verify(idempotencyKey: string, verdict: HubDispatchVerdict): HubDispatchReceipt {
+    this.#ensureBooted();
+    const receipt = this.#dispatcher.verify(idempotencyKey, verdict);
+    if (!receipt.replayed) {
+      this.#telemetry.appendCommandLog({
+        id: `log:${receipt.commandId}:${verdict.status}`,
+        agentId: receipt.plan.targetAgent ?? 'JERICHO',
+        phase: verdict.status === 'verified' ? 'verified' : 'failed',
+        summary: `verdict=${verdict.status} :: ${verdict.evidence.slice(0, 80)}`,
+      });
+      this.#bus.publish({ type: 'dispatch', sequence: 0, receipt });
+    }
+    return receipt;
+  }
+
+  /**
+   * Maestro `archive` hook: close a terminal (verified|failed) receipt into
+   * the archive ledger.
+   */
+  archive(idempotencyKey: string): HubDispatchReceipt {
+    this.#ensureBooted();
+    const receipt = this.#dispatcher.archive(idempotencyKey);
+    if (!receipt.replayed) {
+      this.#telemetry.appendCommandLog({
+        id: `log:${receipt.commandId}:archived`,
+        agentId: receipt.plan.targetAgent ?? 'JERICHO',
+        phase: 'archived',
+        summary: receipt.plan.summary,
+      });
+      this.#bus.publish({ type: 'dispatch', sequence: 0, receipt });
+    }
+    return receipt;
+  }
+
+  /**
+   * Maestro `ack` hook: acknowledge an alert (stamps acknowledgedAt and
+   * updates the agent's unread counter).
+   */
+  ack(alertId: string): HubAlert | undefined {
+    this.#ensureBooted();
+    const alert = this.#telemetry.acknowledgeAlert(alertId);
+    if (alert) {
+      this.#telemetry.appendCommandLog({
+        id: `log:ack:${alertId}`,
+        agentId: 'JERICHO',
+        phase: 'acknowledged',
+        summary: `acked ${alert.category} alert: ${alert.title}`,
+      });
+    }
+    return alert;
   }
 
   enterDemo(): HubSnapshot {
