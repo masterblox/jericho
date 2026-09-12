@@ -42,7 +42,6 @@ The Hub hooks and the board share the same lifecycle vocabulary:
 ### 1. Dispatch
 Open cards (`status = 'new'`) are auto-dispatched by `board.py run` (one pass,
 or `--interval N` for watch/daemon mode):
-
 - The board creates a `task_runs` row (`status='running'`, claim
   `maestro-dispatch:<id>`, `claim_expires = now + lease`) — the card is now
   claimed and visible to the lane executor.
@@ -59,6 +58,16 @@ or `--interval N` for watch/daemon mode):
 - Lifecycle of the claim: if the lane silently dies, the lease expires and the
   next pass recovers it (`running -> released`), then re-dispatches. The board
   never trusts memory — **idle is re-triggered, never assumed** (doctrine 6).
+
+### 0. In-flight visibility (reader convention)
+While a card is being worked, its **stored** status stays `new` (the `running`
+signal lives on the `task_runs` row and the kernel's claim markers). So a
+status-only reader makes busy work look idle. Readers (``board.py view`` /
+`report`, the fleet dashboard) map a card to **in_progress** when it has a
+live `running` run (`ended_at` NULL, claim not expired) or the kernel's claim
+markers (card status `running`, or `current_run_id` + `started_at` +
+`claim_lock` set and pointing at a live run). This is **read-only**: stored
+statuses are never rewritten to fake in-flight.
 
 ### 2. Lane
 The lane is the fleet worker (a paseo Pi lane or a kanban-kernel worker). It
